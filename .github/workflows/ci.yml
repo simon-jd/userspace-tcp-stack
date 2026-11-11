@@ -1,0 +1,56 @@
+# GitHub-hosted runners have neither g++ 15 nor clang 21, so CI runs in the
+# same image as on the server: the first job builds testbed/Dockerfile and
+# pushes it to GHCR under a tag derived from the Dockerfile's hash (skipped if
+# that tag exists); the second job runs ci/run.sh inside it, one preset per
+# matrix entry.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ref
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "ref=ghcr.io/${owner}/utcp-testbed:${{ hashFiles('testbed/Dockerfile') }}" >> "$GITHUB_OUTPUT"
+      - name: Build and push the image if missing
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if docker manifest inspect "$REF" >/dev/null 2>&1; then
+            echo "$REF exists"
+          else
+            docker build -t "$REF" -f testbed/Dockerfile testbed
+            docker push "$REF"
+          fi
+
+  build-test:
+    needs: image
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.image.outputs.ref }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [gcc-debug, gcc-release, gcc-asan, clang-debug, clang-release, clang-asan]
+    steps:
+      - uses: actions/checkout@v4
+      - run: ci/run.sh ${{ matrix.preset }}
