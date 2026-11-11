@@ -33,6 +33,8 @@ endif()
 
 add_subdirectory(src/core)
 add_subdirectory(src/sim)
+add_subdirectory(src/backend)
+add_subdirectory(apps)
 
 if(UTCP_BUILD_TESTS)
   enable_testing()
