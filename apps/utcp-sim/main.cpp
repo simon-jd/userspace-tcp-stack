@@ -156,6 +156,7 @@ bool run_one(const Scenario& s, const Options& o, app::JsonlWriter& out) {
         j.add("node", node_name(node));
         app::add_fields(j, e);
         trace->write(j);
+        trace->flush();  // complete up to the last event if the run aborts
       };
     }
   }

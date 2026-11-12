@@ -13,13 +13,15 @@ recorded as `crash` for its current seed, with the rolling digest and event
 count from utcp-sim's SIGABRT line, and the worker restarts at the next seed.
 
 Every failing seed (verdict not ok, timeout, crash) is re-run twice with pcap
-and trace output to confirm the digest; seeds with seed % --sample-mod == 0
-get pcap and trace too. Output in --out:
+and trace output to confirm the digest, and once more under --asan-sim (an
+ASan/UBSan build) if given; seeds with seed % --sample-mod == 0 get pcap and
+trace too. Output in --out:
 
     results.jsonl    one line per seed, sorted by seed
     failures.jsonl   failing seeds: verdict, digests of the three runs, files
     summary.json     counts per verdict, failing seeds, replay mismatches
-    failures/seed-N/ scenario.txt, *.pcap, trace.jsonl, run*.jsonl, run*.stderr
+    failures/seed-N/ scenario.txt, *.pcap, trace.jsonl, run*.jsonl, run*.stderr,
+                     asan.jsonl, asan.stderr
     samples/seed-N/  scenario.txt, *.pcap, trace.jsonl
 
 Exit status 0 if every seed passed and every re-run matched, 1 otherwise.
@@ -183,13 +185,15 @@ class Sweep:
 
     # --- Re-runs with pcap and trace.
 
-    def rerun(self, seed, dirpath, tag):
-        """One run of `seed` with pcap and trace into dirpath; returns its result."""
+    def rerun(self, seed, dirpath, tag, sim=None):
+        """One run of `seed` into dirpath (with pcap and trace unless `sim` is
+        given); returns its result."""
         dirpath.mkdir(parents=True, exist_ok=True)
         jsonl = dirpath / f"{tag}.jsonl"
-        cmd = self.prefix() + [self.args.sim, "--seed", str(seed), "--jsonl", str(jsonl),
-                               "--pcap", str(dirpath.parent), "--trace",
-                               str(dirpath / "trace.jsonl")] + self.sim_args()
+        outputs = [] if sim else ["--pcap", str(dirpath.parent), "--trace",
+                                  str(dirpath / "trace.jsonl")]
+        cmd = self.prefix() + [sim or self.args.sim, "--seed", str(seed), "--jsonl", str(jsonl)] + \
+            outputs + self.sim_args()
         t0 = time.monotonic()
         with open(dirpath / f"{tag}.stderr", "wb") as err:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err,
@@ -222,11 +226,15 @@ class Sweep:
             identical = all(r["verdict"] == "timeout" for r in runs)
         else:
             identical = len(set(keys)) == 1 and first.get("digest") is not None
-        return {"seed": seed, "verdict": first["verdict"],
-                "violation": first.get("violation"), "events": first.get("events"),
-                "digests": [r.get("digest") for r in [first] + runs],
-                "verdicts": [r.get("verdict") for r in [first] + runs],
-                "identical": identical, "dir": str(d)}
+        out = {"seed": seed, "verdict": first["verdict"],
+               "violation": first.get("violation"), "events": first.get("events"),
+               "digests": [r.get("digest") for r in [first] + runs],
+               "verdicts": [r.get("verdict") for r in [first] + runs],
+               "identical": identical, "dir": str(d)}
+        if self.args.asan_sim:
+            a = self.rerun(seed, d, "asan", self.args.asan_sim)
+            out["asan"] = {"verdict": a.get("verdict"), "digest": a.get("digest")}
+        return out
 
     def sample(self, seed):
         d = self.out / "samples" / f"seed-{seed}"
@@ -240,6 +248,7 @@ def main():
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--out", default="sweep-out")
     p.add_argument("--sim", default="build/gcc-release/apps/utcp-sim/utcp-sim")
+    p.add_argument("--asan-sim", help="utcp-sim of an ASan/UBSan build to replay failing seeds")
     p.add_argument("--timeout", type=float, default=120.0, help="wall-clock seconds per seed")
     p.add_argument("--nodes", choices=("stack", "synthetic"), default="stack")
     p.add_argument("--plant-fail", default="", help="seeds that fail (tests the tooling)")
@@ -254,6 +263,8 @@ def main():
     args = p.parse_args()
     if not Path(args.sim).exists():
         p.error(f"{args.sim}: not found (build gcc-release first, or pass --sim)")
+    if args.asan_sim and not Path(args.asan_sim).exists():
+        p.error(f"{args.asan_sim}: not found")
     for name in ("plant_fail", "plant_abort", "plant_hang"):
         parse_list(getattr(args, name))  # validate
 

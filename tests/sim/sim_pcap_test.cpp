@@ -72,10 +72,11 @@ Scenario clean_scenario() {
   }
 }
 
-// Runs `cmd` and returns its exit status and output.
-std::pair<int, std::string> run(const std::string& cmd) {
+// Runs `cmd` and returns its exit status and output (stderr included if
+// `with_stderr`).
+std::pair<int, std::string> run(const std::string& cmd, bool with_stderr = true) {
   std::string out;
-  std::FILE* p = ::popen((cmd + " 2>&1").c_str(), "r");
+  std::FILE* p = ::popen((cmd + (with_stderr ? " 2>&1" : " 2>/dev/null")).c_str(), "r");
   if (p == nullptr) {
     return {-1, out};
   }
@@ -142,7 +143,8 @@ TEST(SimPcap, TsharkReadsWithoutErrors) {
     EXPECT_EQ(st, 0) << name << ":\n" << expert;
     EXPECT_EQ(expert.find("Errors ("), std::string::npos) << name << ":\n" << expert;
     // Nanosecond timestamps: nine fractional digits, the run's start second.
-    const auto [st2, first] = run("tshark -n -r " + file + " -c 1 -T fields -e frame.time_epoch");
+    const auto [st2, first] =
+        run("tshark -n -r " + file + " -c 1 -T fields -e frame.time_epoch", false);
     ASSERT_EQ(st2, 0) << first;
     const auto dot = first.find('.');
     ASSERT_NE(dot, std::string::npos) << first;

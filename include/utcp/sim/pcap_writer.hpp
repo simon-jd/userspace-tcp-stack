@@ -24,7 +24,8 @@ public:
   PcapWriter& operator=(const PcapWriter&) = delete;
   ~PcapWriter();
 
-  // One record of the datagram at time t (t.ns >= 0), cut at the snaplen.
+  // One record of the datagram at time t (t.ns >= 0), cut at the snaplen,
+  // flushed at once (a run that aborts leaves whole records).
   // False after a write error.
   bool write(Time t, std::span<const std::byte> datagram);
   [[nodiscard]] std::uint64_t records() const noexcept { return records_; }

@@ -60,8 +60,10 @@ bool PcapWriter::write(Time t, std::span<const std::byte> datagram) {
   const auto len = static_cast<std::uint32_t>(datagram.size());
   write_pcap_record_header(hdr, t, len, snaplen_);
   const std::size_t cap = std::min<std::size_t>(datagram.size(), snaplen_);
+  // Flushed per record, so a run that aborts or is killed leaves a file
+  // that ends at a record boundary.
   if (std::fwrite(hdr.data(), 1, hdr.size(), f_) != hdr.size() ||
-      std::fwrite(datagram.data(), 1, cap, f_) != cap) {
+      std::fwrite(datagram.data(), 1, cap, f_) != cap || std::fflush(f_) != 0) {
     failed_ = true;
     return false;
   }
