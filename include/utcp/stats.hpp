@@ -133,6 +133,10 @@ struct TcpInfo {
   Duration last_data_recv{};  // tcpi_last_data_recv
   Duration last_ack_recv{};   // tcpi_last_ack_recv
 
+  // Not in TCP_INFO: the connection's TraceEvent::conn_id, which links a
+  // Handle to its trace events (§10.2); 0 for kernel sockets.
+  std::uint32_t conn_id = 0;
+
   [[nodiscard]] std::string_view cc_name_view() const noexcept {
     const auto end = std::find(cc_name.begin(), cc_name.end(), '\0');
     return {cc_name.data(), static_cast<std::size_t>(end - cc_name.begin())};
@@ -198,6 +202,7 @@ void for_each_field(const TcpInfo& i, F&& f) {
   f(std::string_view{"last_data_sent"}, i.last_data_sent);
   f(std::string_view{"last_data_recv"}, i.last_data_recv);
   f(std::string_view{"last_ack_recv"}, i.last_ack_recv);
+  f(std::string_view{"conn_id"}, i.conn_id);
 }
 
 }  // namespace utcp

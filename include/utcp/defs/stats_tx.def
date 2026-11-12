@@ -12,8 +12,8 @@
 
 UTCP_STACK_STAT(TcpExtTCPSACKReneging,
                 "RTO found a SACKed head: receiver reneged, SACK marks cleared (DESIGN 5.3)")
-UTCP_STACK_STAT(TcpExtTCPSACKDiscard, "received SACK blocks discarded as invalid (DESIGN 4.5)")
-UTCP_STACK_STAT(TcpExtTCPDSACKRecv, "received D-SACK blocks")
+UTCP_STACK_STAT(TcpExtTCPDSACKRecv,
+                "received D-SACK blocks (process_ack counts AckInput::dsack)")
 UTCP_STACK_STAT(TcpExtTCPSackRecovery, "Recovery entered with SACK")
 UTCP_STACK_STAT(TcpExtTCPRenoRecovery, "Recovery entered without SACK")
 UTCP_STACK_STAT(TcpExtTCPTimeouts, "RTO expiries with data outstanding")

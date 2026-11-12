@@ -33,6 +33,22 @@ namespace utcp {
 // Size of every PacketPool buffer in M1 (§3.3).
 inline constexpr std::uint32_t packet_buf_size = 2048;
 
+// Receives the resume calls of the blocked-connection FIFO (§3.4). In a Stack
+// it is the TcpEngine (StackImpl registers it); a test may register a fake
+// producer instead (m1-ip test 8).
+class TxSpaceListener {
+public:
+  // Transmit queue and pool space freed: resume the producer in `slot` that
+  // joined the FIFO through StackCore::block_tx.
+  virtual void on_tx_space(Time now, std::uint32_t slot) = 0;
+
+protected:
+  TxSpaceListener() = default;
+  TxSpaceListener(const TxSpaceListener&) = default;
+  TxSpaceListener& operator=(const TxSpaceListener&) = default;
+  ~TxSpaceListener() = default;
+};
+
 class StackCore {
 public:
   explicit StackCore(const StackConfig& cfg);
@@ -78,12 +94,23 @@ public:
   // address to `dst`) to the transport packet `l4` (checksum already set) and
   // queues the datagram for pop_transmit. False if the queue is full: the
   // datagram is dropped (control packets count IpOutDiscards, §3.4).
-  bool send_ipv4(Ipv4Addr dst, std::uint8_t proto, std::uint16_t ip_id, PacketBuf&& l4);
+  // `owner_slot`: the TCP connection the datagram belongs to, counted by
+  // queued_for() until pop_transmit returns it; nullopt for UDP, ICMP and
+  // packets of no connection (RSTs to unknown tuples, TIME-WAIT ACKs).
+  bool send_ipv4(Ipv4Addr dst, std::uint8_t proto, std::uint16_t ip_id, PacketBuf&& l4,
+                 std::optional<std::uint32_t> owner_slot = std::nullopt);
+  // Datagrams sent with this owner_slot that are still in the transmit queue:
+  // the "no packet of the connection waits in the stack transmit queue" test
+  // of the app-limited marker (§5.4, rate_check_app_limited's queued_in_stack;
+  // Linux checks sk_wmem_alloc for the qdisc and NIC queues).
+  [[nodiscard]] std::uint32_t queued_for(std::uint32_t slot) const;
   // Joins the FIFO of connections blocked on transmit or pool space (at most
-  // once per slot); advance() resumes them in FIFO order through
-  // TcpEngine::on_tx_space, and next_deadline() is now() while space is free
-  // and the FIFO is not empty (§3.4).
+  // once per slot); advance() resumes them in FIFO order through the
+  // TxSpaceListener (TcpEngine::on_tx_space in a Stack), and next_deadline()
+  // is now() while space is free and the FIFO is not empty (§3.4).
   void block_tx(std::uint32_t slot);
+  // The receiver of the FIFO's resume calls; StackImpl sets the engine.
+  void set_tx_listener(TxSpaceListener* listener) noexcept { tx_listener_ = listener; }
   [[nodiscard]] const PacketPool& pool() const noexcept { return pool_; }
 
   // --- Timers (§6). Owners create their TimerIds; the Stack dispatches
@@ -141,6 +168,7 @@ private:
   PacketPool pool_;
   TraceSink* sink_ = nullptr;
   TcpEngine* tcp_ = nullptr;
+  TxSpaceListener* tx_listener_ = nullptr;
   // The rest is m1-ip's (keys, transmit queue, blocked FIFO, events, PMTU
   // cache, port table).
 };
@@ -156,6 +184,18 @@ public:
 
   StackCore core;
   TcpEngine tcp;
+
+private:
+  // Forwards the blocked FIFO's resume calls to tcp.on_tx_space.
+  class EngineTxSpace final : public TxSpaceListener {
+  public:
+    explicit EngineTxSpace(TcpEngine& engine) noexcept : engine_(&engine) {}
+    void on_tx_space(Time now, std::uint32_t slot) override { engine_->on_tx_space(now, slot); }
+
+  private:
+    TcpEngine* engine_;
+  };
+  EngineTxSpace tx_space_{tcp};
 };
 
 }  // namespace utcp

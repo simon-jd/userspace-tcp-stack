@@ -88,6 +88,8 @@ bool is_nstat_name(std::string_view s) {
   X(IpInReceives) X(IpInHdrErrors) X(IpExtInCsumErrors) X(IpExtInTruncatedPkts)       \
   X(IpInAddrErrors) X(IpInUnknownProtos) X(IpInDelivers) X(IpOutRequests)             \
   X(IpOutDiscards) X(frag_dropped) X(time_regressions)                                \
+  /* TCP input validated by the IP layer (m1-ip): §4.4 */                            \
+  X(TcpInSegs) X(TcpInErrs) X(TcpInCsumErrors)                                       \
   /* ICMP (m1-ip): §3.7 */                                                             \
   X(IcmpInMsgs) X(IcmpInErrors) X(IcmpInCsumErrors) X(IcmpInDestUnreachs)             \
   X(IcmpInTimeExcds) X(IcmpInSrcQuenchs) X(IcmpInRedirects) X(IcmpInEchos)            \
@@ -101,13 +103,13 @@ bool is_nstat_name(std::string_view s) {
   X(TcpExtTCPZeroWindowDrop) X(TcpExtTCPDSACKOldSent) X(TcpExtTCPDSACKOfoSent)        \
   X(TcpExtDelayedACKs) X(TcpExtTCPToZeroWindowAdv) X(TcpExtTCPFromZeroWindowAdv)      \
   /* Send side (m1-tx): §4.11, §5.3 */                                                 \
-  X(TcpExtTCPSACKReneging) X(TcpExtTCPSACKDiscard) X(TcpExtTCPDSACKRecv)              \
+  X(TcpExtTCPSACKReneging) X(TcpExtTCPDSACKRecv)                                     \
   X(TcpExtTCPSackRecovery) X(TcpExtTCPRenoRecovery) X(TcpExtTCPTimeouts)              \
   X(TcpExtTCPFastRetrans) X(TcpExtTCPSlowStartRetrans) X(TcpExtTCPLossProbes)         \
   X(TcpExtTCPOrigDataSent) X(TcpExtTCPDelivered)                                      \
   /* TCP engine (m1-tcp-core, m1-tcp-robust): §4.3, §4.4, §4.7, §4.12 */               \
   X(TcpActiveOpens) X(TcpPassiveOpens) X(TcpAttemptFails) X(TcpEstabResets)           \
-  X(TcpInSegs) X(TcpOutSegs) X(TcpRetransSegs) X(TcpInErrs) X(TcpInCsumErrors)        \
+  X(TcpOutSegs) X(TcpRetransSegs) X(TcpExtTCPSACKDiscard)                            \
   X(TcpOutRsts) X(TcpExtTCPChallengeACK) X(TcpExtTCPSYNChallenge)                     \
   X(TcpExtTCPACKSkippedChallenge) X(TcpExtTCPACKSkippedSeq) X(TcpExtTCPACKSkippedSynRecv) \
   X(TcpExtTCPACKSkippedTimeWait) X(TcpExtPAWSEstab) X(TcpExtListenOverflows)          \
@@ -251,10 +253,12 @@ TEST(Defs, StackConfigFields) {
 // DESIGN §10.2, in declaration order.
 TEST(Defs, TraceEventFields) {
   const std::vector<std::string> want{
-      "t",         "conn_id",   "kind",      "tx",        "state",    "ca",
-      "seq",       "ack",       "len",       "wnd",       "cwnd",     "ssthresh",
-      "in_flight", "snd_wnd",   "srtt_ns",   "rttvar_ns", "rto_ns",   "delivered",
-      "pacing_rate", "delivery_rate", "snd_una_off", "snd_nxt_off"};
+      "t",          "conn_id",     "tuple",       "kind",        "tx",       "state",
+      "ca",         "cause",       "timer",       "timer_op",    "flags",    "mss",
+      "seq",        "ack",         "len",         "wnd",         "cwnd",     "ssthresh",
+      "in_flight",  "snd_wnd",     "sacked_out",  "lost_out",    "retrans_out",
+      "srtt_ns",    "rttvar_ns",   "rto_ns",      "delivered",   "pacing_rate",
+      "delivery_rate", "snd_una_off", "snd_nxt_off"};
   std::vector<std::string> got;
   utcp::for_each_field(TraceEvent{}, [&](std::string_view name, const auto&) { got.emplace_back(name); });
   EXPECT_EQ(got, want);
@@ -273,6 +277,31 @@ TEST(Defs, TraceKinds) {
   }
   EXPECT_EQ(utcp::to_string(static_cast<TraceKind>(utcp::trace_kind_count)), "?");
   EXPECT_EQ(utcp::trace_mask_all, (1u << utcp::trace_kind_count) - 1);
+}
+
+TEST(Defs, TraceEnums) {
+  const std::vector<std::string> causes{
+      "none",       "last_ack",    "time_wait_expired", "time_wait_reused", "time_wait_rst",
+      "rst_received", "refused",   "child_reset",       "aborted",          "timed_out",
+      "synack_timed_out", "fin_wait2_timeout", "listener_closed"};
+  ASSERT_EQ(static_cast<std::size_t>(utcp::close_cause_count), causes.size());
+  for (int i = 0; i < utcp::close_cause_count; ++i) {
+    EXPECT_EQ(utcp::to_string(static_cast<utcp::CloseCause>(i)), causes[static_cast<std::size_t>(i)]);
+  }
+  EXPECT_EQ(utcp::to_string(static_cast<utcp::CloseCause>(utcp::close_cause_count)), "?");
+  const std::vector<std::string> timers{"none", "rto",       "persist", "reo",       "pto",
+                                        "delack", "pace",    "fin_wait2", "keepalive",
+                                        "time_wait", "pmtu_expiry"};
+  ASSERT_EQ(static_cast<std::size_t>(utcp::trace_timer_count), timers.size());
+  for (int i = 0; i < utcp::trace_timer_count; ++i) {
+    EXPECT_EQ(utcp::to_string(static_cast<utcp::TraceTimer>(i)), timers[static_cast<std::size_t>(i)]);
+  }
+  EXPECT_EQ(utcp::to_string(static_cast<utcp::TraceTimer>(utcp::trace_timer_count)), "?");
+  const std::vector<std::string> ops{"none", "armed", "cancelled", "fired"};
+  ASSERT_EQ(static_cast<std::size_t>(utcp::timer_op_count), ops.size());
+  for (int i = 0; i < utcp::timer_op_count; ++i) {
+    EXPECT_EQ(utcp::to_string(static_cast<utcp::TimerOp>(i)), ops[static_cast<std::size_t>(i)]);
+  }
 }
 
 TEST(Defs, TxKinds) {
@@ -299,7 +328,7 @@ TEST(Defs, TcpInfoFields) {
       "sndbuf_limited", "unacked",       "sacked",        "lost",          "retrans",
       "total_retrans", "dsack_dups",     "reordering",    "reord_seen",    "rcv_rtt",
       "rcv_space",     "rcv_ssthresh",   "snd_wnd",       "rcv_wnd",       "notsent_bytes",
-      "last_data_sent", "last_data_recv", "last_ack_recv"};
+      "last_data_sent", "last_data_recv", "last_ack_recv", "conn_id"};
   std::vector<std::string> got;
   utcp::for_each_field(TcpInfo{}, [&](std::string_view name, const auto&) { got.emplace_back(name); });
   EXPECT_EQ(got, want);

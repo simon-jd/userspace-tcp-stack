@@ -8,3 +8,9 @@ add_library(utcp::backend ALIAS utcp_backend)
 target_include_directories(utcp_backend PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(utcp_backend PUBLIC utcp_core)
 utcp_target_warnings(utcp_backend)
+
+# The backend's public headers compile on their own with the backend's flags.
+utcp_header_check(utcp_backend_header_check
+  HEADERS ${PROJECT_SOURCE_DIR}/include/utcp/event_loop.hpp
+          ${PROJECT_SOURCE_DIR}/include/utcp/tun_device.hpp
+  INCLUDE ${PROJECT_SOURCE_DIR}/include)

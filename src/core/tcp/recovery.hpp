@@ -68,9 +68,12 @@ public:
   // the new MSS were marked lost; enter Loss without a cwnd cut, ssthresh =
   // max(ssthresh, 3/4 cwnd).
   void on_pmtu_drop(RecoveryCtx& c);
-  // Kind and deadline of the xmit timer. M1: rto with data, SYN or FIN
-  // outstanding (RFC 6298 §5), persist at zero window with data queued and
-  // nothing in flight (§4.9), else none.
+  // Kind and deadline of the xmit timer once the connection is synchronized.
+  // M1: rto with data or FIN outstanding (RFC 6298 §5), persist at zero
+  // window with data queued and nothing in flight (§4.9), else none. While
+  // our SYN or SYN-ACK is unacknowledged (it is not a TxSeg, §3.2) the engine
+  // arms the xmit timer as rto itself, with the SYN schedule of §4.8
+  // (syn_linear_timeouts, rto_after_syn_rexmit), and does not call this.
   [[nodiscard]] std::pair<XmitTimer, Time> xmit_timer(const RecoveryCtx& c) const;
   // reo and pto expiries (M2a); the engine handles rto and persist itself.
   void on_xmit_timer(RecoveryCtx& c, XmitTimer kind);

@@ -4,8 +4,9 @@
 //
 // Conventions shared by the simulator and the apps: times and durations are
 // integers. TraceEvent lines: "t" is the event time in nanoseconds, "conn" the
-// connection id, "ev" the TraceKind name, the *_ns fields become *_us
-// (microseconds, rounded toward zero), enums are written as names. TcpInfo
+// connection id, "ev" the TraceKind name, "tuple" is "LOCAL_IP:PORT>REMOTE_IP:PORT",
+// the *_ns fields become *_us (microseconds, rounded toward zero), enums are
+// written as names. TcpInfo
 // lines: every field of §10.1 under its own name, Durations as <name>_us.
 #pragma once
 

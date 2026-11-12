@@ -386,5 +386,10 @@ TEST(FakeTransport, BadHandles) {
   EXPECT_EQ(t.send(l, bytes("x")).error(), Error::bad_handle);
 }
 
+TEST(FakeTransport, HasNoEventLoop) {
+  FakeTransport t;
+  EXPECT_EQ(t.loop_stats(), nullptr);
+}
+
 }  // namespace
 }  // namespace utcp::app

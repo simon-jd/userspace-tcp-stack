@@ -18,6 +18,12 @@ UTCP_STACK_STAT(IpInAddrErrors, "destination is not the stack address")
 UTCP_STACK_STAT(IpInUnknownProtos, "protocol other than ICMP, TCP, UDP")
 UTCP_STACK_STAT(IpInDelivers, "datagrams delivered to ICMP, TCP or UDP")
 UTCP_STACK_STAT(IpOutRequests, "datagrams queued for transmission")
+// TCP input before the engine: the IP layer validates the TCP header and
+// checksum (DESIGN 4.4) and counts here, as Linux tcp_v4_rcv; the engine
+// does not count TcpInSegs again.
+UTCP_STACK_STAT(TcpInSegs, "TCP segments received, errors included")
+UTCP_STACK_STAT(TcpInErrs, "TCP segments dropped: truncated, bad data offset or bad checksum")
+UTCP_STACK_STAT(TcpInCsumErrors, "bad TCP checksum (also counted in TcpInErrs)")
 UTCP_STACK_STAT(IpOutDiscards,
                 "control packets (RST, ICMP) dropped: transmit queue or pool full (DESIGN 3.4)")
 UTCP_STACK_STAT(frag_dropped, "received fragments (MF set or offset != 0), dropped (DESIGN 1.2)")

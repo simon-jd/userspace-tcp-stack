@@ -170,8 +170,16 @@ public:
   std::optional<Error> take_error(Handle h);
 
   // --- UDP (§3.6). Unconnected sockets only.
+  // Events: a UDP handle raises only ev_readable, through poll_event like a
+  // TCP socket, when a datagram is queued on it (coalesced: one pending
+  // ev_readable for any number of datagrams until poll_event returns it). It
+  // raises no ev_writable: there is no send buffer.
   std::expected<Handle, Error> udp_open(Endpoint local);  // port 0 = ephemeral
-  // message_too_big above pmtu(dst) - 28 bytes.
+  // Builds and queues the datagram at once, or fails: message_too_big above
+  // pmtu(dst) - 28 bytes; no_buffers when the transmit queue or the packet
+  // pool is full (nothing is queued; space returns when the host drains
+  // pop_transmit, host contract item 1, so the caller retries in its next
+  // iteration). UDP never joins the blocked-connection FIFO.
   std::expected<void, Error> udp_send_to(Handle h, Endpoint remote,
                                          std::span<const std::byte> data);
   // would_block if no datagram is queued.

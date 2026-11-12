@@ -1,26 +1,45 @@
 #!/usr/bin/env bash
-# Every *_test.cpp under one test directory links into one binary
-# (tests/unit -> utcp_unit_tests, tests/sim -> utcp_sim_tests), so:
+# The *_test.cpp files of one test binary link together (utcp_unit_tests:
+# tests/unit and apps/<name>/*_test.cpp; utcp_sim_tests: tests/sim), so:
 # 1. each suite name in <stem>_test.cpp starts with the stem in PascalCase
 #    (RecvBuffer* in recv_buffer_test.cpp, WireTcp* in wire_tcp_test.cpp);
-# 2. no suite name appears in two files of the same directory.
+# 2. no suite name appears in two files of the same binary.
 # Suites are the first argument of TEST, TEST_F, TEST_P, TYPED_TEST,
 # TYPED_TEST_P and TYPED_TEST_SUITE(_P).
 #
-# Usage: ci/check-test-names.sh [dir...]   (default: tests/unit tests/sim)
+# Usage: ci/check-test-names.sh [dir...]
+#   Each dir is checked as one binary. Default: tests/unit together with
+#   apps/*/*_test.cpp (except apps/common), then tests/sim.
+# Environment: UTCP_TEST_NAMES_ROOT replaces the repository root for the
+# default groups (self-test).
 set -euo pipefail
 
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo=${UTCP_TEST_NAMES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 if (($# > 0)); then
-  dirs=("$@")
+  groups=("$@")
 else
-  dirs=("$repo/tests/unit" "$repo/tests/sim")
+  groups=(unit sim)
 fi
+
+# NUL-separated, sorted test files of group $1.
+list_files() {
+  case $1 in
+    unit)
+      {
+        find "$repo/tests/unit" -type f -name '*_test.cpp' -print0
+        [[ -d $repo/apps ]] && find "$repo/apps" -mindepth 2 -maxdepth 2 -type f \
+          -name '*_test.cpp' ! -path "$repo/apps/common/*" -print0
+      } | sort -z
+      ;;
+    sim) [[ -d $repo/tests/sim ]] && find "$repo/tests/sim" -type f -name '*_test.cpp' -print0 | sort -z ;;
+    *) [[ -d $1 ]] && find "$1" -type f -name '*_test.cpp' -print0 | sort -z ;;
+  esac
+  return 0
+}
 
 failed=0
 checked=0
-for dir in "${dirs[@]}"; do
-  [[ -d $dir ]] || continue
+for group in "${groups[@]}"; do
   declare -A owner=()
   while IFS= read -r -d '' file; do
     checked=$((checked + 1))
@@ -45,7 +64,7 @@ for dir in "${dirs[@]}"; do
         owner[$suite]=$file
       fi
     done
-  done < <(find "$dir" -type f -name '*_test.cpp' -print0 | sort -z)
+  done < <(list_files "$group")
   unset owner
 done
 

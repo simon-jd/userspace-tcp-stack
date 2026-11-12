@@ -16,5 +16,7 @@ UTCP_STACK_STAT(UdpInErrors, "datagrams dropped: bad length, bad checksum or rec
 UTCP_STACK_STAT(UdpRcvbufErrors, "datagrams dropped: receive buffer full (DESIGN 3.6)")
 UTCP_STACK_STAT(UdpInCsumErrors, "bad UDP checksum")
 UTCP_STACK_STAT(UdpOutDatagrams, "datagrams sent")
+UTCP_STACK_STAT(UdpSndbufErrors,
+                "udp_send_to refused with no_buffers: transmit queue or pool full (DESIGN 3.6)")
 UTCP_STACK_STAT(udp_icmp_errors,
                 "ICMP errors quoting a UDP datagram; counted, not reported (DESIGN 3.6)")

@@ -84,6 +84,8 @@ void add_value(JsonLine& line, std::string_view key, const T& v) {
     line.add(std::string(key) + "_us", to_us(v));
   } else if constexpr (std::is_same_v<T, Time>) {
     line.add(key, v.ns);
+  } else if constexpr (std::is_same_v<T, FourTuple>) {
+    line.add(key, to_string(v.local) + '>' + to_string(v.remote));
   } else if constexpr (std::is_enum_v<T>) {
     line.add(key, to_string(v));
   } else if constexpr (std::is_same_v<T, std::array<char, 16>>) {

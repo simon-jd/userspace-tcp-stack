@@ -19,7 +19,10 @@ StackCore::StackCore(const StackConfig& cfg)
 
 StackCore::~StackCore() = default;
 
-StackImpl::StackImpl(const StackConfig& cfg) : core(cfg), tcp(core) { core.set_tcp(&tcp); }
+StackImpl::StackImpl(const StackConfig& cfg) : core(cfg), tcp(core) {
+  core.set_tcp(&tcp);
+  core.set_tx_listener(&tx_space_);
+}
 
 StackImpl::~StackImpl() = default;
 

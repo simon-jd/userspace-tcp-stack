@@ -1,13 +1,52 @@
 # Fails if a static archive references functions that the sans-I/O core must
 # not use: system call wrappers, clocks, random sources, threads, stdio and
-# iostreams. Usage:
-#   cmake -DNM=<nm> -DARCHIVE=<lib.a> [-DEXPECT=<name,...>] -P CheckCoreSymbols.cmake
+# iostreams, and anything defined by the libraries that wrap the OS for the
+# core (PROVIDERS: utcp_backend, utcp_appkit), such as utcp::mono_now(),
+# which a core file could reach through a backend header. Usage:
+#   cmake -DNM=<nm> -DARCHIVE=<lib.a> [-DPROVIDERS=<a.a,b.a>] [-DEXPECT=<name,...>]
+#         -P CheckCoreSymbols.cmake
 # Prints "forbidden symbol: <name>" for each hit. Without EXPECT it exits
 # non-zero if there is any hit. With EXPECT (used to test this script) it
 # exits non-zero unless every listed name is among the hits.
 
 if(NOT NM OR NOT ARCHIVE)
   message(FATAL_ERROR "usage: cmake -DNM=<nm> -DARCHIVE=<archive> -P CheckCoreSymbols.cmake")
+endif()
+
+# Global symbols an archive defines (demangled, parameter lists included).
+function(defined_symbols archive out)
+  execute_process(
+    COMMAND ${NM} -C -g --defined-only ${archive}
+    OUTPUT_VARIABLE def_out
+    ERROR_VARIABLE def_err
+    RESULT_VARIABLE def_rc)
+  if(NOT def_rc EQUAL 0)
+    message(FATAL_ERROR "${NM} failed on ${archive}: ${def_err}")
+  endif()
+  string(REPLACE "\n" ";" def_lines "${def_out}")
+  set(names "")
+  foreach(l IN LISTS def_lines)
+    # "<address> <type> <name>"; member headers ("x.o:") and blanks skipped.
+    if(l MATCHES "^[0-9a-fA-F]* *[A-Za-z] (.+)$")
+      list(APPEND names "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+  set(${out} "${names}" PARENT_SCOPE)
+endfunction()
+
+# Symbols of the providers that the archive itself does not define.
+set(provided "")
+if(PROVIDERS)
+  string(REPLACE "," ";" provider_list "${PROVIDERS}")
+  foreach(p IN LISTS provider_list)
+    defined_symbols(${p} p_syms)
+    list(APPEND provided ${p_syms})
+  endforeach()
+  defined_symbols(${ARCHIVE} own_syms)
+  list(REMOVE_DUPLICATES provided)
+  if(own_syms)
+    list(REMOVE_ITEM provided ${own_syms})
+  endif()
 endif()
 
 execute_process(
@@ -26,7 +65,9 @@ set(c_names
   socket socketpair bind connect listen accept accept4 shutdown
   send sendto sendmsg sendmmsg recv recvfrom recvmsg recvmmsg setsockopt getsockopt
   mmap munmap mprotect madvise brk sbrk
-  clock_gettime clock_nanosleep gettimeofday time nanosleep usleep sleep
+  clock clock_gettime clock_getres clock_nanosleep gettimeofday time timespec_get timespec_getres
+  times getrusage nanosleep usleep sleep
+  localtime localtime_r gmtime gmtime_r mktime timegm ctime ctime_r asctime asctime_r strftime
   timerfd_create timerfd_settime timerfd_gettime eventfd signalfd
   getrandom getentropy rand rand_r srand random srandom drand48 arc4random
   syscall fork vfork clone execve kill raise signal sigaction getpid gettid
@@ -49,6 +90,8 @@ foreach(line IN LISTS lines)
   # Demangled C++ names carry their parameter list; match on the name only.
   string(REGEX REPLACE "\\(.*$" "" name "${sym}")
   if(name MATCHES "${c_regex}" OR name MATCHES "${prefix_regex}" OR name MATCHES "${cxx_regex}")
+    list(APPEND hits "${sym}")
+  elseif(provided AND sym IN_LIST provided)
     list(APPEND hits "${sym}")
   endif()
 endforeach()

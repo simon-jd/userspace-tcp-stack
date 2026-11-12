@@ -79,13 +79,15 @@ TEST(Jsonl, TcpInfoHasEveryField) {
   EXPECT_NE(s.find("\"srtt_us\":20113,"), std::string::npos) << s;
   EXPECT_NE(s.find("\"cwnd\":42,"), std::string::npos) << s;
   EXPECT_NE(s.find("\"bytes_acked\":1000000000000,"), std::string::npos) << s;
-  EXPECT_TRUE(s.ends_with("\"last_ack_recv_us\":0}")) << s;
+  EXPECT_TRUE(s.ends_with("\"last_ack_recv_us\":0,\"conn_id\":0}")) << s;
 }
 
 TEST(Jsonl, TraceEventKeys) {
   TraceEvent e;
   e.t = Time{1'234'567};
   e.conn_id = 3;
+  e.tuple = {{utcp::Ipv4Addr::from_octets(198, 18, 0, 2), 40000},
+             {utcp::Ipv4Addr::from_octets(198, 19, 1, 2), 5001}};
   e.kind = TraceKind::ack;
   e.tx = TxKind::fast_rexmit;
   e.cwnd = 42;
@@ -96,8 +98,10 @@ TEST(Jsonl, TraceEventKeys) {
   add_fields(l, e);
   const std::string s = l.str();
   EXPECT_EQ(member_count(s), utcp::test::field_count<TraceEvent>() + 1);
-  EXPECT_TRUE(s.starts_with("{\"node\":\"a\",\"t\":1234567,\"conn\":3,\"ev\":\"ack\","
-                            "\"tx\":\"fast_rexmit\",\"state\":\"closed\",\"ca\":\"open\","))
+  EXPECT_TRUE(s.starts_with("{\"node\":\"a\",\"t\":1234567,\"conn\":3,"
+                            "\"tuple\":\"198.18.0.2:40000>198.19.1.2:5001\",\"ev\":\"ack\","
+                            "\"tx\":\"fast_rexmit\",\"state\":\"closed\",\"ca\":\"open\","
+                            "\"cause\":\"none\",\"timer\":\"none\",\"timer_op\":\"none\","))
       << s;
   EXPECT_NE(s.find("\"cwnd\":42,"), std::string::npos) << s;
   EXPECT_NE(s.find("\"srtt_us\":20113,\"rttvar_us\":0,\"rto_us\":-1,"), std::string::npos) << s;

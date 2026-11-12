@@ -24,6 +24,7 @@
 
 #include "utcp/config.hpp"
 #include "utcp/error.hpp"
+#include "utcp/event_loop.hpp"
 #include "utcp/stack.hpp"
 #include "utcp/stats.hpp"
 #include "utcp/time.hpp"
@@ -106,9 +107,14 @@ public:
   virtual void stop() = 0;
   // The transport's clock (CLOCK_MONOTONIC for the real ones).
   [[nodiscard]] virtual Time now() const = 0;
+  // The statistics of the EventLoop the transport runs on, wake-up lateness
+  // included (§8.3; utcp-bulk's summary line); nullptr without one (the fake).
+  [[nodiscard]] virtual const LoopStats* loop_stats() const { return nullptr; }
 };
 
-// UtcpTransport configuration (m1-backend).
+// UtcpTransport configuration (m1-backend). The programs (m1-apps) fill it
+// from their command lines: --pcap FILE into pcap_file, --spin-us N into
+// spin_us, --profile into stack.tcp, and so on.
 struct UtcpTransportOptions {
   StackConfig stack;            // local_addr, mtu (must equal the TUN MTU), profile, seed, ...
   std::string tun = "utcp0";    // TUN interface, IFF_TUN | IFF_NO_PI (§8.1)

@@ -12,6 +12,7 @@
 #include <cstdint>
 
 #include "utcp/config.hpp"
+#include "utcp/retry_model.hpp"
 #include "utcp/time.hpp"
 
 namespace utcp {
@@ -21,10 +22,13 @@ public:
   explicit RttEstimator(const TcpConfig& cfg);
 
   [[nodiscard]] bool has_sample() const;
-  // An SRTT/RTO sample (seq_rtt). new_round: SND.UNA passed the rtt_seq of
-  // the previous round (Linux: after(snd_una, rtt_seq)), which ends a linux
-  // round (rttvar decay, mdev_max reset).
-  void on_srtt_sample(Duration seq_rtt, bool new_round);
+  // An SRTT/RTO sample (seq_rtt), with SND.UNA after the ACK and SND.NXT as
+  // stream offsets. The estimator keeps Linux tp->rtt_seq itself: the first
+  // sample sets rtt_seq = snd_nxt; a later sample with snd_una > rtt_seq
+  // (after(snd_una, rtt_seq)) ends a linux round (rttvar decays by a quarter
+  // of its excess over mdev_max, mdev_max resets to rto_min) and sets rtt_seq
+  // = snd_nxt again. rfc6298 ignores both offsets.
+  void on_srtt_sample(Duration seq_rtt, std::uint64_t snd_una, std::uint64_t snd_nxt);
   // A min_rtt sample (ca_rtt): Linux minmax_running_min over a 300 s window
   // (tcp_update_rtt_min); a maybe-delayed sample above min_rtt is skipped.
   void on_min_rtt_sample(Duration ca_rtt, bool maybe_delayed, Time now);
@@ -44,10 +48,8 @@ private:
   // Implementation state is m1-tx's.
 };
 
-// Linux tcp_model_timeout: the time `retries` RTO expiries take with RTO
-// starting at rto_base and doubling up to rto_max. Values (m1-tx test 4):
-// (15, 200 ms, 120 s) = 924.6 s; (6, 1 s, 120 s) = 127 s; (7, 1 s, 60 s) =
-// 183 s; (15, 1 s, 60 s) = 663 s.
-[[nodiscard]] Duration retry_abort_time(std::uint8_t retries, Duration rto_base, Duration rto_max);
+// retry_abort_time (Linux tcp_model_timeout, the abort bound of §4.8) is
+// declared in utcp/retry_model.hpp and defined in src/core/retry_model.cpp
+// (m1-found), because the simulator's ProgressChecker uses it too.
 
 }  // namespace utcp

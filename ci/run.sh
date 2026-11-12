@@ -40,9 +40,24 @@ for p in "${presets[@]}"; do
   echo "== preset $p: ${result[$p]} ($((SECONDS - start)) s)"
 done
 
+# §13.1: the g++ and clang builds give the same simulator digests.
+digests="not run (needs gcc-release and clang-release)"
+if [[ ${result[gcc-release]:-} == ok && ${result[clang-release]:-} == ok ]]; then
+  echo
+  echo "== digests gcc-release vs clang-release"
+  if out=$(ci/check-digests.sh 2>&1); then
+    if [[ $out == *skipped* ]]; then digests="skipped (no utcp-sim yet)"; else digests=ok; fi
+  else
+    digests=FAIL
+    failed=1
+  fi
+  echo "$out"
+fi
+
 echo
 echo "== summary"
 for p in "${presets[@]}"; do
   printf '%-14s %s\n' "$p" "${result[$p]}"
 done
+printf '%-14s %s\n' digests "$digests"
 exit "$failed"

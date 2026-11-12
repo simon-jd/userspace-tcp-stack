@@ -68,15 +68,15 @@ Stated in the README as well:
 
 | Path | Content | Target |
 |---|---|---|
-| `include/utcp/` | public headers: core (`checksum.hpp` from M0, `time.hpp`, `types.hpp`, `error.hpp`, `random.hpp`, `config.hpp`, `packet.hpp`, `stack.hpp`, `stats.hpp`, `trace.hpp`, `pcap.hpp`); backend (`tun_device.hpp` from M0, `event_loop.hpp`) | |
+| `include/utcp/` | public headers: core (`checksum.hpp` from M0, `time.hpp`, `types.hpp`, `error.hpp`, `random.hpp`, `config.hpp`, `packet.hpp`, `stack.hpp`, `stats.hpp`, `trace.hpp`, `pcap.hpp`, `retry_model.hpp`; `defs/*.def` and the per-owner `defs/config_*_types.hpp`); backend (`tun_device.hpp` from M0, `event_loop.hpp`) | |
 | `include/utcp/sim/` | public headers of the simulator | |
 | `src/core/` | `checksum.cpp` (M0), `util/`, `buffer/`, `timer/`, `wire/`, IP/ICMP/UDP files, `tcp/` | `utcp_core` (static) |
 | `src/sim/` | simulator | `utcp_sim` (static, depends on core) |
 | `src/backend/` | `tun_device.cpp` (M0), event loop, monotonic clock | `utcp_backend` (static, depends on core) |
 | `apps/common/` | `Transport` interface and its two implementations, SHA-256, JSONL writer, CLI parsing | `utcp_appkit` (static; addition to the M0 target list) |
-| `apps/<name>/` | one program per directory | `tun_probe` (M0), `utcp-bulk`, `utcp-echo`, `utcp-httpd`, `utcp-http-get`, `utcp-sim` |
+| `apps/<name>/` | one program per directory; logic that is unit-tested sits in a static library registered with `utcp_app_logic()`, its tests in `apps/<name>/*_test.cpp` go into `utcp_unit_tests` | `tun_probe` (M0), `utcp-bulk`, `utcp-echo`, `utcp-httpd`, `utcp-http-get`, `utcp-sim` |
 | `tests/unit/`, `tests/sim/` | GoogleTest files `*_test.cpp`, globbed into `utcp_unit_tests` and `utcp_sim_tests` | |
-| `tests/support/`, `tests/interop/`, `tests/fuzz/` | shared test code (naive reassembler, loopback harness); container interop scripts; libFuzzer targets (clang, `-DUTCP_FUZZ=ON`) | |
+| `tests/support/`, `tests/interop/`, `tests/fuzz/` | shared test code (naive reassembler, loopback harness); container interop scripts and helper programs (one executable per `tests/interop/*.cpp`, linked with `utcp_appkit`); libFuzzer targets (clang, `-DUTCP_FUZZ=ON`) | |
 | `testbed/`, `ci/`, `docs/`, `tools/` | Dockerfiles and testbed scripts; CI; documents; analysis and plot scripts | |
 
 GoogleTest 1.17 is built from `/usr/src/googletest` in each build tree (M0). There are no other dependencies:
@@ -93,10 +93,12 @@ start with the file stem (`ci/check-test-names.sh`). `CMAKE_CXX_EXTENSIONS` stay
 ### 2.2 Core purity, enforced
 
 M0's ctest `core.forbidden_symbols` (`cmake/CheckCoreSymbols.cmake`) runs `nm -C -u` on `libutcp_core.a` and
-fails on system-call wrappers, clocks, random sources, threads, stdio and iostreams; a self-test proves it
-catches planted calls. M1 adds `core.no_float` (`ci/check-no-float.sh`): `float` or `double` in the
-comment-stripped source (`g++ -fpreprocessed -dD -E -P`) of `src/core`, the core headers, and the simulator's
-scenario generator and link pipeline fails the build (§13.1).
+fails on system-call wrappers, clocks (C and C++), random sources, threads, stdio and iostreams, and on any
+symbol that `libutcp_backend.a` or `libutcp_appkit.a` defines (such as `utcp::mono_now()`, reachable through the
+backend headers); a self-test proves it catches planted calls. M1 adds `core.no_float` (`ci/check-no-float.sh`):
+`float` or `double` in the comment-stripped source (`g++ -fpreprocessed -dD -E -P`) of `src/core`, the core
+headers, and every simulator source fails the build (§13.1); simulator files outside the generator and link
+pipeline (pcap writer, results output) may opt out with a `// utcp-no-float: exempt (reason)` line.
 
 ## 3. Core API
 
@@ -305,7 +307,11 @@ Unconnected sockets only. A datagram larger than `pmtu(dst) - 28` fails with `me
 fragmentation). Received datagrams are stored length-prefixed in a per-socket `ByteRing` of `udp.rcv_buf`
 bytes (default 256 KiB); when full the datagram is dropped and counted. Checksums are always sent, a computed 0
 as 0xFFFF; a received 0 means none (RFC 768). A datagram for an unbound port gets ICMP port unreachable
-(rate-limited, §3.7). ICMP errors for UDP are counted, not reported to sockets.
+(rate-limited, §3.7). ICMP errors for UDP are counted, not reported to sockets. A UDP handle raises only
+`ev_readable` (through `poll_event`, coalesced) when a datagram is queued on it, and no `ev_writable`: there is no
+send buffer. `udp_send_to` queues the datagram at once or fails; with the transmit queue or pool full it returns
+`no_buffers` (counted `UdpSndbufErrors`) and the caller retries after the host has drained `pop_transmit`. UDP
+never joins the blocked-connection FIFO.
 
 ### 3.7 ICMP
 
@@ -406,7 +412,7 @@ Linux limits count `skb->truesize`, so a Linux buffer of nominal size N holds le
 | `ephemeral_ports` | 1024..65535 | 32768..60999 | RFC 6056 §3.2; `ip_local_port_range`; both use Algorithm 4 (§4.6) |
 | `default_snd_mss`, `min_snd_mss`, `min_pmtu`, `pmtu_expiry` | same: 536, 48, 552, 10 min | | RFC 9293 §3.7.1; `tcp_min_snd_mss`, `ip_rt_min_pmtu`, `mtu_expires`; RFC 1191 §6.3 |
 
-`UdpConfig`: `rcv_buf` 256 KiB, `ephemeral_ports` as TCP. `IcmpConfig`: `echo_reply` on, `rate_per_s` 1000, burst 50.
+`UdpConfig`: `rcv_buf` 256 KiB, `ephemeral_ports` as TCP (unset follows `StackConfig::tcp.ephemeral_ports`, whichever profile; `udp_ephemeral_ports()`). `IcmpConfig`: `echo_reply` on, `rate_per_s` 1000, burst 50.
 
 ### 3.10 Wire formats
 
@@ -626,13 +632,14 @@ SACK blocks fit, otherwise 4.
 class RttEstimator {
  public:
   explicit RttEstimator(const TcpConfig&); bool has_sample() const;
-  void on_srtt_sample(Duration seq_rtt, bool new_round);   // SRTT/RTO; new_round: SND.UNA passed rtt_seq
+  void on_srtt_sample(Duration seq_rtt, std::uint64_t snd_una, std::uint64_t snd_nxt);  // SRTT/RTO; keeps rtt_seq
   void on_min_rtt_sample(Duration ca_rtt, bool maybe_delayed, Time now);   // minmax_running_min, 300 s window;
                                                     // a maybe-delayed sample above min_rtt is skipped (tcp_update_rtt_min)
   Duration srtt() const, rttvar() const, min_rtt() const;   // min_rtt: windowed min over 300 s
   Duration rto() const;                             // without backoff, bounded by rto_min/rto_max
   Duration rto_backed_off(std::uint8_t backoff) const;      // min(rto << backoff, rto_max)
 };
+// include/utcp/retry_model.hpp (shared with the simulator's ProgressChecker, §7.3):
 Duration retry_abort_time(std::uint8_t retries, Duration rto_base, Duration rto_max);  // Linux tcp_model_timeout
 ```
 
@@ -640,7 +647,8 @@ Duration retry_abort_time(std::uint8_t retries, Duration rto_base, Duration rto_
 - `linux`: `tcp_rtt_estimator` line for line, in fixed point. First sample m: srtt = m, mdev = 2m, rttvar =
   mdev_max = max(2m, rto_min). Later: srtt += err/8; mdev += (|err| − mdev/4), with the gain cut by 8 when the
   sample is below SRTT; a new round maximum `mdev_max` raises rttvar at once; at each round end (SND.UNA passed
-  rtt_seq) rttvar −= (rttvar − mdev_max)/4 if mdev_max < rttvar, then mdev_max = rto_min. RTO = SRTT + rttvar, so
+  rtt_seq, which the estimator stores: SND.NXT at the first sample and at each round end) rttvar −=
+  (rttvar − mdev_max)/4 if mdev_max < rttvar, then mdev_max = rto_min. RTO = SRTT + rttvar, so
   after a delay spike the RTO decays by a quarter of the excess per RTT, and Linux's minimum bounds the variance.
 - Samples (both profiles, Linux `tcp_clean_rtx_queue`/`tcp_ack_update_rtt`): `seq_rtt` from the first newly
   cumulatively acked segment, only if no retransmitted segment is newly acked (Karn, RFC 6298 §3), else from the
@@ -935,7 +943,8 @@ max(send_elapsed, ack_elapsed)`, `delivered = now_delivered − prior_delivered`
 prior snapshot, while `is_sack_reneg`, or when interval < min_rtt. `RateState::app_limited` is a delivered-count
 marker (`delivered + in_flight`, or 1), cleared once `delivered` passes it; `tcp_send` sets it
 (`tcp_rate_check_app_limited`) when less than one MSS is unsent, no packet of the connection waits in the stack
-transmit queue, in flight < cwnd and lost_out ≤ retrans_out.
+transmit queue (`StackCore::queued_for(slot)`, counted from `send_ipv4`'s owner slot), in flight < cwnd and
+lost_out ≤ retrans_out.
 
 ```cpp
 struct RateSample { std::uint64_t prior_delivered, delivered; Duration interval, rtt; bool valid;
@@ -961,8 +970,9 @@ One structure, `TimerHeap` (`src/core/timer/`), serves the whole stack: an index
 each (re)arm, so timers with equal deadlines fire in arming order, a total order that depends only on inputs.
 Each owner keeps one `TimerId` per timer kind and the heap maps ids to heap positions, so cancel and re-arm are
 O(log n) with no stale entries. Frequent pushes to a later deadline (the RTO on every ACK) use lazy re-arm: the slot stores the wanted
-deadline and the `arm_seq` of that arm call, the effective key is (wanted deadline, that arm_seq), and stale tops
-are fixed up before every `Stack` entry point returns, so `next_deadline()` is exact.
+deadline and the `arm_seq` of that arm call, the effective key is (wanted deadline, that arm_seq), and a stale
+entry is repaired when it reaches the top: every heap operation (arm, cancel, destroy, pop) leaves the top exact,
+so `next_deadline()` is exact at all times.
 
 `advance(now)` first resumes blocked connections (§3.4; not a timer), then pops entries with `deadline ≤ now` in
 order and runs their handlers with `now` (not the deadline). A handler may not arm a timer at or before `now`
@@ -970,7 +980,7 @@ order and runs their handlers with `now` (not the deadline). A handler may not a
 
 | Owner | Kind | Armed when | On expiry |
 |---|---|---|---|
-| connection | `xmit` | one timer whose kind and deadline come from `LossRecovery::xmit_timer` (RFC 8985 §8, Linux `icsk_pending`): `rto` with SYN/SYN-ACK/data/FIN outstanding (§4.8), `persist` at zero window or for the SWS override (§4.9), `reo`/`pto` in M2a | retransmit, back off, maybe abort; probe; RACK detect / TLP |
+| connection | `xmit` | one timer whose kind and deadline come from `LossRecovery::xmit_timer` (RFC 8985 §8, Linux `icsk_pending`): `rto` with data/FIN outstanding (§4.8; while SYN/SYN-ACK is unacknowledged the engine arms `rto` itself with the SYN schedule), `persist` at zero window or for the SWS override (§4.9), `reo`/`pto` in M2a | retransmit, back off, maybe abort; probe; RACK detect / TLP |
 | connection | `delack` | `AckPolicy` delays an ACK | send ACK |
 | connection | `pace` | pacing gate closed with data sendable (§5.5) | run `transmit` |
 | connection | `fin_wait2` | orphan enters FIN-WAIT-2 | free connection |
@@ -1085,13 +1095,13 @@ map to `VIRTIO_NET_HDR_GSO_TCPV4` and `NEEDS_CSUM`. The core API carries these f
 ### 8.2 Event loop
 
 ```cpp
-class EventLoop {                                   // M1 foundation ships it; the backend task adds lateness/--spin-us
+class EventLoop {                                   // M1 foundation ships it with the lateness histogram; the backend task adds --spin-us
  public:
   EventLoop();                                      // epoll_create1; prctl(PR_SET_TIMERSLACK, 1000 ns)
   void watch(int fd, std::uint32_t events, std::function<void(std::uint32_t)> cb);
   void set_deadline_source(std::function<Time()> f);     // usually stack.next_deadline() and app timers
   void run_once();                                  // one iteration
-  LoopStats stats() const;                          // wake-up lateness histogram
+  const LoopStats& stats() const;                   // counters and the wake-up lateness histogram (log2 buckets)
 };
 Time mono_now();                                    // clock_gettime(CLOCK_MONOTONIC)
 ```
@@ -1141,6 +1151,7 @@ class Transport {
   virtual std::expected<ConnId, Error> udp_open(Endpoint) = 0;   // send_to/recv_from likewise
   virtual void add_timer(Duration period, std::function<void()>) = 0;
   virtual void run(Handler&) = 0;                   // events: accept, connected, readable, writable, closed, error
+  virtual const LoopStats* loop_stats() const;      // the EventLoop's statistics (lateness, §8.3); nullptr in the fake
 };
 ```
 
@@ -1181,6 +1192,7 @@ class Transport {
 | `unacked`, `sacked`, `lost`, `retrans`, `total_retrans` | `unacked:`, `sacked:`, `lost:`, `retrans:c/t` | `tcpi_unacked`, ... |
 | `dsack_dups`, `reordering`, `reord_seen`, `rcv_rtt`, `rcv_space`, `rcv_ssthresh`, `snd_wnd`, `rcv_wnd`, `notsent_bytes` | same names | `tcpi_dsack_dups`, `tcpi_reordering`, ... |
 | `last_data_sent`, `last_data_recv`, `last_ack_recv` | `lastsnd:`, `lastrcv:`, `lastack:` | `tcpi_last_*` |
+| `conn_id` (links a Handle to its `TraceEvent`s, §10.2) | | none (0 for kernel sockets) |
 
 Limited-time accounting follows Linux `tcp_chrono_start/stop`: exactly one of `busy`, `rwnd_limited`,
 `sndbuf_limited` runs while unsent or unacked data exists; `rwnd_limited` when transmission stopped at the
@@ -1195,9 +1207,19 @@ X-macro lists split by owning task (M1 task list).
 enum class TraceKind : std::uint8_t { state, tx, rx, ack, rtt, rto, cwnd, recovery, timer, icmp, drop };
 enum class TxKind : std::uint8_t { syn, synack, data, fin, ack, rst, fast_rexmit, rexmit, rto_rexmit,
                                    pmtu_rexmit, zwp, tlp, challenge_ack };
+enum class CloseCause : std::uint8_t { none, last_ack, time_wait_expired, time_wait_reused, time_wait_rst,
+  rst_received, refused, child_reset, aborted, timed_out, synack_timed_out, fin_wait2_timeout, listener_closed };
+enum class TraceTimer : std::uint8_t { none, rto, persist, reo, pto, delack, pace, fin_wait2, keepalive,
+                                       time_wait, pmtu_expiry };
+enum class TimerOp : std::uint8_t { none, armed, cancelled, fired };
 struct TraceEvent {                                 // POD; no strings
-  Time t; std::uint32_t conn_id; TraceKind kind; TxKind tx; TcpState state; CaState ca;
+  Time t; std::uint32_t conn_id; FourTuple tuple;   // tuple: local = this stack; TIME_WAIT events too
+  TraceKind kind; TxKind tx; TcpState state; CaState ca;
+  CloseCause cause;                                 // state events to closed
+  TraceTimer timer; TimerOp timer_op;               // timer events
+  std::uint16_t flags, mss;                         // tx/rx/drop: TCP flags; mss_cache
   std::uint32_t seq, ack, len, wnd; std::uint32_t cwnd, ssthresh, in_flight, snd_wnd;
+  std::uint32_t sacked_out, lost_out, retrans_out;  // packets
   std::int64_t srtt_ns, rttvar_ns, rto_ns; std::uint64_t delivered, pacing_rate, delivery_rate;
   std::uint64_t snd_una_off, snd_nxt_off;
 };
