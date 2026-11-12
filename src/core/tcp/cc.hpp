@@ -44,7 +44,8 @@ struct AckInput {
 enum AckFlag : std::uint32_t {
   ack_una_advanced = 1u << 0,       // SND.UNA moved (FLAG_SND_UNA_ADVANCED)
   ack_retrans_data_acked = 1u << 1, // FLAG_RETRANS_DATA_ACKED
-  ack_orig_sack_acked = 1u << 2,    // a never-retransmitted segment was SACKed (FLAG_ORIG_SACK_ACKED)
+  ack_orig_sack_acked = 1u << 2,    // a never-retransmitted segment was (S)ACKed, at or below recover
+                                    // in Recovery/Loss (FLAG_ORIG_SACK_ACKED)
   ack_sack_reneging = 1u << 3,      // the ACK stopped at a SACKed head (FLAG_SACK_RENEGING)
   ack_maybe_delayed = 1u << 4,      // the RTT sample may include a delayed ACK (tcp_clean_rtx_queue)
   ack_fin_acked = 1u << 5,          // the ACK covered our FIN (§3.2, fin_acked)
