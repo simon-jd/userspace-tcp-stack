@@ -82,16 +82,19 @@ TEST(Rng, BelowStaysInRange) {
 }
 
 TEST(Rng, BelowIsUnbiasedForLargeN) {
-  // With n = 2^31 + 1 a plain "x mod n" of 32-bit draws almost never returns a
-  // value >= 2^31; Lemire's method returns one about half the time.
+  // n = 3 * 2^30: "x mod n" of 32-bit draws maps both [0, 2^30) and
+  // [3 * 2^30, 2^32) onto [0, 2^30), so a third of the range would get half of
+  // the results. Lemire's rejection gives each value the same probability.
   Rng r(Seed::from_u64(2));
-  const std::uint32_t n = 0x8000'0001u;
-  int high = 0;
-  const int draws = 200'000;
+  const std::uint32_t n = 0xc000'0000u;
+  int low = 0;
+  const int draws = 300'000;
   for (int i = 0; i < draws; ++i) {
-    high += r.below(n) >= 0x8000'0000u ? 1 : 0;
+    const std::uint32_t v = r.below(n);
+    ASSERT_LT(v, n);
+    low += v < 0x4000'0000u ? 1 : 0;
   }
-  EXPECT_NEAR(static_cast<double>(high) / draws, 0.5, 0.01);
+  EXPECT_NEAR(static_cast<double>(low) / draws, 1.0 / 3.0, 0.005);
 }
 
 TEST(Rng, BelowIsUniformForSmallN) {
@@ -157,11 +160,14 @@ TEST(Rng, DeriveUsesAllSeedWords) {
 }
 
 // Pinned values: derived streams feed the simulator's scenarios and recorded
-// corpus entries, so their values must not change silently.
+// corpus entries, so their values must not change silently. The values were
+// computed with a separate model of Seed::from_u64, derive_seed (SipHash-2-4
+// over i || label, two keys) and xoshiro256**, not with this code.
 TEST(Rng, DerivedStreamIsPinned) {
   Rng r = Rng::derive(Seed::from_u64(2026), "node/a/stack");
   const std::array<std::uint64_t, 3> got{r.next(), r.next(), r.next()};
-  const std::array<std::uint64_t, 3> pinned{PINNED_0, PINNED_1, PINNED_2};
+  const std::array<std::uint64_t, 3> pinned{0x6375'74ce'5038'ed32ULL, 0x163e'5904'467b'73afULL,
+                                                0xd079'1f3b'3be4'914aULL};
   EXPECT_EQ(got, pinned);
 }
 

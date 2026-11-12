@@ -115,7 +115,8 @@ TEST(ByteRing, ReleaseFrom) {
   r.release_from(50);  // chunk 0 straddles 50: kept
   EXPECT_EQ(r.chunks_held(), 1u);
   EXPECT_EQ(r.high_water(), 50u);
-  EXPECT_EQ(read(r, 0, 50), std::vector<std::byte>(pattern(100, 8).begin(), pattern(100, 8).begin() + 50));
+  const auto head = pattern(100, 8);
+  EXPECT_EQ(read(r, 0, 50), std::vector<std::byte>(head.begin(), head.begin() + 50));
   r.release_from(0);
   EXPECT_EQ(r.chunks_held(), 0u);
   EXPECT_EQ(pool.in_use(), 0u);
@@ -271,7 +272,7 @@ private:
 
 TEST(ByteRing, DifferentialAgainstByteMap) {
   constexpr std::uint64_t capacity = 96 * 1024;  // 24 chunks of window
-  constexpr std::uint32_t pool_limit = 20;       // so writes far ahead can exhaust the pool
+  constexpr std::uint32_t pool_limit = 12;       // so writes far ahead can exhaust the pool
   ChunkPool pool(pool_limit);
   ByteRing ring(pool, capacity);
   Model model(capacity, pool_limit);

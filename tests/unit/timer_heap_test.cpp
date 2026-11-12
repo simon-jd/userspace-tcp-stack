@@ -185,11 +185,15 @@ public:
     entries_.erase(entries_.begin());
     return e;
   }
-  [[nodiscard]] bool armed(TimerId id) const {
-    return std::any_of(entries_.begin(), entries_.end(),
-                       [id](const auto& e) { return e.second == id; });
-  }
   [[nodiscard]] std::size_t size() const { return entries_.size(); }
+  [[nodiscard]] std::optional<Time> deadline(TimerId id) const {
+    for (const auto& e : entries_) {
+      if (e.second == id) {
+        return e.first.deadline;
+      }
+    }
+    return std::nullopt;
+  }
 
 private:
   std::vector<std::pair<TimerKey, TimerId>> entries_;
@@ -204,17 +208,19 @@ TEST(TimerHeap, DifferentialAgainstSortedVector) {
   std::map<TimerId, std::uint32_t> owners;
   std::int64_t now = 1'000'000;
   std::size_t fired = 0;
-  std::size_t rearms_while_armed = 0;
+  std::size_t rearm_earlier = 0;
+  std::size_t rearm_later = 0;  // lazy: same or later deadline
 
   for (int step = 0; step < 100'000; ++step) {
     const auto op = gen() % 100;
-    if (op < 8 || live.empty()) {
+    // At most 64 live timers, so that most arms hit an armed timer.
+    if (live.empty() || (op < 8 && live.size() < 64)) {
       const auto owner = static_cast<std::uint32_t>(gen());
       const TimerId id = h.create(owner, static_cast<TimerKind>(gen() % utcp::timer_kind_count));
       ASSERT_EQ(std::count(live.begin(), live.end(), id), 0);
       live.push_back(id);
       owners[id] = owner;
-    } else if (op < 12) {
+    } else if (op < 12 && live.size() > 1) {
       const std::size_t i = gen() % live.size();
       h.destroy(live[i]);
       ref.cancel(live[i]);
@@ -223,7 +229,9 @@ TEST(TimerHeap, DifferentialAgainstSortedVector) {
       const TimerId id = live[gen() % live.size()];
       // Coarse deadlines so that many keys tie on the deadline.
       const std::int64_t d = now + static_cast<std::int64_t>(gen() % 64) * 1000;
-      rearms_while_armed += ref.armed(id) ? 1 : 0;
+      if (const auto cur = ref.deadline(id)) {
+        (Time{d} < *cur ? rearm_earlier : rearm_later) += 1;
+      }
       h.arm(id, Time{d});
       ref.arm(id, Time{d});
     } else if (op < 70) {
@@ -254,7 +262,8 @@ TEST(TimerHeap, DifferentialAgainstSortedVector) {
   }
   h.check_invariants();
   EXPECT_GT(fired, 10'000u);
-  EXPECT_GT(rearms_while_armed, 10'000u);
+  EXPECT_GT(rearm_earlier, 5'000u);
+  EXPECT_GT(rearm_later, 5'000u);
 }
 
 }  // namespace
