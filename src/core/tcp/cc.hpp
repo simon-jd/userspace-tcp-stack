@@ -80,10 +80,17 @@ struct CcConn {  // the part of the TCB a CC may read and write
   std::uint64_t pacing_rate = 0, max_pacing_rate = 0;  // bytes/s; always computed (§5.5)
   bool pacing_needed = false;                          // Linux sk_pacing_status; BBR sets it
   std::uint64_t app_limited = 0;  // tcp_rate marker (§5.4); BBR writes it entering PROBE_RTT
-  // Read-only views, refreshed before each hook.
+  // Read-only views, refreshed before each hook. process_ack and
+  // LossRecovery refresh the queue views (ca_state, in_flight, packets_out,
+  // snd_una, snd_nxt, delivered, lost, now, delivered_time, srtt, min_rtt);
+  // the engine keeps the others (mss = mss_cache, max_packets_out,
+  // gso_max_size, cwnd_limited, lsndtime, wstamp, rng) current.
   CaState ca_state = CaState::open;
   std::uint32_t mss = 0, in_flight = 0, max_packets_out = 0, gso_max_size = 0;
-  bool cwnd_limited = false;  // Linux tcp_is_cwnd_limited
+  // TxSegs sent and not cumulatively acknowledged: FlightSize in packets
+  // (RFC 5681 §3.1, SND.NXT - SND.UNA), unchanged by SACK and loss marks.
+  std::uint32_t packets_out = 0;
+  bool cwnd_limited = false;  // Linux tcp_is_cwnd_limited (the engine's transmit path)
   // Offsets (HyStart rounds, RFC 9406 windowEnd) and packet counts.
   std::uint64_t snd_una = 0, snd_nxt = 0, delivered = 0, lost = 0;
   // Last data send; tcp_rate delivered_mstamp; EDT pacing_next.
@@ -91,6 +98,15 @@ struct CcConn {  // the part of the TCB a CC may read and write
   Duration srtt{}, min_rtt{};
   Rng* rng = nullptr;  // the stack's runtime stream (BBR's random PROBE_BW phase)
 };
+
+// cwnd_clamp 0 means no clamp (Linux snd_cwnd_clamp defaults to ~0).
+[[nodiscard]] constexpr std::uint32_t effective_cwnd_clamp(const CcConn& c) noexcept {
+  return c.cwnd_clamp == 0 ? 0xffff'ffffu : c.cwnd_clamp;
+}
+
+// Linux tcp_current_ssthresh: ssthresh during a cwnd reduction (CWR,
+// Recovery), else max(ssthresh, 3/4 cwnd).
+[[nodiscard]] std::uint32_t current_ssthresh(const CcConn& c);
 
 class CongestionControl {
 public:
