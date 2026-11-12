@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/buffer/chunk_pool.hpp"
@@ -100,7 +101,9 @@ struct Rig {
 
   AckOutcome run(const AckInput& in) {
     utcp::AckContext c{q, rec, rtt, cc, algo, rate, cfg, stats, ctr, wnd, sack, backoff, 0};
-    const AckOutcome out = utcp::process_ack(c, in);
+    const AckOutcome out = utcp::process_ack(c, in, [this](const TxSeg& s, bool via_sack) {
+      delivered_log.emplace_back(s.off, via_sack);
+    });
     if (out.seq_rtt >= Duration::zero()) {
       backoff = 0;
     }
@@ -128,6 +131,7 @@ struct Rig {
   Time now{1'000'000'000};
   std::uint32_t wnd = 1 << 20;
   std::uint8_t backoff = 0;
+  std::vector<std::pair<std::uint64_t, bool>> delivered_log;  // (off, via_sack) per delivery
 };
 
 TEST(AckPipeline, ScriptedSackSequence) {
@@ -291,6 +295,115 @@ TEST(AckPipeline, MaybeDelayedFollowsCleanRtxQueue) {
   o = s.ack(500);
   EXPECT_EQ(o.flags & utcp::ack_maybe_delayed, 0u);
   EXPECT_EQ(o.seq_rtt, Duration{-1});
+  // A runt acknowledged by an ACK that carries a D-SACK: a sample, but not
+  // maybe-delayed (FLAG_CA_ALERT includes FLAG_DSACKING_ACK).
+  Rig d(true);
+  d.send(0, 500, TxKind::data);
+  d.now += 50ms;
+  d.ack(500);
+  d.send(500, 500, TxKind::data);
+  d.now += 40ms;
+  AckInput in = d.input(1000);
+  in.dsack = Range{0, 500};  // a second copy of the first runt arrived
+  o = d.run(in);
+  EXPECT_EQ(o.seq_rtt, 40ms);
+  EXPECT_EQ(o.flags & utcp::ack_maybe_delayed, 0u);
+  EXPECT_EQ(d.rtt.min_rtt(), 40ms);
+}
+
+TEST(AckPipeline, NoRttSampleWhenRetransmittedDataIsAcked) {
+  // Karn (RFC 6298 §3), Linux FLAG_RETRANS_DATA_ACKED: an ACK that covers a
+  // retransmitted segment gives no seq_rtt or ca_rtt, even from the
+  // never-retransmitted segments it also covers.
+  Rig r(true);
+  r.send(0, mss, TxKind::data);
+  r.now += 100ms;
+  r.ack(1000);
+  ASSERT_EQ(r.rtt.srtt(), 100ms);
+  ASSERT_EQ(r.rtt.min_rtt(), 100ms);
+  const Duration rttvar = r.rtt.rttvar();
+  r.send(1000, mss, TxKind::data);  // A
+  r.now += 1ms;
+  r.send(2000, mss, TxKind::data);  // B
+  r.now += 300ms;
+  r.send(1000, mss, TxKind::rto_rexmit);
+  r.now += 30ms;  // 331 ms after A, 330 ms after B, 30 ms after A's resend
+  const AckOutcome o = r.ack(3000);
+  EXPECT_EQ(o.acked_pkts, 2u);
+  EXPECT_NE(o.flags & utcp::ack_retrans_data_acked, 0u);
+  EXPECT_EQ(o.seq_rtt, Duration{-1});
+  EXPECT_EQ(o.ca_rtt, Duration{-1});
+  EXPECT_EQ(r.rtt.srtt(), 100ms);
+  EXPECT_EQ(r.rtt.rttvar(), rttvar);
+  EXPECT_EQ(r.rtt.min_rtt(), 100ms);
+  // The next never-retransmitted segment is timed again.
+  r.send(3000, mss, TxKind::data);
+  r.now += 80ms;
+  EXPECT_EQ(r.ack(4000).seq_rtt, 80ms);
+  EXPECT_EQ(r.rtt.min_rtt(), 80ms);
+}
+
+TEST(AckPipeline, SackTaggingRunsBeforeTheCumulativeCleanup) {
+  // Linux tcp_ack: tcp_sacktag_write_queue, then tcp_clean_rtx_queue. The
+  // newly SACKed segment above is delivered before the cumulatively acked
+  // one below it.
+  Rig r(true);
+  r.send_spaced(4);
+  const std::vector<Range> b{{2000, 3000}};
+  r.ack(1000, b);
+  EXPECT_EQ(r.delivered_log,
+            (std::vector<std::pair<std::uint64_t, bool>>{{2000, true}, {0, false}}));
+  r.delivered_log.clear();
+  // Blocks newest first (RFC 2018 §4): SACK deliveries in sequence order.
+  Rig s(true);
+  s.send_spaced(8);
+  const std::vector<Range> b2{{5000, 6000}, {3000, 4000}};
+  s.ack(2000, b2);
+  EXPECT_EQ(s.delivered_log, (std::vector<std::pair<std::uint64_t, bool>>{
+                                 {3000, true}, {5000, true}, {0, false}, {1000, false}}));
+}
+
+TEST(AckPipeline, SackBlocksMustStartAboveTheNewSndUna) {
+  // Linux tcp_is_sackblock_valid runs after tcp_ack_update_window moved
+  // SND.UNA: a block between the old and the new SND.UNA, or starting at the
+  // new one, is not valid. Accepting either would SACK a segment that the
+  // cumulative ACK pops (newly_sacked) or the new head, which looks like
+  // reneging and re-arms the RTO at max(srtt/2, 10 ms).
+  Rig r(true);
+  r.rtt.on_srtt_sample(100ms, 0, 1);
+  r.send_spaced(4);
+  const std::vector<Range> b{{1000, 2000}, {2000, 3000}};
+  const AckOutcome o = r.ack(2000, b);
+  EXPECT_EQ(o.newly_sacked, 0u);
+  EXPECT_EQ(o.acked_pkts, 2u);
+  EXPECT_EQ(o.flags & utcp::ack_sack_reneging, 0u);
+  EXPECT_FALSE(r.q.find(2000)->sacked);
+  EXPECT_EQ(r.q.counters().sacked_out, 0u);
+  EXPECT_EQ(r.rec.state(), CaState::open);
+  const auto timer = r.rec.xmit_timer(r.rctx());
+  EXPECT_EQ(timer.first, utcp::XmitTimer::rto);
+  EXPECT_EQ(timer.second, r.now + r.rtt.rto_backed_off(0));  // not the srtt/2 reneging timer
+  // A block just above the new SND.UNA is valid.
+  const std::vector<Range> ok{{3000, 4000}};
+  EXPECT_EQ(r.ack(2000, ok, true).newly_sacked, 1u);
+}
+
+TEST(AckPipeline, DsackRunsTheStateMachine) {
+  // Linux tcp_ack_is_dubious: FLAG_CA_ALERT includes FLAG_DSACKING_ACK, so a
+  // D-SACK runs tcp_fastretrans_alert even on an ACK that is not a
+  // duplicate (here a window update); with a retransmission outstanding,
+  // Open becomes Disorder (tcp_try_keep_open).
+  Rig r(true);
+  r.send_spaced(4);
+  r.ack(1000);
+  r.send(1000, mss, TxKind::rexmit);
+  ASSERT_EQ(r.rec.state(), CaState::open);
+  AckInput in = r.input(1000);
+  in.dsack = Range{0, 1000};
+  in.window_update = true;
+  const AckOutcome o = r.run(in);
+  EXPECT_NE(o.flags & utcp::ack_dsack, 0u);
+  EXPECT_EQ(r.rec.state(), CaState::disorder);
 }
 
 TEST(AckPipeline, RangesPastEndAreClippedAndTheFinAckIsReported) {
@@ -319,6 +432,12 @@ TEST(AckPipeline, RangesPastEndAreClippedAndTheFinAckIsReported) {
   EXPECT_EQ(r.q.counters().packets_out, 0u);
   EXPECT_EQ(r.q.una_with_fin(), 2501u);
   EXPECT_EQ(r.rec.xmit_timer(r.rctx()).first, utcp::XmitTimer::none);
+  // A repeated ACK of end() + 1 acknowledges nothing new: no FIN ACK again.
+  o = r.ack(2501);
+  EXPECT_EQ(o.flags & utcp::ack_fin_acked, 0u);
+  EXPECT_EQ(o.flags & utcp::ack_una_advanced, 0u);
+  EXPECT_EQ(o.acked_pkts, 0u);
+  EXPECT_TRUE(r.q.fin_acked());
 
   // A bare FIN: its payload-free slot is never SACKed; an ACK of the data
   // alone keeps it, the next ACK covers it.
@@ -336,6 +455,9 @@ TEST(AckPipeline, RangesPastEndAreClippedAndTheFinAckIsReported) {
   EXPECT_NE(o.flags & utcp::ack_una_advanced, 0u);
   EXPECT_EQ(o.acked_pkts, 1u);
   EXPECT_EQ(f.q.counters().packets_out, 0u);
+  o = f.ack(1001);
+  EXPECT_EQ(o.flags & utcp::ack_fin_acked, 0u);
+  EXPECT_EQ(o.acked_pkts, 0u);
 }
 
 TEST(AckPipeline, DsackIsCountedAndIsNotADupack) {

@@ -180,6 +180,9 @@ void LossRecovery::fastretrans_alert(RecoveryCtx& c, bool dupack, bool advanced,
       reno_dupack(c, out);
     }
   }
+  // A fixed dupthresh in both profiles: adaptive reordering
+  // (cfg.adaptive_reordering, Linux tcp_check_sack_reordering and
+  // tcp_check_reno_reordering) is not modelled in M1.
   const std::uint32_t dupthresh = std::max(c.cfg.dupthresh, 1u);
   if (k.sacked_out >= dupthresh) {
     mark_head_lost(c);  // tcp_newreno_mark_lost, state < Recovery
@@ -203,8 +206,10 @@ void LossRecovery::on_ack(RecoveryCtx& c, const AckInput& in, AckOutcome& out) {
   if (advanced) {
     fast_rexmit_pending_ = false;  // the head it named is acknowledged
   }
-  // Linux tcp_ack_is_dubious, and num_dupack (not for a D-SACK).
-  const bool dubious = in.dupack || out.newly_sacked > 0 || state_ != CaState::open;
+  // Linux tcp_ack_is_dubious (FLAG_CA_ALERT: newly SACKed data or a
+  // D-SACK), and num_dupack (not for a D-SACK).
+  const bool dubious = in.dupack || out.newly_sacked > 0 || (out.flags & ack_dsack) != 0 ||
+                       state_ != CaState::open;
   const bool dupack = in.dupack && !advanced && (out.flags & ack_dsack) == 0;
   bool rearm = advanced || c.q.counters().packets_out == 0;
   if (dubious) {
@@ -324,6 +329,9 @@ void LossRecovery::on_pmtu_drop(RecoveryCtx& c) {
     c.cc.ssthresh = current_ssthresh(c.cc);
     c.cc.prior_ssthresh = 0;
     set_state(c, CaState::loss);
+    // A fast retransmit owed by Recovery becomes an ordinary lost segment,
+    // resent under cwnd as pmtu_rexmit (§4.9, §4.13).
+    fast_rexmit_pending_ = false;
   }
   refresh(c);
 }

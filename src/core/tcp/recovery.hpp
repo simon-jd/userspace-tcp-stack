@@ -71,7 +71,8 @@ public:
   // the new mss_cache: marks TxSegs longer than it lost, splits them
   // (SendQueue::split_to_mss), and if anything is lost enters Loss without a
   // cwnd cut, recover = SND.NXT, ssthresh = tcp_current_ssthresh (max(ssthresh,
-  // 3/4 cwnd) outside a cwnd reduction).
+  // 3/4 cwnd) outside a cwnd reduction); a pending fast retransmit is
+  // dropped, as the head is then resent under cwnd (§4.9).
   void on_pmtu_drop(RecoveryCtx& c);
   // Kind and deadline of the xmit timer once the connection is synchronized.
   // M1: rto with data or FIN outstanding (RFC 6298 §5), persist at zero

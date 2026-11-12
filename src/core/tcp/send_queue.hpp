@@ -78,6 +78,10 @@ struct SackedSummary {  // from on_sack (FLAG_SACK_RENEGING is the engine's)
 // popped (cumulative ACK) or after it is marked (SACK). Non-owning.
 using DeliveredFn = FunctionRef<void(const TxSeg&, bool via_sack)>;
 
+// Most blocks SendQueue::on_sack takes in one call (an option carries at most
+// 4, wire::max_sack_blocks; process_ack passes at most this many).
+inline constexpr std::size_t max_sack_ranges = 8;
+
 class SendQueue {
 public:
   // `capacity`: send buffer size in payload bytes (snd_buf); chunks come from
@@ -121,9 +125,11 @@ public:
   // at the engine boundary, clipped to end(); process_ack passes it).
   AckedSummary on_cumulative_ack(std::uint64_t new_una, bool fin_acked, Time now,
                                  DeliveredFn fn);
-  // Blocks are offset ranges, validated and clipped by the caller. Only whole
-  // TxSegs are SACKed; a block covering a TxSeg partly never splits it. A
-  // bare FIN is never SACKed. As Linux tcp_sacktag_one: a lost segment loses
+  // Blocks are offset ranges, validated and clipped by the caller, at most
+  // max_sack_ranges (checked), in any order: they are walked sorted by start
+  // (Linux tcp_sacktag_write_queue), so `fn` runs in sequence order. Only
+  // whole TxSegs are SACKed; a block covering a TxSeg partly never splits it.
+  // A bare FIN is never SACKed. As Linux tcp_sacktag_one: a lost segment loses
   // its lost mark, and a retransmission in flight of a lost segment is no
   // longer counted. `fn` runs after the segment is marked; its rate snapshot
   // is then marked used (rate_used). Ignored without SACK (set_sack_ok).

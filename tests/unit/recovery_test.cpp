@@ -186,7 +186,14 @@ TEST(Recovery, SackThreeSackedSegmentsEnterRecovery) {
   EXPECT_EQ(r.cc.cwnd, 5u);
   EXPECT_EQ(r.stats.TcpExtTCPSackRecovery, 1u);
   EXPECT_EQ(r.stats.TcpExtTCPRenoRecovery, 0u);
+  // The SND.UNA segment resent while the RTO runs re-arms it (Linux
+  // tcp_xmit_retransmit_queue), so a late fast retransmit is not followed
+  // by an RTO at the first deadline.
+  const Time first_deadline = r.timer().second;
+  r.now += 500ms;
   r.resend(0, TxKind::fast_rexmit);
+  EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + r.rtt.rto_backed_off(r.backoff)));
+  EXPECT_NE(r.timer().second, first_deadline);
   // Partial ACK up to the SACKed run: SND.UNA = 4000 is marked lost.
   r.ack(4000);
   EXPECT_EQ(r.rec.state(), CaState::recovery);
@@ -203,6 +210,15 @@ TEST(Recovery, SackThreeSackedSegmentsEnterRecovery) {
   s.ack(0, {{1000, 3000}}, true);
   EXPECT_EQ(s.rec.state(), CaState::disorder);
   EXPECT_EQ(s.q.counters().lost_out, 0u);
+  // Only a retransmission of the SND.UNA segment re-arms the running RTO.
+  Rig t(true);
+  t.send(4);
+  const Time deadline = t.timer().second;
+  t.now += 300ms;
+  t.resend(2000, TxKind::rexmit);
+  EXPECT_EQ(t.timer(), std::make_pair(XmitTimer::rto, deadline));
+  t.resend(0, TxKind::rexmit);
+  EXPECT_EQ(t.timer(), std::make_pair(XmitTimer::rto, t.now + 1s));
 }
 
 TEST(Recovery, RtoMarksEveryNonSackedSegmentLost) {
@@ -322,6 +338,19 @@ TEST(Recovery, PmtuDropEntersLossWithoutCwndCut) {
   for (const TxSeg& s : r.q.segs()) {
     EXPECT_LE(s.len, 600u);
   }
+  // In Recovery with the fast retransmit not yet sent: Loss drops it, the
+  // head is resent under cwnd as an ordinary lost segment (§4.9, §4.13).
+  Rig f(true);
+  f.send(10);
+  f.ack(0, {{1000, 4000}}, true);
+  ASSERT_EQ(f.rec.state(), CaState::recovery);
+  ASSERT_TRUE(f.rec.fast_rexmit_pending());
+  f.cc.mss = 600;
+  auto e = f.ctx();
+  f.rec.on_pmtu_drop(e);
+  EXPECT_EQ(f.rec.state(), CaState::loss);
+  EXPECT_FALSE(f.rec.fast_rexmit_pending());
+  EXPECT_TRUE(f.at(0).lost);
   // Nothing longer than the MSS: no state change.
   Rig n(true);
   n.send(3);

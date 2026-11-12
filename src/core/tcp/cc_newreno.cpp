@@ -42,8 +42,9 @@ std::uint32_t NewReno::ssthresh(const CcConn& c) {
 }
 
 void NewReno::cong_avoid(CcConn& c, const AckOutcome& out) {
-  // RFC 7661 / Linux tcp_is_cwnd_limited: no growth unless cwnd limits sending.
-  if (!c.cwnd_limited) {
+  // Linux tcp_reno_cong_avoid: no growth unless cwnd limits sending, or in
+  // slow start below twice the packets out (tcp_is_cwnd_limited, RFC 7661).
+  if (!is_cwnd_limited(c)) {
     return;
   }
   std::uint32_t acked = out.delivered;

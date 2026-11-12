@@ -1,6 +1,7 @@
 #include "core/tcp/send_queue.hpp"
 
 #include <algorithm>
+#include <array>
 #include <utility>
 
 #include "utcp/check.hpp"
@@ -191,7 +192,26 @@ SackedSummary SendQueue::on_sack(std::span<const Range> blocks, Time now, Delive
   if (!sack_ok_) {
     return s;
   }
+  // Receivers send the newest block first (RFC 2018 §4); walk them in
+  // sequence order so that `fn` sees segments in sequence order (Linux
+  // tcp_sacktag_write_queue sorts by start_seq). Insertion sort on (begin,
+  // end): a total order, so equal blocks need no tie rule.
+  UTCP_CHECK(blocks.size() <= max_sack_ranges);
+  std::array<Range, max_sack_ranges> sorted{};
+  std::size_t n = 0;
   for (const Range& b : blocks) {
+    std::size_t j = n++;
+    for (; j > 0 && (sorted[j - 1].begin > b.begin ||
+                     (sorted[j - 1].begin == b.begin && sorted[j - 1].end > b.end));
+         --j) {
+      sorted[j] = sorted[j - 1];
+    }
+    sorted[j] = b;
+  }
+  // Blocks sorted by begin deliver in sequence order: a segment SACKed by a
+  // later block that starts below the end of an earlier one is not covered
+  // by the earlier block, so it ends above every segment that block SACKed.
+  for (const Range& b : std::span<const Range>(sorted.data(), n)) {
     if (b.empty()) {
       continue;
     }

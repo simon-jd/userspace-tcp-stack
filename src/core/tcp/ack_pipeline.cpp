@@ -13,7 +13,6 @@
 namespace utcp {
 namespace {
 
-constexpr std::size_t max_sack_blocks = 8;  // an option holds at most 4 (RFC 2018 §3)
 // Linux tcp_ack_update_rtt: delta < INT_MAX / (USEC_PER_SEC / TCP_TS_HZ).
 constexpr std::uint32_t tsecr_max_delta = 2'147'483;
 
@@ -40,6 +39,10 @@ std::uint32_t saturate_u32(std::uint64_t v) {
 }  // namespace
 
 AckOutcome process_ack(AckContext& c, const AckInput& in) {
+  return process_ack(c, in, [](const TxSeg&, bool) {});
+}
+
+AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   SendQueue& q = c.q;
   const Time now = in.now;
   UTCP_DCHECK(c.sack_ok == q.sack_ok());
@@ -47,16 +50,17 @@ AckOutcome process_ack(AckContext& c, const AckInput& in) {
   AckOutcome out;
 
   // The seq/offset boundary (§3.2): SEG.ACK = end() + 1 covers our FIN.
+  // fin_acked: this ACK is the first to cover it.
   const std::uint64_t prior_una = q.una();
   const std::uint64_t prior_una_fin = q.una_with_fin();
   bool fin_acked = false;
   std::uint64_t new_una = in.new_una;
   if (new_una > q.end()) {
-    fin_acked = q.fin_sent();
+    fin_acked = q.fin_sent() && !q.fin_acked();
     new_una = q.end();
   }
   new_una = std::clamp(new_una, prior_una, q.nxt());
-  std::array<Range, max_sack_blocks> blocks{};
+  std::array<Range, max_sack_ranges> blocks{};
   std::size_t nblocks = 0;
   for (const Range& b : in.sack) {
     if (nblocks == blocks.size()) {
@@ -90,6 +94,7 @@ AckOutcome process_ack(AckContext& c, const AckInput& in) {
   std::uint32_t cum_delivered = 0;
   bool orig_acked = false;
   auto on_delivered = [&](const TxSeg& seg, bool via_sack) {
+    observe(seg, via_sack);
     c.recovery.on_delivered(rctx, seg, via_sack);
     rate_on_delivered(c.rate, rack, seg, now);
     if (!via_sack) {
@@ -145,8 +150,10 @@ AckOutcome process_ack(AckContext& c, const AckInput& in) {
   if (first_ackt && !acked.retrans_acked) {
     seq_rtt = now - *first_ackt;
     ca_rtt = now - *last_ackt;
+    // Not with FLAG_CA_ALERT: newly SACKed data or a D-SACK.
     if (acked.pkts == 1 && sacked_before_cum == 0 && una_fin - prior_una_fin < c.cc.mss &&
-        rack.has_prior && rack.prior_delivered + 1 == c.rate.delivered && out.newly_sacked == 0) {
+        rack.has_prior && rack.prior_delivered + 1 == c.rate.delivered && out.newly_sacked == 0 &&
+        (out.flags & ack_dsack) == 0) {
       out.flags |= ack_maybe_delayed;  // a lone runt, likely a delayed ACK
     }
   }

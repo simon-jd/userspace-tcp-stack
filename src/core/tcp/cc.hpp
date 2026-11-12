@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include "core/tcp/rate.hpp"
+#include "utcp/config.hpp"
 #include "utcp/random.hpp"
 #include "utcp/time.hpp"
 #include "utcp/types.hpp"
@@ -48,7 +49,8 @@ enum AckFlag : std::uint32_t {
                                     // in Recovery/Loss (FLAG_ORIG_SACK_ACKED)
   ack_sack_reneging = 1u << 3,      // the ACK stopped at a SACKed head (FLAG_SACK_RENEGING)
   ack_maybe_delayed = 1u << 4,      // the RTT sample may include a delayed ACK (tcp_clean_rtx_queue)
-  ack_fin_acked = 1u << 5,          // the ACK covered our FIN (§3.2, fin_acked)
+  ack_fin_acked = 1u << 5,          // the ACK newly covered our FIN (§3.2, fin_acked); not
+                                    // set again by later ACKs (SendQueue::fin_acked is the state)
   ack_dsack = 1u << 6,              // the ACK carried a D-SACK (FLAG_DSACKING_ACK)
 };
 
@@ -87,11 +89,16 @@ struct CcConn {  // the part of the TCB a CC may read and write
   // the engine keeps the others (mss = mss_cache, max_packets_out,
   // gso_max_size, cwnd_limited, lsndtime, wstamp, rng) current.
   CaState ca_state = CaState::open;
+  // max_packets_out: Linux tp->max_packets_out, the most packets out in the
+  // current cwnd-usage window, as tcp_cwnd_validate keeps it.
   std::uint32_t mss = 0, in_flight = 0, max_packets_out = 0, gso_max_size = 0;
   // TxSegs sent and not cumulatively acknowledged: FlightSize in packets
   // (RFC 5681 §3.1, SND.NXT - SND.UNA), unchanged by SACK and loss marks.
   std::uint32_t packets_out = 0;
-  bool cwnd_limited = false;  // Linux tcp_is_cwnd_limited (the engine's transmit path)
+  // Linux tp->is_cwnd_limited: the transmit path was stopped by cwnd in the
+  // current cwnd-usage window (tcp_cwnd_validate). The CC tests
+  // is_cwnd_limited(), which adds the slow-start rule.
+  bool cwnd_limited = false;
   // Offsets (HyStart rounds, RFC 9406 windowEnd) and packet counts.
   std::uint64_t snd_una = 0, snd_nxt = 0, delivered = 0, lost = 0;
   // Last data send; tcp_rate delivered_mstamp; EDT pacing_next.
@@ -103,6 +110,14 @@ struct CcConn {  // the part of the TCB a CC may read and write
 // cwnd_clamp 0 means no clamp (Linux snd_cwnd_clamp defaults to ~0).
 [[nodiscard]] constexpr std::uint32_t effective_cwnd_clamp(const CcConn& c) noexcept {
   return c.cwnd_clamp == 0 ? 0xffff'ffffu : c.cwnd_clamp;
+}
+
+// Linux tcp_is_cwnd_limited (RFC 7661): cwnd may grow if it limited sending
+// in the current window, or in slow start while cwnd < 2 * max_packets_out,
+// so that slow start reaches twice what was in flight.
+[[nodiscard]] constexpr bool is_cwnd_limited(const CcConn& c) noexcept {
+  return c.cwnd_limited ||
+         (c.cwnd < c.ssthresh && std::uint64_t{c.cwnd} < 2 * std::uint64_t{c.max_packets_out});
 }
 
 // Linux tcp_current_ssthresh: ssthresh during a cwnd reduction (CWR,
@@ -136,5 +151,20 @@ protected:
   CongestionControl(const CongestionControl&) = default;
   CongestionControl& operator=(const CongestionControl&) = default;
 };
+
+// Restart after an idle period (RFC 5681 §4.1; DESIGN §3.9 idle_restart).
+// The engine calls it when new data is queued, or the window opens with data
+// queued, while no TxSeg is outstanding (packets_out == 0; Linux
+// tcp_slow_start_after_idle_check, with lsndtime set when the handshake
+// completes). `idle` is the time since data was last sent (now - lsndtime), `rto`
+// the current RTO (rto_backed_off(backoff), Linux icsk_rto), `iw` the initial
+// window without the SYN-loss reduction (Linux tcp_init_cwnd). Acts only if
+// idle > rto and the CC has no cong_control: sends CaEvent::cwnd_restart,
+// then rfc5681 sets cwnd = min(iw, cwnd); linux (tcp_cwnd_restart) sets
+// ssthresh = tcp_current_ssthresh and halves cwnd for each RTO, whole or
+// partial, of idle time beyond the first, not below min(iw, cwnd). Returns
+// whether it acted.
+bool cwnd_restart(CcConn& c, CongestionControl& algo, IdleRestart mode, Duration idle,
+                  Duration rto, std::uint32_t iw);
 
 }  // namespace utcp

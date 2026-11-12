@@ -147,7 +147,8 @@ TEST(SendQueue, DeliveredOncePerSegmentInSequenceOrder) {
   q.write(pattern(6000, 0));
   send_all(q, 1000, at(0));  // ids 0..5 at offsets 0, 1000, ..., 5000
   Deliveries d;
-  // SACK [3000, 5000) and [1000, 2000), given out of order.
+  // SACK [3000, 5000) and [1000, 2000), newest block first as receivers
+  // send them (RFC 2018 §4): delivered in sequence order all the same.
   const utcp::Range blocks[] = {{3000, 5000}, {1000, 2000}};
   const auto s = q.on_sack(blocks, at(1), d.fn());
   EXPECT_EQ(s.newly_sacked, 3u);
@@ -158,9 +159,29 @@ TEST(SendQueue, DeliveredOncePerSegmentInSequenceOrder) {
   const AckedSummary a = q.on_cumulative_ack(6000, at(3), d.fn());
   EXPECT_EQ(a.pkts, 6u);
   const std::vector<std::pair<std::uint64_t, bool>> expect{
-      {3, true}, {4, true}, {1, true}, {0, false}, {2, false}, {5, false}};
+      {1, true}, {3, true}, {4, true}, {0, false}, {2, false}, {5, false}};
   EXPECT_EQ(d.calls, expect);
   EXPECT_EQ(q.counters(), (Counters{0, 0, 0, 0, 6000, 0, 6000}));
+}
+
+TEST(SendQueue, SackBlocksInAnyOrderDeliverInSequenceOrder) {
+  ChunkPool pool(16);
+  SendQueue q(pool, 64 * 1024);
+  q.write(pattern(10'000, 0));
+  send_all(q, 1000, at(0));  // ids 0..9 at offsets 0, 1000, ..., 9000
+  Deliveries d;
+  // Four blocks in descending order; [6000, 8000) and [5000, 7000) overlap,
+  // [2000, 3000) comes twice, and [3500, 4500) covers no whole segment.
+  const utcp::Range blocks[] = {
+      {6000, 8000}, {5000, 7000}, {3500, 4500}, {2000, 3000}, {2000, 3000}, {8000, 9000}};
+  EXPECT_EQ(q.on_sack(blocks, at(1), d.fn()).newly_sacked, 5u);
+  const std::vector<std::pair<std::uint64_t, bool>> expect{
+      {2, true}, {5, true}, {6, true}, {7, true}, {8, true}};
+  EXPECT_EQ(d.calls, expect);
+  q.check_invariants();
+  // More than max_sack_ranges blocks is a caller bug.
+  const std::vector<utcp::Range> too_many(utcp::max_sack_ranges + 1, utcp::Range{0, 1000});
+  EXPECT_DEATH(q.on_sack(too_many, at(2), d.fn()), "");
 }
 
 TEST(SendQueue, DeliveredFnSeesTheSegmentBeforeItIsPopped) {
@@ -411,11 +432,20 @@ void random_ops(bool sack_ok, std::uint64_t seed) {
       const std::uint64_t span = q.nxt() - q.una();
       q.on_cumulative_ack(q.una() + rng.below64(span / 4 + 1), at(t), fn);
     } else if (op == 4 && !segs.empty()) {
+      // 1-4 random blocks, possibly overlapping, in random order: one call
+      // delivers in sequence order.
       const std::uint64_t span = q.nxt() - q.una();
-      const std::uint64_t b = q.una() + rng.below64(span);
-      const std::uint64_t e = std::min(q.nxt(), b + rng.below(6000) + 1);
-      const utcp::Range blocks[] = {{b, e}};
-      q.on_sack(blocks, at(t), fn);
+      std::vector<utcp::Range> blocks(rng.below(4) + 1);
+      for (utcp::Range& r : blocks) {
+        r.begin = q.una() + rng.below64(span);
+        r.end = std::min(q.nxt(), r.begin + rng.below(6000) + 1);
+      }
+      std::uint64_t last_end = 0;
+      q.on_sack(blocks, at(t), [&](const TxSeg& s, bool via_sack) {
+        fn(s, via_sack);
+        EXPECT_LE(last_end, s.off) << step;
+        last_end = s.end();
+      });
     } else if (op == 5 && !segs.empty()) {
       q.mark_lost(segs[rng.below(static_cast<std::uint32_t>(segs.size()))].off);
     } else if (op == 6 && !segs.empty()) {
