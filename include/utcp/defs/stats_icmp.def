@@ -26,4 +26,6 @@ UTCP_STACK_STAT(IcmpOutRateLimitGlobal,
 UTCP_STACK_STAT(IcmpOutDestUnreachs, "type 3 sent (port or protocol unreachable)")
 UTCP_STACK_STAT(IcmpOutEchos, "echo requests sent (icmp_echo)")
 UTCP_STACK_STAT(IcmpOutEchoReps, "echo replies sent")
+UTCP_STACK_STAT(IcmpOutErrors,
+                "echo replies not sent: larger than the path MTU back or than a packet buffer")
 UTCP_STACK_STAT(echo_replies_dropped, "echo replies dropped: poll_echo_reply queue (64) full")

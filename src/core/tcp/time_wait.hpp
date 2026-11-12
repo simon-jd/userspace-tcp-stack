@@ -13,7 +13,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
+#include "core/tcp/conn_table.hpp"
 #include "core/timer/timer_heap.hpp"
 #include "utcp/random.hpp"
 #include "utcp/seq.hpp"
@@ -53,10 +55,34 @@ public:
   void erase(std::uint32_t index);
   [[nodiscard]] std::size_t size() const;
 
+  // With the timer: insert() plus a time_wait timer (owner = the index)
+  // created in `timers` and armed at `expiry`; e.timer is ignored and set.
+  std::uint32_t insert(const TimeWaitEntry& e, TimerHeap& timers, Time expiry);
+  // Re-arms the entry's timer at `expiry` (a retransmitted FIN restarts
+  // TIME-WAIT, §4.12). Precondition (checked): the entry has a timer.
+  void restart(std::uint32_t index, TimerHeap& timers, Time expiry);
+  // erase() after destroying the entry's timer, if it has one. The timer
+  // handler calls this when the timer fires (TIME-WAIT is over).
+  void erase(std::uint32_t index, TimerHeap& timers);
+  // The entry's expiry: its timer's deadline; Time::never() without a timer.
+  [[nodiscard]] Time expiry(std::uint32_t index, const TimerHeap& timers) const;
+  // The entry at `index` is live.
+  [[nodiscard]] bool live(std::uint32_t index) const noexcept {
+    return index < live_.size() && live_[index] != 0;
+  }
+
+  // Indices, the tuple index and the free list consistent; aborts on failure.
   void check_invariants() const;
+  // As check_invariants(), and every live entry's timer is a time_wait timer
+  // of `timers` whose owner is the entry's index.
+  void check_invariants(const TimerHeap& timers) const;
 
 private:
-  // Implementation state is m1-ip's.
+  ConnTable index_;                    // tuple -> entry index
+  std::vector<TimeWaitEntry> entries_;
+  std::vector<std::uint8_t> live_;     // by index
+  std::vector<std::uint32_t> free_;    // min-heap of free indices (lowest reused first)
+  std::size_t count_ = 0;
 };
 
 }  // namespace utcp

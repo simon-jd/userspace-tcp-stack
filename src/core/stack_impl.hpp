@@ -1,22 +1,35 @@
 // The stack's implementation: StackCore, the services the IP layer gives TCP,
 // and StackImpl, the object behind Stack (DESIGN §3.4, §4.1). Interface
-// declared by m1-found; implemented by m1-ip (stack.cpp replaces the link
-// stub, plus ip, icmp, udp, pmtu_cache, ports, identifiers, events and
-// tx_queue), which may restructure StackImpl and the private members.
+// declared by m1-found; implemented by m1-ip (stack.cpp, plus ip, icmp, udp,
+// pmtu_cache, ports, identifiers, events and tx_queue).
 //
 // The TCP engine reaches the rest of the stack only through StackCore:
 // packets, the transmit queue, the blocked-connection FIFO, timers, slots,
 // ports, identifiers, events, PMTU, chunk pool, stats, trace, RNG and
 // configuration.
+//
+// StackImpl carries the whole host interface and the UDP/ICMP API; Stack
+// forwards to it. Tests that need the internals (a fake producer behind the
+// blocked FIFO, the PMTU cache, the identifiers) build a StackImpl directly.
 #pragma once
 
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <span>
+#include <vector>
 
 #include "core/buffer/chunk_pool.hpp"
+#include "core/events.hpp"
+#include "core/icmp.hpp"
+#include "core/identifiers.hpp"
+#include "core/pmtu_cache.hpp"
+#include "core/ports.hpp"
 #include "core/tcp/tcp_engine.hpp"
 #include "core/timer/timer_heap.hpp"
+#include "core/tx_queue.hpp"
+#include "core/udp.hpp"
+#include "core/util/function_ref.hpp"
 #include "utcp/config.hpp"
 #include "utcp/error.hpp"
 #include "utcp/packet.hpp"
@@ -51,6 +64,8 @@ protected:
 
 class StackCore {
 public:
+  // Preconditions (checked): 68 <= cfg.mtu, cfg.mtu + cfg.tx_headroom fits a
+  // packet buffer, 68 <= cfg.tcp.min_pmtu, tx_queue_packets > 0.
   explicit StackCore(const StackConfig& cfg);
   ~StackCore();
   StackCore(const StackCore&) = delete;
@@ -67,6 +82,8 @@ public:
   [[nodiscard]] Rng& rng() noexcept { return rng_; }
   // Key of the connection and TIME_WAIT tables (SipHash-1-3, §4.3).
   [[nodiscard]] const SipKey& hash_key() const noexcept;
+  // Every key derived from the seed (§3.8).
+  [[nodiscard]] const StackKeys& keys() const noexcept { return keys_; }
 
   // --- Statistics and trace (§10).
   [[nodiscard]] StackStats& stats() noexcept { return stats_; }
@@ -85,15 +102,18 @@ public:
   // --- Packets and the transmit queue (§3.3, §3.4).
   // A pool buffer with headroom for StackConfig::tx_headroom, the IPv4 header
   // and `l4_header` transport-header bytes, and room for `payload` bytes after
-  // it; nullopt if the pool is empty.
+  // it; nullopt if the pool is empty (or the sizes exceed one buffer).
   [[nodiscard]] std::optional<PacketBuf> alloc_packet(std::uint32_t l4_header,
                                                       std::uint32_t payload);
+  // Largest l4_header + payload that alloc_packet can serve.
+  [[nodiscard]] std::uint32_t max_l4_size() const noexcept;
   // One more datagram fits in the transmit queue and the pool.
   [[nodiscard]] bool can_transmit() const;
   // Prepends the IPv4 header (DF set, TTL, `ip_id`, `proto`, from the stack
   // address to `dst`) to the transport packet `l4` (checksum already set) and
   // queues the datagram for pop_transmit. False if the queue is full: the
-  // datagram is dropped (control packets count IpOutDiscards, §3.4).
+  // datagram is dropped and counted in IpOutDiscards (§3.4; producers of data
+  // check can_transmit first, so in practice these are control packets).
   // `owner_slot`: the TCP connection the datagram belongs to, counted by
   // queued_for() until pop_transmit returns it; nullopt for UDP, ICMP and
   // packets of no connection (RSTs to unknown tuples, TIME-WAIT ACKs).
@@ -109,9 +129,22 @@ public:
   // TxSpaceListener (TcpEngine::on_tx_space in a Stack), and next_deadline()
   // is now() while space is free and the FIFO is not empty (§3.4).
   void block_tx(std::uint32_t slot);
+  // Removes `slot` from the FIFO (no-op if absent): the engine frees a
+  // connection that was waiting for space.
+  void unblock_tx(std::uint32_t slot);
   // The receiver of the FIFO's resume calls; StackImpl sets the engine.
   void set_tx_listener(TxSpaceListener* listener) noexcept { tx_listener_ = listener; }
   [[nodiscard]] const PacketPool& pool() const noexcept { return pool_; }
+  // The transmit queue and the blocked FIFO (StackImpl, tests).
+  [[nodiscard]] TxQueue& tx_queue() noexcept { return txq_; }
+  [[nodiscard]] const TxQueue& tx_queue() const noexcept { return txq_; }
+  [[nodiscard]] const BlockedFifo& blocked() const noexcept { return blocked_; }
+  // Blocked producers can be resumed now: the FIFO is not empty and
+  // can_transmit().
+  [[nodiscard]] bool resumable() const;
+  // §3.4: resumes blocked producers in FIFO order while can_transmit(), each
+  // at most once per call (one that blocks again waits for the next call).
+  void resume_blocked(Time now);
 
   // --- Timers (§6). Owners create their TimerIds; the Stack dispatches
   // connection and TIME_WAIT kinds to TcpEngine::on_timer.
@@ -123,15 +156,22 @@ public:
   // is left.
   [[nodiscard]] bool reserve_slot();
   void release_slot();
+  [[nodiscard]] std::uint32_t slots_in_use() const noexcept { return slots_used_; }
   // RFC 6056 §3.3.4 Algorithm 4 over TcpConfig::ephemeral_ports for a
   // connection from the stack address to `remote`; candidates are rejected by
   // TcpEngine::tuple_in_use and port_has_listener; addr_not_available after
   // the whole range.
   [[nodiscard]] std::expected<std::uint16_t, Error> tcp_ephemeral_port(Endpoint remote);
+  // The same allocator over udp_ephemeral_ports(config()) with remote 0:0;
+  // `in_use` rejects candidates.
+  [[nodiscard]] std::expected<std::uint16_t, Error> udp_ephemeral_port(
+      FunctionRef<bool(std::uint16_t)> in_use);
+  [[nodiscard]] const PortAllocator& ports() const noexcept { return ports_; }
   // RFC 6528 §3: M + F(tuple, isn_key), M = now().ns / 4000. TcpConfig::
   // test_isn is applied by the engine.
   [[nodiscard]] Seq32 isn(const FourTuple& tuple) const;
-  // RFC 7323 §5.4: SipHash of the tuple with ts_offset_key.
+  // RFC 7323 §5.4: SipHash of the tuple with ts_offset_key; 0 when the stack
+  // default TcpConfig::ts_offset_random is off.
   [[nodiscard]] std::uint32_t ts_offset(const FourTuple& tuple) const;
   // RFC 6864 §4.1: the first IP ID of a connection, hash-derived; it counts up.
   [[nodiscard]] std::uint16_t ip_id_start(const FourTuple& tuple) const;
@@ -142,6 +182,8 @@ public:
   void raise_event(Handle h, std::uint16_t ev);
   // Forgets the pending events of a handle that became invalid.
   void drop_events(Handle h);
+  [[nodiscard]] EventQueue& events() noexcept { return events_; }
+  [[nodiscard]] const EventQueue& events() const noexcept { return events_; }
 
   // --- PMTU (§4.13).
   // Cached path MTU to `dst` (expired entries dropped lazily), else the
@@ -150,6 +192,10 @@ public:
   // Lowers the cached path MTU to `dst`; never raises it, never below
   // min_pmtu.
   void pmtu_lower(Ipv4Addr dst, std::uint16_t mtu);
+  [[nodiscard]] const PmtuCache& pmtu_cache() const noexcept { return pmtu_; }
+  // The stack's pmtu_expiry timer fired: drop expired entries, re-arm.
+  void on_pmtu_expiry(Time now);
+  [[nodiscard]] bool pmtu_timer_armed() const noexcept { return timers_.armed(pmtu_timer_); }
 
   // --- Socket data storage (§3.3).
   [[nodiscard]] ChunkPool& chunks() noexcept { return chunks_; }
@@ -158,7 +204,13 @@ public:
   // The engine, for the port allocator's queries (StackImpl sets it).
   void set_tcp(TcpEngine* tcp) noexcept { tcp_ = tcp; }
 
+  // Timers, transmit queue, blocked FIFO, events and PMTU cache consistent;
+  // aborts on failure.
+  void check_invariants() const;
+
 private:
+  void sync_pmtu_timer();
+
   StackConfig cfg_;
   StackStats stats_;
   Time now_;
@@ -169,12 +221,18 @@ private:
   TraceSink* sink_ = nullptr;
   TcpEngine* tcp_ = nullptr;
   TxSpaceListener* tx_listener_ = nullptr;
-  // The rest is m1-ip's (keys, transmit queue, blocked FIFO, events, PMTU
-  // cache, port table).
+  StackKeys keys_;
+  TxQueue txq_;  // after pool_: destroyed first, its buffers return to the pool
+  BlockedFifo blocked_;
+  EventQueue events_;
+  PmtuCache pmtu_;
+  TimerId pmtu_timer_ = no_timer;
+  PortAllocator ports_;
+  std::uint32_t slots_used_ = 0;
 };
 
 // The object behind Stack (Stack::impl_): the core services and the protocol
-// modules. m1-ip adds IP, ICMP and UDP.
+// modules. Its methods are those of Stack with the same contracts.
 class StackImpl {
 public:
   explicit StackImpl(const StackConfig& cfg);
@@ -184,8 +242,24 @@ public:
 
   StackCore core;
   TcpEngine tcp;
+  UdpLayer udp;
+  IcmpLayer icmp;
+
+  // --- Host interface (§3.4).
+  void receive(Time now, std::span<const std::byte> ipv4, RxMeta meta = {});
+  void advance(Time now);
+  std::optional<TxPacket> pop_transmit();
+  [[nodiscard]] Time next_deadline() const;
+  std::optional<SocketEvent> poll_event();
+
+  void debug_check() const;
+  [[nodiscard]] StackUsage debug_usage() const;
 
 private:
+  // §3.4 item 4: clamps a regressing `now` (or asserts, assert_time_monotonic)
+  // and sets core.now().
+  void enter(Time now);
+
   // Forwards the blocked FIFO's resume calls to tcp.on_tx_space.
   class EngineTxSpace final : public TxSpaceListener {
   public:
@@ -196,6 +270,8 @@ private:
     TcpEngine* engine_;
   };
   EngineTxSpace tx_space_{tcp};
+  std::uint64_t advance_count_ = 0;  // advance calls, for the timer re-arm check
+  std::vector<std::uint64_t> fired_in_;  // by TimerId: advance_count_ of its last firing
 };
 
 }  // namespace utcp

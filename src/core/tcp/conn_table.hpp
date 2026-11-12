@@ -5,11 +5,17 @@
 // flooding). It is only looked up, never iterated: there is deliberately no
 // iteration API, so no behaviour can depend on hash order (§13.1). Iteration
 // over connections walks the engine's slot vector in index order.
+//
+// Open addressing with linear probing and backward-shift deletion (no
+// tombstones) in a power-of-two array, at most half full; it doubles when an
+// insert would pass that. The hash covers the four fields in network byte
+// order (12 bytes).
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "utcp/random.hpp"
 #include "utcp/types.hpp"
@@ -30,8 +36,26 @@ public:
   // Table structure consistent; aborts on failure (Stack::debug_check).
   void check_invariants() const;
 
+  // The keyed hash of a tuple, for tests.
+  [[nodiscard]] std::uint64_t hash(const FourTuple& tuple) const noexcept;
+  // Array size (a power of two), for tests.
+  [[nodiscard]] std::size_t capacity() const noexcept { return entries_.size(); }
+
 private:
-  // Implementation state is m1-ip's.
+  struct Entry {
+    FourTuple tuple;
+    std::uint32_t slot = 0;
+    bool used = false;
+  };
+
+  [[nodiscard]] std::size_t home(const FourTuple& tuple) const noexcept;
+  // Index of `tuple`, or of the empty entry where it would go.
+  [[nodiscard]] std::size_t probe(const FourTuple& tuple) const noexcept;
+  void grow();
+
+  SipKey key_;
+  std::vector<Entry> entries_;
+  std::size_t size_ = 0;
 };
 
 }  // namespace utcp
