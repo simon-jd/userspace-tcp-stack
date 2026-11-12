@@ -95,7 +95,8 @@ w::TcpOptions reference_parse(const std::uint8_t* ptr, int length) {
 std::vector<std::byte> segment(const w::TcpHeader& h, std::span<const std::uint8_t> options) {
   std::vector<std::byte> s(w::tcp_header_min_len + options.size());
   w::write_tcp_header(s, h, w::TcpOptions{}, false);
-  w::store_u8(s, 12, static_cast<std::uint8_t>((s.size() / 4) << 4));
+  // Byte 12 holds the data offset and the top four flag bits (AE, reserved).
+  w::store_u8(s, 12, static_cast<std::uint8_t>(((s.size() / 4) << 4) | ((h.flags >> 8) & 0x0fu)));
   std::ranges::transform(options, s.begin() + w::tcp_header_min_len,
                          [](std::uint8_t b) { return std::byte{b}; });
   w::set_l4_checksum(s, src_addr, dst_addr, utcp::ip_proto_tcp);
