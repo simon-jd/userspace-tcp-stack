@@ -26,14 +26,15 @@ struct TimeWaitEntry {  // 64 bytes; §12 item 4 targets <= 64
   FourTuple tuple;
   Time ts_recent_stamp;       // when ts_recent was set (RFC 7323 §5.5, 24-day rule)
   Time last_oow_ack;          // oow_ack_interval limiter for TIME-WAIT ACKs (§4.7)
-  bool has_oow_ack = false;   // last_oow_ack is set
   Seq32 snd_nxt, rcv_nxt;
   std::uint32_t rcv_wnd = 0;  // bytes, as last advertised
   std::uint32_t ts_recent = 0;
   std::uint32_t ts_offset = 0;
-  TimerId timer = 0;          // the time_wait timer
+  std::uint32_t conn_id = 0;  // Tcb::conn_id, so TIME-WAIT trace events name the connection
+  TimerId timer = no_timer;   // the time_wait timer
   std::uint8_t rcv_wscale = 0;
-  bool ts_ok = false;
+  bool ts_ok : 1 = false;
+  bool has_oow_ack : 1 = false;  // last_oow_ack is set
 
   bool operator==(const TimeWaitEntry&) const = default;
 };

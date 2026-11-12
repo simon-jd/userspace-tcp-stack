@@ -8,14 +8,17 @@
 //    (blocking) for Time::never(), else deadline - mono_now();
 // 3. call the callbacks of ready fds in the order epoll reports them; a
 //    readable signalfd stops the loop (stop_signal() tells which signal);
-// 4. if mono_now() >= deadline, call the deadline handler with that time.
+// 4. if mono_now() >= deadline, record the lateness (now - deadline) and call
+//    the deadline handler with that time.
 // UtcpTransport builds the stack iteration of §8.2 on this (advance, read up
 // to 64 datagrams, deliver events, drain pop_transmit).
 #pragma once
 
 #include <signal.h>
 
+#include <array>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -35,6 +38,22 @@ struct EventLoopOptions {
   std::uint64_t timer_slack_ns = 1000;  // prctl(PR_SET_TIMERSLACK); 0 leaves it unchanged
 };
 
+// Wake-up lateness (§8.3) in log2 buckets: bucket 0 counts 0 ns, bucket i
+// (1..63) counts [2^(i-1), 2^i) ns. utcp-bulk reports its percentiles.
+struct LatenessHistogram {
+  static constexpr std::size_t bucket_count = 64;
+  std::array<std::uint64_t, bucket_count> buckets{};
+  std::uint64_t count = 0;
+  Duration max{};  // largest recorded value
+
+  // A negative value (woke before the deadline) counts as 0.
+  void record(Duration lateness) noexcept;
+  // An upper bound of the q-quantile, q in (0, 1]: the inclusive upper edge
+  // of the bucket that holds the sample of rank ceil(q * count) (0 for bucket
+  // 0, 2^i - 1 ns for bucket i), at most max. 0 when empty.
+  [[nodiscard]] Duration percentile(double q) const noexcept;
+};
+
 struct LoopStats {
   std::uint64_t iterations = 0;        // run_once calls
   std::uint64_t io_wakeups = 0;        // waits that returned ready fds
@@ -42,7 +61,9 @@ struct LoopStats {
   std::uint64_t zero_timeouts = 0;     // waits whose deadline had already passed
   std::uint64_t blocking_waits = 0;    // waits without a deadline
   std::int64_t last_timeout_ns = -1;   // timeout of the last wait; -1 = none (blocking)
-  // m1-backend adds the wake-up lateness histogram (§8.3).
+  // now - deadline at each deadline handler call (§8.3). m1-backend adds
+  // --spin-us and the lateness measurement runs.
+  LatenessHistogram lateness;
 };
 
 class EventLoop {
@@ -64,7 +85,9 @@ public:
   // Calls `cb` with the ready epoll events (EPOLLIN, EPOLLOUT, ...) of `fd`
   // (level-triggered). The loop does not own `fd`; watching an fd twice
   // aborts. A callback may watch, modify or unwatch fds, its own included; an
-  // fd unwatched during an iteration gets no further callbacks in it.
+  // fd unwatched during an iteration gets no further callbacks in it, also
+  // when its number is reused and watched again in the same iteration (the
+  // new registration only sees events of later waits).
   void watch(int fd, std::uint32_t events, IoCallback cb);
   void modify(int fd, std::uint32_t events);
   void unwatch(int fd);
@@ -91,7 +114,15 @@ private:
   sigset_t saved_mask_{};    // signal mask before the constructor blocked the stop signals
   bool restore_mask_ = false;
   // Indexed by fd. Shared, so a callback may unwatch its own fd while it runs.
-  std::vector<std::shared_ptr<IoCallback>> callbacks_;
+  // Each watch() takes a new generation, stored with the fd in the epoll
+  // event data (generation << 32 | fd); an event whose generation is not the
+  // fd's current one belongs to an earlier registration and is skipped.
+  struct Watch {
+    std::shared_ptr<IoCallback> cb;
+    std::uint32_t gen = 0;
+  };
+  std::vector<Watch> watches_;
+  std::uint32_t next_gen_ = 1;  // 0 is the signalfd's
   DeadlineSource deadline_source_;
   DeadlineHandler deadline_handler_;
   bool stopped_ = false;

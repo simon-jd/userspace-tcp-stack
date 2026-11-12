@@ -239,6 +239,99 @@ TEST(EventLoop, CallbackMayUnwatchAndStop) {
   EXPECT_TRUE(loop.stopped());
 }
 
+// A callback unwatches and closes another ready fd, and a new fd that gets
+// the same number is watched in the same iteration. The old fd's event, still
+// in this iteration's batch, must not reach the new fd's callback.
+TEST(EventLoop, ReusedFdNumberGetsNoStaleEvent) {
+  EventLoop loop(no_signals());
+  int fds_a[2], fds_b[2];
+  ASSERT_EQ(pipe(fds_a), 0);
+  ASSERT_EQ(pipe(fds_b), 0);
+  int read_end[2] = {fds_a[0], fds_b[0]};
+  const int write_end[2] = {fds_a[1], fds_b[1]};
+  int first = -1;  // which callback ran first
+  int new_calls = 0;
+  int new_r = -1, new_w = -1;
+  auto make_cb = [&](int me) {
+    return [&, me](std::uint32_t) {
+      if (first >= 0) {
+        ADD_FAILURE() << "the unwatched fd got a callback";
+        return;
+      }
+      char ch = 0;
+      ASSERT_EQ(read(read_end[me], &ch, 1), 1);
+      first = me;
+      const int other = read_end[1 - me];
+      loop.unwatch(other);
+      ASSERT_EQ(close(other), 0);
+      // A new, empty pipe whose read end has the number just closed.
+      int fresh[2];
+      ASSERT_EQ(pipe(fresh), 0);
+      if (fresh[0] != other) {
+        ASSERT_EQ(dup2(fresh[0], other), other);
+        ASSERT_EQ(close(fresh[0]), 0);
+      }
+      new_r = other;
+      new_w = fresh[1];
+      read_end[1 - me] = -1;
+      loop.watch(new_r, EPOLLIN, [&](std::uint32_t) { ++new_calls; });
+    };
+  };
+  loop.watch(read_end[0], EPOLLIN, make_cb(0));
+  loop.watch(read_end[1], EPOLLIN, make_cb(1));
+  const char c = 'x';
+  ASSERT_EQ(write(write_end[0], &c, 1), 1);
+  ASSERT_EQ(write(write_end[1], &c, 1), 1);
+  loop.set_deadline_source([] { return mono_now() + 1ms; });
+  loop.run_once();  // both pipes are ready in the same wait
+  ASSERT_GE(first, 0);
+  EXPECT_EQ(new_calls, 0);  // the new pipe is empty: no event for it yet
+  // The new registration works: data on the new pipe reaches its callback.
+  ASSERT_EQ(write(new_w, &c, 1), 1);
+  loop.run_once();
+  EXPECT_EQ(new_calls, 1);
+  loop.unwatch(new_r);
+  loop.unwatch(read_end[first]);
+  close(new_r);
+  close(new_w);
+  close(read_end[first]);
+  close(write_end[0]);
+  close(write_end[1]);
+}
+
+TEST(EventLoop, LatenessHistogramBucketsAndPercentiles) {
+  utcp::LatenessHistogram h;
+  EXPECT_EQ(h.percentile(0.5), Duration{0});
+  h.record(Duration{-5});  // early: bucket 0
+  h.record(Duration{0});
+  h.record(Duration{1});     // [1, 2): bucket 1
+  h.record(Duration{1023});  // [512, 1024): bucket 10
+  h.record(Duration{1024});  // [1024, 2048): bucket 11
+  EXPECT_EQ(h.count, 5u);
+  EXPECT_EQ(h.buckets[0], 2u);
+  EXPECT_EQ(h.buckets[1], 1u);
+  EXPECT_EQ(h.buckets[10], 1u);
+  EXPECT_EQ(h.buckets[11], 1u);
+  EXPECT_EQ(h.max, Duration{1024});
+  EXPECT_EQ(h.percentile(0.4), Duration{0});     // rank 2: bucket 0
+  EXPECT_EQ(h.percentile(0.6), Duration{1});     // rank 3: bucket 1, upper edge 1
+  EXPECT_EQ(h.percentile(0.8), Duration{1023});  // rank 4: bucket 10
+  EXPECT_EQ(h.percentile(1.0), Duration{1024});  // bucket 11's edge 2047, capped at max
+}
+
+TEST(EventLoop, DeadlineCallsRecordTheirLateness) {
+  EventLoop loop(no_signals());
+  const Time past = mono_now() - 3ms;
+  loop.set_deadline_source([&] { return past; });
+  loop.set_deadline_handler([](Time) {});
+  loop.run_once();
+  loop.run_once();
+  const auto& h = loop.stats().lateness;
+  EXPECT_EQ(h.count, 2u);
+  EXPECT_GE(h.max, 3ms);
+  EXPECT_GE(h.percentile(0.5), Duration{2'097'151});  // >= 3 ms lies in [2^21, 2^22) ns or above
+}
+
 TEST(EventLoop, ModifyChangesTheEvents) {
   EventLoop loop(no_signals());
   Pipe p;

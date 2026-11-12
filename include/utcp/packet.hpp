@@ -27,7 +27,8 @@ public:
   PacketBuf& operator=(const PacketBuf&) = delete;
   ~PacketBuf();
 
-  // False for a default-constructed or moved-from PacketBuf.
+  // False for a default-constructed or moved-from PacketBuf; such a buffer
+  // has size(), headroom(), tailroom() and capacity() 0.
   [[nodiscard]] bool valid() const noexcept { return pool_ != nullptr; }
   explicit operator bool() const noexcept { return valid(); }
 

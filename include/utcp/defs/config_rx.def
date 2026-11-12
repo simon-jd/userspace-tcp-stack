@@ -5,6 +5,7 @@
 //   UTCP_TCP_KNOB(type, name, rfc_value, linux_value, doc)  a TcpConfig field
 //   UTCP_STACK_KNOB(type, name, value, doc)                 a StackConfig field
 //
-// `type` must not contain a top-level comma (use an alias).
+// `type` must not contain a top-level comma (declare an alias in
+// config_rx_types.hpp, which also holds the enums of new knobs).
 
 // (no entries yet)

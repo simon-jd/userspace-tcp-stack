@@ -7,7 +7,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <bit>
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,7 +27,41 @@ constexpr std::int64_t ns_per_s = 1'000'000'000;
   std::abort();
 }
 
+std::uint64_t pack(int fd, std::uint32_t gen) {
+  return (std::uint64_t{gen} << 32) | static_cast<std::uint32_t>(fd);
+}
+int fd_of(std::uint64_t data) { return static_cast<int>(static_cast<std::uint32_t>(data)); }
+std::uint32_t gen_of(std::uint64_t data) { return static_cast<std::uint32_t>(data >> 32); }
+
 }  // namespace
+
+void LatenessHistogram::record(Duration lateness) noexcept {
+  const std::uint64_t ns = lateness.count() > 0 ? static_cast<std::uint64_t>(lateness.count()) : 0;
+  ++buckets[static_cast<std::size_t>(std::bit_width(ns))];  // 0 for 0, i for [2^(i-1), 2^i)
+  ++count;
+  if (lateness > max) {
+    max = lateness;
+  }
+}
+
+Duration LatenessHistogram::percentile(double q) const noexcept {
+  if (count == 0) {
+    return Duration{0};
+  }
+  q = std::clamp(q, 0.0, 1.0);
+  auto rank = static_cast<std::uint64_t>(std::ceil(q * static_cast<double>(count)));
+  rank = std::clamp<std::uint64_t>(rank, 1, count);
+  std::uint64_t seen = 0;
+  for (std::size_t i = 0; i < bucket_count; ++i) {
+    seen += buckets[i];
+    if (seen >= rank) {
+      const std::int64_t upper =
+          i == 0 ? 0 : static_cast<std::int64_t>((std::uint64_t{1} << i) - 1);
+      return std::min(Duration{upper}, max);
+    }
+  }
+  return max;
+}
 
 Time mono_now() noexcept {
   timespec ts{};
@@ -64,7 +101,7 @@ EventLoop::EventLoop(const EventLoopOptions& options) {
     }
     epoll_event ev{};
     ev.events = EPOLLIN;
-    ev.data.fd = sigfd_;
+    ev.data.u64 = pack(sigfd_, 0);
     if (epoll_ctl(epfd_, EPOLL_CTL_ADD, sigfd_, &ev) != 0) {
       die("epoll_ctl(signalfd)");
     }
@@ -88,23 +125,32 @@ void EventLoop::watch(int fd, std::uint32_t events, IoCallback cb) {
     errno = EBADF;
     die("watch");
   }
+  const std::uint32_t gen = next_gen_++;
+  if (next_gen_ == 0) {
+    next_gen_ = 1;  // 0 stays the signalfd's
+  }
   epoll_event ev{};
   ev.events = events;
-  ev.data.fd = fd;
+  ev.data.u64 = pack(fd, gen);
   if (epoll_ctl(epfd_, EPOLL_CTL_ADD, fd, &ev) != 0) {
     die("epoll_ctl(ADD)");
   }
   const auto i = static_cast<std::size_t>(fd);
-  if (callbacks_.size() <= i) {
-    callbacks_.resize(i + 1);
+  if (watches_.size() <= i) {
+    watches_.resize(i + 1);
   }
-  callbacks_[i] = std::make_shared<IoCallback>(std::move(cb));
+  watches_[i] = Watch{std::make_shared<IoCallback>(std::move(cb)), gen};
 }
 
 void EventLoop::modify(int fd, std::uint32_t events) {
+  const auto i = static_cast<std::size_t>(fd);
+  if (fd < 0 || i >= watches_.size() || !watches_[i].cb) {
+    errno = ENOENT;
+    die("modify (fd not watched)");
+  }
   epoll_event ev{};
   ev.events = events;
-  ev.data.fd = fd;
+  ev.data.u64 = pack(fd, watches_[i].gen);  // the same registration
   if (epoll_ctl(epfd_, EPOLL_CTL_MOD, fd, &ev) != 0) {
     die("epoll_ctl(MOD)");
   }
@@ -115,8 +161,8 @@ void EventLoop::unwatch(int fd) {
     die("epoll_ctl(DEL)");
   }
   const auto i = static_cast<std::size_t>(fd);
-  if (i < callbacks_.size()) {
-    callbacks_[i].reset();
+  if (i < watches_.size()) {
+    watches_[i] = Watch{};
   }
 }
 
@@ -159,8 +205,9 @@ void EventLoop::run_once() {
     ++stats_.io_wakeups;
   }
   for (int k = 0; k < n; ++k) {
-    const int fd = events[k].data.fd;
-    if (fd == sigfd_) {
+    const int fd = fd_of(events[k].data.u64);
+    const std::uint32_t gen = gen_of(events[k].data.u64);
+    if (fd == sigfd_ && gen == 0) {
       signalfd_siginfo si{};
       while (read(sigfd_, &si, sizeof si) == static_cast<ssize_t>(sizeof si)) {
         stop_signal_ = static_cast<int>(si.ssi_signo);
@@ -169,8 +216,10 @@ void EventLoop::run_once() {
       continue;
     }
     const auto i = static_cast<std::size_t>(fd);
-    if (i < callbacks_.size() && callbacks_[i]) {
-      const std::shared_ptr<IoCallback> cb = callbacks_[i];  // survives an unwatch inside the call
+    // Skip events of an fd unwatched in this iteration, also when its number
+    // was reused and watched again (a different generation).
+    if (i < watches_.size() && watches_[i].cb && watches_[i].gen == gen) {
+      const std::shared_ptr<IoCallback> cb = watches_[i].cb;  // survives an unwatch inside the call
       (*cb)(events[k].events);
     }
   }
@@ -179,6 +228,7 @@ void EventLoop::run_once() {
     const Time now = mono_now();
     if (now >= deadline) {
       ++stats_.deadline_calls;
+      stats_.lateness.record(now - deadline);
       deadline_handler_(now);
     }
   }

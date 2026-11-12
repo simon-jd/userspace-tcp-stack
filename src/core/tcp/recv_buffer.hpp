@@ -61,9 +61,10 @@ public:
   // §7.2, and a future memory-pressure prune).
   void drop_out_of_order();
 
-  // The peer's FIN follows the byte at off - 1. A later different offset is
-  // ignored (the first FIN wins), and so is an offset below a byte already
-  // held (the peer's data contradicts it).
+  // The peer's FIN follows the byte at off - 1. A later call is ignored (the
+  // first FIN wins), and so is an offset below contiguous_end() (in-order
+  // data, read or not, lies beyond it) or below a held out-of-order byte: the
+  // peer's data contradicts it.
   void set_fin(std::uint64_t off);
   [[nodiscard]] std::optional<std::uint64_t> fin_offset() const;
   // contiguous_end() reached the FIN offset.

@@ -97,6 +97,41 @@ TEST(Rng, BelowIsUnbiasedForLargeN) {
   EXPECT_NEAR(static_cast<double>(low) / draws, 1.0 / 3.0, 0.005);
 }
 
+// Multiply-shift without the rejection step is biased too, differently from
+// "x mod n": for n = 3 * 2^30 it returns floor(3x / 4) of the 32-bit draw x,
+// so every multiple of 3 is hit by two values of x and the others by one,
+// and half the results are multiples of 3. Lemire's rejection (discarding x
+// whose low product part is below 2^32 mod n = 2^30) restores 1/3.
+TEST(Rng, BelowRejectsTheShortResidues) {
+  Rng r(Seed::from_u64(6));
+  const std::uint32_t n = 0xc000'0000u;
+  int multiples = 0;
+  const int draws = 300'000;
+  for (int i = 0; i < draws; ++i) {
+    multiples += r.below(n) % 3 == 0 ? 1 : 0;
+  }
+  EXPECT_NEAR(multiples, draws / 3, draws / 100);
+}
+
+// Exact: the second output of the second reference state, x = 0xd9063360,
+// is a multiple of 4, so (x * n) mod 2^32 = 0 < 2^30 for n = 3 * 2^30 and
+// below() must discard it and use the third output, x = 0x3198d392.
+TEST(Rng, BelowConsumesAnotherDrawOnRejection) {
+  const std::array<std::uint64_t, 4> state{0x0123456789abcdefULL, 0xfedcba9876543210ULL,
+                                           0x0f1e2d3c4b5a6978ULL, 0x8796a5b4c3d2e1f0ULL};
+  Rng r = Rng::from_state(state);
+  ASSERT_EQ(r.next(), 0x6666666666666c65ULL);
+  const std::uint32_t n = 0xc000'0000u;
+  EXPECT_EQ(r.below(n), 624'074'413u);  // floor(3 * 0x3198d392 / 4)
+  // Two draws were consumed: the stream continues with the fourth output.
+  Rng ref = Rng::from_state(state);
+  for (int i = 0; i < 3; ++i) {
+    ref.next();
+  }
+  EXPECT_EQ(r.state(), ref.state());
+  EXPECT_EQ(r.next(), 0x5a49a1c67304ca22ULL);
+}
+
 TEST(Rng, BelowIsUniformForSmallN) {
   Rng r(Seed::from_u64(3));
   std::array<int, 3> counts{};

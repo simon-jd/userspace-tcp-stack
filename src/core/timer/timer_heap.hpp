@@ -11,10 +11,12 @@
 //
 // Lazy re-arm: arming an armed timer to a later key (the RTO on every ACK)
 // only records the wanted key; the entry keeps its earlier heap key, a lower
-// bound. The effective key is always (wanted deadline, arm_seq of the last arm
-// call). fix_up() repairs stale entries at the top, after which
-// next_deadline() is exact; the Stack calls it before every entry point
-// returns. pop_due() repairs as it goes.
+// bound, and is repaired when it reaches the top. The effective key is always
+// (wanted deadline, arm_seq of the last arm call). Every call leaves the top
+// entry exact (a lazily re-armed top, or a stale entry that a cancel, destroy
+// or pop_due exposes, is repaired at once), so next_deadline() is exact at all
+// times. fix_up() is that repair as a separate step; it finds nothing to do
+// unless the invariant is broken.
 #pragma once
 
 #include <compare>
@@ -40,6 +42,9 @@ enum class TimerKind : std::uint8_t {
 inline constexpr int timer_kind_count = 7;
 
 using TimerId = std::uint32_t;
+// Never returned by create(): owners use it for "no timer yet". destroy() and
+// cancel() abort on it.
+inline constexpr TimerId no_timer = 0xffff'ffff;
 
 struct TimerKey {
   Time deadline;
@@ -73,10 +78,11 @@ public:
   [[nodiscard]] std::uint32_t owner(TimerId id) const noexcept;
   [[nodiscard]] TimerKind kind(TimerId id) const noexcept;
 
-  // Repairs stale entries at the top so that next_deadline() is exact.
+  // Repairs stale entries at the top (a no-op while the top is exact, which
+  // every other call guarantees).
   void fix_up() noexcept;
-  // Earliest effective deadline, Time::never() if nothing is armed.
-  // Precondition (debug-checked): fix_up() ran after the last arm().
+  // Earliest effective deadline, Time::never() if nothing is armed. Exact
+  // after any sequence of calls.
   [[nodiscard]] Time next_deadline() const noexcept;
   // Removes and returns the armed timer with the smallest effective key if its
   // deadline is <= now. The timer stays allocated (unarmed).
@@ -85,8 +91,8 @@ public:
   [[nodiscard]] std::size_t armed_count() const noexcept { return heap_.size(); }
   [[nodiscard]] std::size_t timer_count() const noexcept { return nodes_.size() - free_.size(); }
 
-  // Verifies the heap order, the position index and key <= wanted; aborts on
-  // failure (Stack::debug_check).
+  // Verifies the heap order, the position index, key <= wanted and an exact
+  // top; aborts on failure (Stack::debug_check).
   void check_invariants() const;
 
 private:

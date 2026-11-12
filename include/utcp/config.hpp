@@ -7,7 +7,8 @@
 //
 // Extra TcpConfig fields, test knobs and StackConfig fields that belong to one
 // task are declared in include/utcp/defs/config_{ip,rx,tx,tcp}.def (one owner
-// per file, see the file headers).
+// per file, see the file headers); the types they need, in
+// include/utcp/defs/config_{ip,rx,tx,tcp}_types.hpp (same owners).
 #pragma once
 
 #include <chrono>
@@ -15,6 +16,10 @@
 #include <optional>
 #include <string_view>
 
+#include "utcp/defs/config_ip_types.hpp"
+#include "utcp/defs/config_rx_types.hpp"
+#include "utcp/defs/config_tcp_types.hpp"
+#include "utcp/defs/config_tx_types.hpp"
 #include "utcp/random.hpp"
 #include "utcp/time.hpp"
 #include "utcp/types.hpp"
@@ -246,8 +251,10 @@ struct TcpConfig {
 [[nodiscard]] TcpConfig tcp_config(ProfileId profile);
 
 struct UdpConfig {
-  std::uint32_t rcv_buf = 256 * 1024;        // per socket, length-prefixed datagrams
-  PortRange ephemeral_ports{32768, 60999};   // as the default (linux_compat) TCP profile
+  std::uint32_t rcv_buf = 256 * 1024;  // per socket, length-prefixed datagrams
+  // nullopt: the same range as StackConfig::tcp.ephemeral_ports, so it follows
+  // the TCP profile (§3.9 "as TCP"); udp_ephemeral_ports() resolves it.
+  std::optional<PortRange> ephemeral_ports;
 
   bool operator==(const UdpConfig&) const = default;
 };
@@ -287,6 +294,12 @@ struct StackConfig {
 
   bool operator==(const StackConfig&) const = default;
 };
+
+// The ephemeral port range of UDP sockets (§3.6, §3.9): UdpConfig's if set,
+// else TCP's.
+[[nodiscard]] constexpr PortRange udp_ephemeral_ports(const StackConfig& c) noexcept {
+  return c.udp.ephemeral_ports.value_or(c.tcp.ephemeral_ports);
+}
 
 // RFC 7323 §2.3: the smallest shift s with 65535 * 2^s >= rcv_buf_max, at
 // most 14 (7 for 4 MiB, 10 for 32 MiB, as Linux).

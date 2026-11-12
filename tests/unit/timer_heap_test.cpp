@@ -108,9 +108,9 @@ TEST(TimerHeap, LazyRearmUsesTheLastArmSequence) {
   h.arm(a, Time{10});  // arm_seq 0
   h.arm(b, Time{20});  // arm_seq 1
   h.arm(a, Time{20});  // later, lazy: effective key (20, arm_seq 2)
-  // Before the fix-up the heap top is a's stale key (10).
-  h.fix_up();
+  // a was the top, so the heap repaired it at once.
   EXPECT_EQ(h.next_deadline(), Time{20});
+  h.check_invariants();
   // Effective keys (20, 1) < (20, 2): b fires before a.
   const auto first = h.pop_due(Time{20});
   ASSERT_TRUE(first.has_value());
@@ -130,6 +130,54 @@ TEST(TimerHeap, PopDueRepairsStaleTopsWithoutFixUp) {
   EXPECT_FALSE(h.pop_due(Time{500}).has_value());
   EXPECT_EQ(h.next_deadline(), Time{1000});  // pop_due left the top exact
   EXPECT_TRUE(h.pop_due(Time{1000}).has_value());
+}
+
+// Removing the top can expose an entry whose heap key is stale (lazily
+// re-armed while below the top). The heap repairs it in the same call, so
+// next_deadline() is exact without a separate fix_up().
+TEST(TimerHeap, RemovingTheTopRepairsAStaleEntryBelowIt) {
+  for (int how = 0; how < 3; ++how) {
+    TimerHeap h;
+    const TimerId a = h.create(1, TimerKind::xmit);
+    const TimerId b = h.create(2, TimerKind::xmit);
+    const TimerId c = h.create(3, TimerKind::xmit);
+    h.arm(a, Time{10});
+    h.arm(b, Time{20});
+    h.arm(c, Time{25});
+    h.arm(b, Time{30});  // lazy: b keeps heap key 20 below a
+    EXPECT_EQ(h.next_deadline(), Time{10});
+    if (how == 0) {
+      h.cancel(a);
+    } else if (how == 1) {
+      h.destroy(a);
+    } else {
+      const auto f = h.pop_due(Time{10});
+      ASSERT_TRUE(f.has_value());
+      EXPECT_EQ(f->id, a);
+    }
+    // Earliest armed deadline is c's 25, not b's stale 20 or wanted 30.
+    EXPECT_EQ(h.next_deadline(), Time{25}) << how;
+    h.check_invariants();
+    EXPECT_EQ(fire_all(h, Time{100}), (std::vector<TimerId>{c, b})) << how;
+  }
+}
+
+TEST(TimerHeap, LazyRearmOfTheTopIsExactAtOnce) {
+  TimerHeap h;
+  const TimerId a = h.create(1, TimerKind::xmit);
+  const TimerId b = h.create(2, TimerKind::delack);
+  h.arm(a, Time{10});
+  h.arm(b, Time{40});
+  h.arm(a, Time{50});  // the top moves later
+  EXPECT_EQ(h.next_deadline(), Time{40});
+  h.check_invariants();
+}
+
+TEST(TimerHeapDeathTest, NoTimerIsNeverHandedOut) {
+  TimerHeap h;
+  EXPECT_NE(h.create(0, TimerKind::xmit), utcp::no_timer);
+  EXPECT_DEATH(h.destroy(utcp::no_timer), "UTCP_CHECK");
+  EXPECT_DEATH(h.cancel(utcp::no_timer), "UTCP_CHECK");
 }
 
 TEST(TimerHeap, IdsAreReusedLowestFirst) {
@@ -253,8 +301,11 @@ TEST(TimerHeap, DifferentialAgainstSortedVector) {
         ++fired;
       }
     }
-    h.fix_up();
+    // Exact after every call; fix_up() only on some steps.
     ASSERT_EQ(h.next_deadline(), ref.next()) << "step " << step;
+    if (step % 7 == 0) {
+      h.fix_up();
+    }
     ASSERT_EQ(h.armed_count(), ref.size()) << "step " << step;
     if (step % 1000 == 0) {
       h.check_invariants();

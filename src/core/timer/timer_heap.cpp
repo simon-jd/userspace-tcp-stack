@@ -14,7 +14,7 @@ TimerId TimerHeap::create(std::uint32_t owner, TimerKind kind) {
     id = free_.back();
     free_.pop_back();
   } else {
-    UTCP_CHECK(nodes_.size() < npos);
+    UTCP_CHECK(nodes_.size() < no_timer);
     id = static_cast<TimerId>(nodes_.size());
     nodes_.emplace_back();
   }
@@ -48,12 +48,16 @@ void TimerHeap::arm(TimerId id, Time deadline) {
   } else if (k < n.key) {
     n.key = k;
     sift_up(n.pos);
+  } else if (n.pos == 0) {
+    // A later key for the top: repair now, so that the top stays exact.
+    fix_up();
   }
   // Otherwise the entry keeps its earlier key (a lower bound): lazy re-arm.
+  // It is repaired when it reaches the top.
 }
 
 void TimerHeap::cancel(TimerId id) noexcept {
-  UTCP_DCHECK(id < nodes_.size() && nodes_[id].live);
+  UTCP_CHECK(id < nodes_.size() && nodes_[id].live);
   if (nodes_[id].pos != npos) {
     remove_at(nodes_[id].pos);
   }
@@ -102,7 +106,7 @@ std::optional<FiredTimer> TimerHeap::pop_due(Time now) noexcept {
       return std::nullopt;
     }
     const FiredTimer fired{id, top.owner, top.kind, top.key};
-    remove_at(0);
+    remove_at(0);  // repairs the new top
     return fired;
   }
   return std::nullopt;
@@ -167,9 +171,18 @@ void TimerHeap::remove_at(std::uint32_t pos) noexcept {
     heap_.pop_back();
   }
   nodes_[id].pos = npos;
+  // Only removing the top can change it (every other entry's key is above the
+  // top's, keys are unique); the new top may be a lazily re-armed entry.
+  if (pos == 0) {
+    fix_up();
+  }
 }
 
 void TimerHeap::check_invariants() const {
+  if (!heap_.empty()) {
+    const Node& top = nodes_[heap_[0]];
+    UTCP_CHECK(top.key == top.want);
+  }
   for (std::size_t pos = 0; pos < heap_.size(); ++pos) {
     const Node& n = nodes_[heap_[pos]];
     UTCP_CHECK(n.live);

@@ -206,13 +206,26 @@ TEST(Config, StackUdpAndIcmpDefaults) {
   EXPECT_EQ(utcp::test::field_count<StackConfig>(), 14 + stack_knob_count);
 
   EXPECT_EQ(s.udp.rcv_buf, 256 * KiB);
-  EXPECT_EQ(s.udp.ephemeral_ports, s.tcp.ephemeral_ports);
+  EXPECT_EQ(s.udp.ephemeral_ports, std::nullopt);  // follows TCP
+  EXPECT_EQ(utcp::udp_ephemeral_ports(s), s.tcp.ephemeral_ports);
   EXPECT_EQ(utcp::test::field_count<UdpConfig>(), 2u);
 
   EXPECT_TRUE(s.icmp.echo_reply);
   EXPECT_EQ(s.icmp.rate_per_s, 1000u);
   EXPECT_EQ(s.icmp.burst, 50u);
   EXPECT_EQ(utcp::test::field_count<IcmpConfig>(), 3u);
+}
+
+// §3.9: UDP ephemeral ports "as TCP", whichever profile TCP uses; an
+// explicit UdpConfig range wins.
+TEST(Config, UdpEphemeralPortsFollowTheTcpProfile) {
+  StackConfig s;
+  s.tcp = tcp_config(ProfileId::rfc);
+  EXPECT_EQ(utcp::udp_ephemeral_ports(s), (utcp::PortRange{1024, 65535}));
+  s.tcp = tcp_config(ProfileId::linux_compat);
+  EXPECT_EQ(utcp::udp_ephemeral_ports(s), (utcp::PortRange{32768, 60999}));
+  s.udp.ephemeral_ports = utcp::PortRange{40000, 40009};
+  EXPECT_EQ(utcp::udp_ephemeral_ports(s), (utcp::PortRange{40000, 40009}));
 }
 
 // RFC 7323 §2.3: smallest s with 65535 * 2^s >= rcv_buf_max, at most 14.

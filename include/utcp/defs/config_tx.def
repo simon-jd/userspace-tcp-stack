@@ -6,7 +6,8 @@
 //   UTCP_TCP_KNOB(type, name, rfc_value, linux_value, doc)  a TcpConfig field
 //   UTCP_STACK_KNOB(type, name, value, doc)                 a StackConfig field
 //
-// `type` must not contain a top-level comma (use an alias).
+// `type` must not contain a top-level comma (declare an alias in
+// config_tx_types.hpp, which also holds the enums of new knobs).
 
 // Pacing test knob (DESIGN §5.3): when set, the pacing gate applies with this
 // fixed rate in bytes per second, whatever the CC requests.

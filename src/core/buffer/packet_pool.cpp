@@ -41,19 +41,21 @@ void unpoison(const std::byte* p, std::size_t n) noexcept {
 
 // --- PacketBuf
 
+// The source is left empty as after reset(): size(), headroom() and
+// tailroom() are 0.
 PacketBuf::PacketBuf(PacketBuf&& other) noexcept
     : pool_(std::exchange(other.pool_, nullptr)),
-      index_(other.index_),
-      head_(other.head_),
-      tail_(other.tail_) {}
+      index_(std::exchange(other.index_, 0)),
+      head_(std::exchange(other.head_, 0)),
+      tail_(std::exchange(other.tail_, 0)) {}
 
 PacketBuf& PacketBuf::operator=(PacketBuf&& other) noexcept {
   if (this != &other) {
     reset();
     pool_ = std::exchange(other.pool_, nullptr);
-    index_ = other.index_;
-    head_ = other.head_;
-    tail_ = other.tail_;
+    index_ = std::exchange(other.index_, 0);
+    head_ = std::exchange(other.head_, 0);
+    tail_ = std::exchange(other.tail_, 0);
   }
   return *this;
 }

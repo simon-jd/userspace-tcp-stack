@@ -4,9 +4,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <optional>
+#include <random>
 #include <vector>
 
 namespace utcp::test {
@@ -85,6 +89,172 @@ TEST(NaiveReassembler, FinRules) {
   put(n, 0, 100, 1000);
   EXPECT_TRUE(n.fin_reached());
   EXPECT_EQ(n.readable(), 200u);
+}
+
+// Whether a contradicting FIN is ignored must not depend on whether the
+// application has read the data yet.
+TEST(NaiveReassembler, FinBelowInOrderDataIsIgnoredAlsoAfterRead) {
+  for (const bool read_first : {false, true}) {
+    NaiveReassembler n(1000);
+    put(n, 0, 100, 1000);
+    if (read_first) {
+      std::array<std::byte, 100> out{};
+      ASSERT_EQ(n.read(out), 100u);
+    }
+    n.set_fin(50);
+    EXPECT_EQ(n.fin_offset(), std::nullopt) << read_first;
+    EXPECT_FALSE(n.fin_reached()) << read_first;
+    n.set_fin(100);  // right after the in-order data: accepted
+    EXPECT_EQ(n.fin_offset(), 100u) << read_first;
+    EXPECT_TRUE(n.fin_reached()) << read_first;
+  }
+}
+
+// The previous byte-map form of the model (std::map from offset to byte),
+// with the same rules, as a check that the flat window gives the same results.
+class MapModel {
+public:
+  explicit MapModel(std::uint32_t capacity) : capacity_(capacity) {}
+  InsertResult insert(std::uint64_t off, std::span<const std::byte> data, std::uint64_t limit) {
+    const std::uint64_t old_end = contiguous_end();
+    const std::vector<Range> old_ranges = ooo_ranges();
+    const std::uint64_t seg_end = off + data.size();
+    InsertResult r;
+    r.out_of_order = off > old_end;
+    const auto received = [&](std::uint64_t o) { return o < old_end || bytes_.contains(o); };
+    for (std::uint64_t o = off; o < seg_end; ++o) {
+      if (received(o)) {
+        std::uint64_t e = o;
+        while (e < seg_end && received(e)) {
+          ++e;
+        }
+        r.duplicate = Range{o, e};
+        break;
+      }
+    }
+    std::uint64_t hi = std::min(seg_end, limit);
+    if (fin_) {
+      hi = std::min(hi, *fin_);
+    }
+    const std::uint64_t lo = std::max(off, read_off_);
+    if (lo < hi) {
+      std::map<std::uint64_t, std::byte> trial = bytes_;
+      for (std::uint64_t o = lo; o < hi; ++o) {
+        trial.try_emplace(o, std::byte{});
+      }
+      std::uint64_t e = read_off_;
+      while (trial.contains(e)) {
+        ++e;
+      }
+      if (ranges_of(trial, e).size() > max_ooo_ranges) {
+        r.range_limit = true;
+        for (std::uint64_t o = lo; o < hi; ++o) {
+          r.dropped += bytes_.contains(o) ? 0 : 1;
+        }
+      } else {
+        for (std::uint64_t o = lo; o < hi; ++o) {
+          bytes_.try_emplace(o, data[static_cast<std::size_t>(o - off)]);
+        }
+        r.stored = Range{lo, hi};
+      }
+    }
+    r.contiguous_end = contiguous_end();
+    r.advanced = r.contiguous_end != old_end;
+    r.filled_hole = r.advanced && std::ranges::any_of(old_ranges, [&](const Range& g) {
+                      return g.begin <= r.contiguous_end;
+                    });
+    return r;
+  }
+  void drop_out_of_order() { bytes_.erase(bytes_.lower_bound(contiguous_end()), bytes_.end()); }
+  void set_fin(std::uint64_t off) {
+    if (fin_ || off < contiguous_end() || (!bytes_.empty() && bytes_.rbegin()->first >= off)) {
+      return;
+    }
+    fin_ = off;
+  }
+  [[nodiscard]] std::optional<std::uint64_t> fin_offset() const { return fin_; }
+  std::size_t read(std::span<std::byte> out) {
+    std::size_t n = 0;
+    while (n < out.size()) {
+      const auto it = bytes_.find(read_off_);
+      if (it == bytes_.end()) {
+        break;
+      }
+      out[n++] = it->second;
+      bytes_.erase(it);
+      ++read_off_;
+    }
+    return n;
+  }
+  [[nodiscard]] std::uint64_t contiguous_end() const {
+    std::uint64_t e = read_off_;
+    while (bytes_.contains(e)) {
+      ++e;
+    }
+    return e;
+  }
+  [[nodiscard]] std::uint64_t right_edge() const { return read_off_ + capacity_; }
+  [[nodiscard]] std::vector<Range> ooo_ranges() const { return ranges_of(bytes_, contiguous_end()); }
+
+private:
+  static std::vector<Range> ranges_of(const std::map<std::uint64_t, std::byte>& m,
+                                      std::uint64_t from) {
+    std::vector<Range> out;
+    for (auto it = m.lower_bound(from); it != m.end(); ++it) {
+      if (!out.empty() && out.back().end == it->first) {
+        ++out.back().end;
+      } else {
+        out.push_back(Range{it->first, it->first + 1});
+      }
+    }
+    return out;
+  }
+  std::uint32_t capacity_;
+  std::uint64_t read_off_ = 0;
+  std::map<std::uint64_t, std::byte> bytes_;
+  std::optional<std::uint64_t> fin_;
+};
+
+bool same(const InsertResult& a, const InsertResult& b) {
+  return a.contiguous_end == b.contiguous_end && a.advanced == b.advanced &&
+         a.out_of_order == b.out_of_order && a.filled_hole == b.filled_hole &&
+         a.duplicate == b.duplicate && a.stored == b.stored && a.dropped == b.dropped &&
+         a.range_limit == b.range_limit;
+}
+
+TEST(NaiveReassembler, MatchesTheByteMapForm) {
+  std::mt19937_64 gen(2018);
+  for (const std::uint32_t capacity : {64u, 300u, 2000u}) {
+    NaiveReassembler n(capacity);
+    MapModel m(capacity);
+    for (int step = 0; step < 3000; ++step) {
+      const auto op = gen() % 100;
+      // Offsets from a little below the read offset to past the right edge.
+      const std::uint64_t back = std::min<std::uint64_t>(n.read_offset(), 10);
+      if (op < 70) {
+        const std::uint64_t off = n.read_offset() - back + gen() % (capacity + 20);
+        const std::size_t len = gen() % 4 == 0 ? gen() % 3 : gen() % (capacity / 4 + 2);
+        const std::uint64_t limit = n.right_edge() - gen() % 8 % (capacity / 8 + 1);
+        const auto bytes = pattern(off, len);
+        ASSERT_TRUE(same(n.insert(off, bytes, limit), m.insert(off, bytes, limit))) << step;
+      } else if (op < 88) {
+        std::vector<std::byte> a(gen() % (capacity / 2 + 1)), b(a.size());
+        ASSERT_EQ(n.read(a), m.read(b)) << step;
+        ASSERT_EQ(a, b) << step;
+      } else if (op < 96) {
+        const std::uint64_t off = n.read_offset() - back + gen() % (capacity + 1);
+        n.set_fin(off);
+        m.set_fin(off);
+      } else {
+        n.drop_out_of_order();
+        m.drop_out_of_order();
+      }
+      ASSERT_EQ(n.contiguous_end(), m.contiguous_end()) << step;
+      ASSERT_EQ(n.ooo_ranges(), m.ooo_ranges()) << step;
+      ASSERT_EQ(n.fin_offset(), m.fin_offset()) << step;
+      ASSERT_EQ(n.right_edge(), m.right_edge()) << step;
+    }
+  }
 }
 
 TEST(NaiveReassembler, RangeLimitAndDropOutOfOrder) {

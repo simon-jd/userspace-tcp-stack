@@ -117,6 +117,33 @@ TEST(PacketPool, MoveTransfersOwnership) {
   EXPECT_EQ(pool.available(), 1u);
 }
 
+// A moved-from buffer that held data reports nothing: no size, no room (an
+// unsigned tailroom() = capacity() - tail would wrap otherwise).
+TEST(PacketPool, MovedFromBufferIsEmpty) {
+  PacketPool pool(2, 256);
+  auto a = pool.alloc(100, 60);
+  ASSERT_TRUE(a.has_value());
+  a->append(100);
+  PacketBuf x = std::move(*a);
+  EXPECT_EQ(x.size(), 100u);
+  EXPECT_EQ(x.headroom(), 60u);
+  EXPECT_FALSE(a->valid());
+  EXPECT_EQ(a->size(), 0u);
+  EXPECT_EQ(a->bytes().size(), 0u);
+  EXPECT_EQ(a->headroom(), 0u);
+  EXPECT_EQ(a->tailroom(), 0u);
+  EXPECT_EQ(a->capacity(), 0u);
+  auto b = pool.alloc(50, 20);
+  ASSERT_TRUE(b.has_value());
+  b->append(50);
+  x = std::move(*b);  // move assignment: same for its source
+  EXPECT_EQ(x.size(), 50u);
+  EXPECT_EQ(b->size(), 0u);
+  EXPECT_EQ(b->headroom(), 0u);
+  EXPECT_EQ(b->tailroom(), 0u);
+  EXPECT_EQ(pool.available(), 1u);
+}
+
 TEST(PacketPoolDeathTest, BoundsAreChecked) {
   PacketPool pool(1, 128);
   auto b = pool.alloc(64, 16);
