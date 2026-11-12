@@ -9,6 +9,7 @@
 // CC; the ACK pipeline picks them (§5.1).
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "utcp/config.hpp"
@@ -33,7 +34,9 @@ public:
   // (tcp_update_rtt_min); a maybe-delayed sample above min_rtt is skipped.
   void on_min_rtt_sample(Duration ca_rtt, bool maybe_delayed, Time now);
 
-  [[nodiscard]] Duration srtt() const;
+  [[nodiscard]] Duration srtt() const;  // 0 before any sample
+  // rfc6298: RTTVAR. linux: the mean deviation mdev (tcpi_rttvar = mdev_us >> 2);
+  // the RTO uses Linux's rttvar_us = 4 * mdev bounded below by rto_min.
   [[nodiscard]] Duration rttvar() const;
   [[nodiscard]] Duration min_rtt() const;  // windowed min over 300 s; Duration::max() before any sample
   // Without backoff, bounded by rto_min and rto_max; rto_initial before any sample.
@@ -45,7 +48,23 @@ public:
   void reset_after_syn_rexmit();
 
 private:
-  // Implementation state is m1-tx's.
+  struct MinSample {
+    Time t;
+    Duration v;
+  };
+  void update_rto();
+
+  RttEstimatorKind kind_;
+  Duration rto_min_, rto_max_, rto_after_syn_, rto_;
+  bool has_sample_ = false;
+  // rfc6298: srtt_ and rttvar_ are SRTT and RTTVAR. linux (fixed point as
+  // tcp_sock): srtt_ = 8 * srtt (srtt_us), mdev_ = 4 * mdev (mdev_us),
+  // mdev_max_ and rttvar_ as mdev_max_us and rttvar_us.
+  Duration srtt_{0}, rttvar_{0}, mdev_{0}, mdev_max_{0};
+  std::uint64_t rtt_seq_ = 0;
+  // Linux struct minmax: the best, second and third choices (lib/win_minmax.c).
+  std::array<MinSample, 3> min_{};
+  bool has_min_ = false;
 };
 
 // retry_abort_time (Linux tcp_model_timeout, the abort bound of §4.8) is
