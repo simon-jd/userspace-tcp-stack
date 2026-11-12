@@ -42,6 +42,7 @@ void parse_one(std::span<const std::byte> b, std::size_t at, std::uint8_t kind, 
     case tcpopt_sack:
       if (len >= len_sack_base + len_sack_block && (len - len_sack_base) % len_sack_block == 0) {
         const std::size_t n = static_cast<std::size_t>(len - len_sack_base) / len_sack_block;  // <= 4 in 40 bytes
+        opt.sack = {};  // a later copy replaces an earlier one entirely
         opt.sack_count = static_cast<std::uint8_t>(n);
         for (std::size_t i = 0; i < n; ++i) {
           opt.sack[i] = {Seq32(load_be32(b, at + i * len_sack_block)),

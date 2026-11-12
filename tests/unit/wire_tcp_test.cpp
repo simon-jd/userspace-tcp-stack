@@ -447,6 +447,21 @@ TEST(WireTcp, EndOfListAndUnknownOptions) {
   EXPECT_EQ(parse_opts(with_options(from_hex("0204 0218 0204 05b4"))).mss, 1460);
 }
 
+TEST(WireTcp, LaterSackReplacesEveryEarlierBlock) {
+  // SACK with two blocks, then SACK with one: the result has one block and
+  // nothing left over from the first option.
+  const auto o = parse_opts(with_options(from_hex("0101 0512 0000 0001 0000 0002 0000 0003 0000 0004"
+                                                  "0101 050a 0000 0005 0000 0006")));
+  EXPECT_FALSE(o.malformed);
+  ASSERT_EQ(o.sack_count, 1);
+  EXPECT_EQ(o.sack[0].first.raw(), 5u);
+  EXPECT_EQ(o.sack[0].second.raw(), 6u);
+  TcpOptions want;
+  want.sack_count = 1;
+  want.sack[0] = {Seq32(5), Seq32(6)};
+  EXPECT_EQ(o, want);
+}
+
 TEST(WireTcp, RawValuesAreReported) {
   // MSS 0 and window scale 15 are reported as sent; the engine applies §4.5.
   const auto o = parse_opts(with_options(from_hex("0204 0000 0103 030f")));
