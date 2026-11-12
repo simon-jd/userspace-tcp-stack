@@ -13,9 +13,12 @@
 // to 64 datagrams, deliver events, drain pop_transmit).
 #pragma once
 
+#include <signal.h>
+
 #include <csignal>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include "utcp/time.hpp"
@@ -49,15 +52,19 @@ public:
   using DeadlineHandler = std::function<void(Time now)>;
 
   // epoll_create1, the signalfd and the timer slack. Aborts with a message if
-  // a system call fails.
+  // a system call fails. The stop signals are blocked in the constructing
+  // thread (create the loop before starting other threads, so they inherit
+  // the mask); the destructor restores the previous mask.
   EventLoop();
   explicit EventLoop(const EventLoopOptions& options);
   ~EventLoop();
   EventLoop(const EventLoop&) = delete;
   EventLoop& operator=(const EventLoop&) = delete;
 
-  // Calls `cb` with the ready epoll events (EPOLLIN, EPOLLOUT, ...) of `fd`.
-  // The loop does not own `fd`. A callback may watch, modify or unwatch fds.
+  // Calls `cb` with the ready epoll events (EPOLLIN, EPOLLOUT, ...) of `fd`
+  // (level-triggered). The loop does not own `fd`; watching an fd twice
+  // aborts. A callback may watch, modify or unwatch fds, its own included; an
+  // fd unwatched during an iteration gets no further callbacks in it.
   void watch(int fd, std::uint32_t events, IoCallback cb);
   void modify(int fd, std::uint32_t events);
   void unwatch(int fd);
@@ -68,7 +75,7 @@ public:
   void set_deadline_handler(DeadlineHandler f);
 
   void run_once();
-  // Iterates until stop() or a stop signal.
+  // Iterates until stop() or a stop signal; returns at once if already stopped.
   void run();
   void stop() noexcept { stopped_ = true; }
   [[nodiscard]] bool stopped() const noexcept { return stopped_; }
@@ -79,14 +86,12 @@ public:
 
 private:
   // Implementation state; event_loop.cpp may change it.
-  struct Watch {
-    int fd;
-    IoCallback cb;
-  };
-
   int epfd_ = -1;
   int sigfd_ = -1;
-  std::vector<Watch> watches_;
+  sigset_t saved_mask_{};    // signal mask before the constructor blocked the stop signals
+  bool restore_mask_ = false;
+  // Indexed by fd. Shared, so a callback may unwatch its own fd while it runs.
+  std::vector<std::shared_ptr<IoCallback>> callbacks_;
   DeadlineSource deadline_source_;
   DeadlineHandler deadline_handler_;
   bool stopped_ = false;
