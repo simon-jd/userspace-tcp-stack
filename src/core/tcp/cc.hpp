@@ -80,9 +80,9 @@ struct CcConn {  // the part of the TCB a CC may read and write
   std::uint64_t pacing_rate = 0, max_pacing_rate = 0;  // bytes/s; always computed (§5.5)
   bool pacing_needed = false;                          // Linux sk_pacing_status; BBR sets it
   std::uint64_t app_limited = 0;  // tcp_rate marker (§5.4); BBR writes it entering PROBE_RTT
-  // Read-only views, refreshed before each hook. process_ack and
-  // LossRecovery refresh the queue views (ca_state, in_flight, packets_out,
-  // snd_una, snd_nxt, delivered, lost, now, delivered_time, srtt, min_rtt);
+  // Read-only views, refreshed before each hook. LossRecovery refreshes
+  // ca_state, in_flight, packets_out, snd_una, snd_nxt, lost, now, srtt and
+  // min_rtt; process_ack also delivered and delivered_time (from RateState);
   // the engine keeps the others (mss = mss_cache, max_packets_out,
   // gso_max_size, cwnd_limited, lsndtime, wstamp, rng) current.
   CaState ca_state = CaState::open;
