@@ -27,22 +27,35 @@ if [[ ! -x $sim_a || ! -x $sim_b ]]; then
   exit 0
 fi
 
-# "seed digest" per RunResult line, sorted by seed.
-digests() {
-  "$1" --seed-range "$seeds" |
-    sed -n -E 's/.*"seed":([0-9]+).*"digest":"?([0-9A-Za-z]+)"?.*/\1 \2/p' | sort -n
-}
-
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-digests "$sim_a" >"$work/a"
-digests "$sim_b" >"$work/b"
-if [[ ! -s $work/a ]]; then
-  echo "check-digests: FAILED (no seed/digest lines from $sim_a)"
-  exit 1
-fi
-if ! diff -u "$work/a" "$work/b"; then
-  echo "check-digests: FAILED (digests differ between $tree_a and $tree_b)"
-  exit 1
-fi
-echo "check-digests: ok ($(wc -l <"$work/a") seeds, $seeds)"
+
+# "seed digest" per RunResult line, sorted by seed, for utcp-sim $1 with
+# --nodes $2. utcp-sim exits 1 when a run fails (with the link-stub Stack
+# every stack-node workload fails); only exit statuses above 1 (usage error,
+# crash) make the comparison fail.
+digests() {
+  local rc=0
+  "$1" --seed-range "$seeds" --nodes "$2" >"$work/raw" || rc=$?
+  if ((rc > 1)); then
+    echo "check-digests: FAILED ($1 --nodes $2 exited with status $rc)" >&2
+    return 1
+  fi
+  sed -n -E 's/.*"seed":([0-9]+).*"digest":"?([0-9A-Za-z]+)"?.*/\1 \2/p' "$work/raw" | sort -n
+}
+
+total=0
+for nodes in stack synthetic; do
+  digests "$sim_a" "$nodes" >"$work/a"
+  digests "$sim_b" "$nodes" >"$work/b"
+  if [[ ! -s $work/a ]]; then
+    echo "check-digests: FAILED (no seed/digest lines from $sim_a --nodes $nodes)"
+    exit 1
+  fi
+  if ! diff -u "$work/a" "$work/b"; then
+    echo "check-digests: FAILED (--nodes $nodes digests differ between $tree_a and $tree_b)"
+    exit 1
+  fi
+  total=$((total + $(wc -l <"$work/a")))
+done
+echo "check-digests: ok ($total runs: seeds $seeds with stack and synthetic nodes)"
