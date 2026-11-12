@@ -6,7 +6,7 @@ set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-all_presets=(gcc-debug gcc-release gcc-asan clang-debug clang-release clang-asan)
+all_presets=(gcc-debug gcc-release gcc-asan clang-debug clang-release clang-asan gcc-sweep clang-fuzz)
 if (($# > 0)); then
   presets=("$@")
 else

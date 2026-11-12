@@ -1,0 +1,20 @@
+// Counters owned by m1-ip (UDP).
+// Only m1-ip adds entries here. No include guard: included by
+// stats.hpp and defs_test.cpp with both macros defined.
+//
+//   UTCP_STACK_STAT(name, doc)  a std::uint64_t field of StackStats
+//   UTCP_CONN_STAT(name, doc)   a std::uint64_t field of TcpCounters (per connection)
+//
+// Stack counters use the names `nstat -az` prints for the Linux MIB entry
+// they follow (group prefix Ip, IpExt, Icmp, Udp, Tcp, TcpExt), so runs can be
+// compared with a Linux peer field by field; counters without a Linux
+// equivalent are snake_case. Per-connection counters use TCP_INFO names.
+
+UTCP_STACK_STAT(UdpInDatagrams, "datagrams delivered to a socket")
+UTCP_STACK_STAT(UdpNoPorts, "datagrams for an unbound port (answered with ICMP 3/3)")
+UTCP_STACK_STAT(UdpInErrors, "datagrams dropped: bad length, bad checksum or receive buffer full")
+UTCP_STACK_STAT(UdpRcvbufErrors, "datagrams dropped: receive buffer full (DESIGN 3.6)")
+UTCP_STACK_STAT(UdpInCsumErrors, "bad UDP checksum")
+UTCP_STACK_STAT(UdpOutDatagrams, "datagrams sent")
+UTCP_STACK_STAT(udp_icmp_errors,
+                "ICMP errors quoting a UDP datagram; counted, not reported (DESIGN 3.6)")

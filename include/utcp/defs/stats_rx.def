@@ -1,0 +1,25 @@
+// Counters owned by m1-rx (receive side).
+// Only m1-rx adds entries here. No include guard: included by
+// stats.hpp and defs_test.cpp with both macros defined.
+//
+//   UTCP_STACK_STAT(name, doc)  a std::uint64_t field of StackStats
+//   UTCP_CONN_STAT(name, doc)   a std::uint64_t field of TcpCounters (per connection)
+//
+// Stack counters use the names `nstat -az` prints for the Linux MIB entry
+// they follow (group prefix Ip, IpExt, Icmp, Udp, Tcp, TcpExt), so runs can be
+// compared with a Linux peer field by field; counters without a Linux
+// equivalent are snake_case. Per-connection counters use TCP_INFO names.
+
+UTCP_STACK_STAT(TcpExtTCPOFOQueue, "out-of-order segments stored")
+UTCP_STACK_STAT(TcpExtTCPOFODrop, "out-of-order data dropped: 65th range or no chunk (DESIGN 4.10)")
+UTCP_STACK_STAT(TcpExtTCPRcvQDrop, "in-order data dropped: no chunk available")
+UTCP_STACK_STAT(TcpExtTCPZeroWindowDrop, "payload dropped at zero window (DESIGN 4.4 step 2)")
+UTCP_STACK_STAT(TcpExtTCPDSACKOldSent, "D-SACKs sent for data below RCV.NXT")
+UTCP_STACK_STAT(TcpExtTCPDSACKOfoSent, "D-SACKs sent for duplicate out-of-order data")
+UTCP_STACK_STAT(TcpExtDelayedACKs, "ACKs sent by the delack timer")
+UTCP_STACK_STAT(TcpExtTCPToZeroWindowAdv, "window advertisements that went from non-zero to zero")
+UTCP_STACK_STAT(TcpExtTCPFromZeroWindowAdv, "window advertisements that went from zero to non-zero")
+
+UTCP_CONN_STAT(bytes_received, "payload bytes received in order (tcpi_bytes_received)")
+UTCP_CONN_STAT(data_segs_in, "segments with payload received (tcpi_data_segs_in)")
+UTCP_CONN_STAT(rcv_ooopack, "out-of-order segments received (tcpi_rcv_ooopack)")

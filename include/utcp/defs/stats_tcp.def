@@ -1,0 +1,45 @@
+// Counters owned by the TCP engine (m1-tcp-core, then m1-tcp-robust).
+// Only those tasks add entries here. No include guard: included by
+// stats.hpp and defs_test.cpp with both macros defined.
+//
+//   UTCP_STACK_STAT(name, doc)  a std::uint64_t field of StackStats
+//   UTCP_CONN_STAT(name, doc)   a std::uint64_t field of TcpCounters (per connection)
+//
+// Stack counters use the names `nstat -az` prints for the Linux MIB entry
+// they follow (group prefix Ip, IpExt, Icmp, Udp, Tcp, TcpExt), so runs can be
+// compared with a Linux peer field by field; counters without a Linux
+// equivalent are snake_case. Per-connection counters use TCP_INFO names.
+
+UTCP_STACK_STAT(TcpActiveOpens, "connections that left CLOSED for SYN-SENT")
+UTCP_STACK_STAT(TcpPassiveOpens, "children created in SYN-RECEIVED")
+UTCP_STACK_STAT(TcpAttemptFails, "SYN-SENT or SYN-RECEIVED connections that ended in CLOSED")
+UTCP_STACK_STAT(TcpEstabResets, "ESTABLISHED or CLOSE-WAIT connections reset")
+UTCP_STACK_STAT(TcpInSegs, "TCP segments received, errors included")
+UTCP_STACK_STAT(TcpOutSegs, "TCP segments sent, retransmissions excluded")
+UTCP_STACK_STAT(TcpRetransSegs, "TCP segments retransmitted")
+UTCP_STACK_STAT(TcpInErrs, "TCP segments dropped: truncated, bad data offset or bad checksum")
+UTCP_STACK_STAT(TcpInCsumErrors, "bad TCP checksum")
+UTCP_STACK_STAT(TcpOutRsts, "RSTs sent")
+UTCP_STACK_STAT(TcpExtTCPChallengeACK, "challenge ACKs sent (RFC 5961)")
+UTCP_STACK_STAT(TcpExtTCPSYNChallenge, "challenge ACKs sent for a SYN (RFC 5961 4)")
+UTCP_STACK_STAT(TcpExtTCPACKSkippedChallenge,
+                "challenge ACKs suppressed by the oow_ack_interval limiter")
+UTCP_STACK_STAT(TcpExtTCPACKSkippedSeq, "ACKs to out-of-window segments suppressed by the limiter")
+UTCP_STACK_STAT(TcpExtTCPACKSkippedSynRecv,
+                "SYN-ACK retransmissions in SYN-RECEIVED suppressed by the limiter")
+UTCP_STACK_STAT(TcpExtTCPACKSkippedTimeWait, "TIME-WAIT ACKs suppressed by the limiter")
+UTCP_STACK_STAT(TcpExtPAWSEstab, "segments dropped by PAWS in synchronized states (RFC 7323 5.3)")
+UTCP_STACK_STAT(TcpExtListenOverflows, "SYNs dropped: backlog exhausted")
+UTCP_STACK_STAT(TcpExtListenDrops, "SYNs dropped by a listener for any reason")
+UTCP_STACK_STAT(TcpExtTW, "TIME-WAIT entries that expired")
+UTCP_STACK_STAT(TcpExtTCPAbortOnData, "RSTs sent for data after close (RFC 1122 4.2.2.13)")
+UTCP_STACK_STAT(TcpExtTCPAbortOnClose, "RSTs sent by close with unread data")
+UTCP_STACK_STAT(TcpExtTCPAbortOnTimeout, "connections aborted after retry exhaustion")
+UTCP_STACK_STAT(TcpExtTCPSynRetrans, "SYN and SYN-ACK retransmissions")
+UTCP_STACK_STAT(TcpExtTCPWinProbe, "zero-window probes sent")
+UTCP_STACK_STAT(icmp_seq_invalid,
+                "ICMP errors whose quoted sequence is outside [SND.UNA, SND.NXT) (RFC 5927 4.1)")
+
+UTCP_CONN_STAT(segs_in, "segments received (tcpi_segs_in)")
+UTCP_CONN_STAT(segs_out, "segments sent, retransmissions included (tcpi_segs_out)")
+UTCP_CONN_STAT(paws_drops, "segments dropped by PAWS (DESIGN 4.4 step 1)")

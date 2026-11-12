@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [gcc-debug, gcc-release, gcc-asan, clang-debug, clang-release, clang-asan]
+        preset: [gcc-debug, gcc-release, gcc-asan, clang-debug, clang-release, clang-asan, gcc-sweep, clang-fuzz]
     steps:
       - uses: actions/checkout@v4
       - run: ci/run.sh ${{ matrix.preset }}

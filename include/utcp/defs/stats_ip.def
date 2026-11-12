@@ -1,0 +1,24 @@
+// Counters owned by m1-ip (IPv4 layer and host interface).
+// Only m1-ip adds entries here. No include guard: included by
+// stats.hpp and defs_test.cpp with both macros defined.
+//
+//   UTCP_STACK_STAT(name, doc)  a std::uint64_t field of StackStats
+//   UTCP_CONN_STAT(name, doc)   a std::uint64_t field of TcpCounters (per connection)
+//
+// Stack counters use the names `nstat -az` prints for the Linux MIB entry
+// they follow (group prefix Ip, IpExt, Icmp, Udp, Tcp, TcpExt), so runs can be
+// compared with a Linux peer field by field; counters without a Linux
+// equivalent are snake_case. Per-connection counters use TCP_INFO names.
+
+UTCP_STACK_STAT(IpInReceives, "datagrams passed to Stack::receive")
+UTCP_STACK_STAT(IpInHdrErrors, "bad version, IHL, total length or header checksum")
+UTCP_STACK_STAT(IpExtInCsumErrors, "bad IPv4 header checksum (also counted in IpInHdrErrors)")
+UTCP_STACK_STAT(IpExtInTruncatedPkts, "total length larger than the received buffer")
+UTCP_STACK_STAT(IpInAddrErrors, "destination is not the stack address")
+UTCP_STACK_STAT(IpInUnknownProtos, "protocol other than ICMP, TCP, UDP")
+UTCP_STACK_STAT(IpInDelivers, "datagrams delivered to ICMP, TCP or UDP")
+UTCP_STACK_STAT(IpOutRequests, "datagrams queued for transmission")
+UTCP_STACK_STAT(IpOutDiscards,
+                "control packets (RST, ICMP) dropped: transmit queue or pool full (DESIGN 3.4)")
+UTCP_STACK_STAT(frag_dropped, "received fragments (MF set or offset != 0), dropped (DESIGN 1.2)")
+UTCP_STACK_STAT(time_regressions, "now earlier than now(), clamped (DESIGN 3.4)")

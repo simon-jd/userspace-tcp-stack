@@ -1,0 +1,18 @@
+// Configuration entries owned by the TCP engine (m1-tcp-core, then
+// m1-tcp-robust). Only those tasks add entries here. No include guard:
+// included by config.hpp, config.cpp and defs_test.cpp with the macros below
+// defined.
+//
+//   UTCP_TCP_KNOB(type, name, rfc_value, linux_value, doc)  a TcpConfig field
+//   UTCP_STACK_KNOB(type, name, value, doc)                 a StackConfig field
+//
+// `type` must not contain a top-level comma (use an alias).
+
+// Reneging receiver for tests (DESIGN §3.8, §7.2): after storing an
+// out-of-order segment, drop all out-of-order data with this probability in
+// parts per million (runtime Rng).
+UTCP_TCP_KNOB(std::uint32_t, test_renege_ppm, 0, 0,
+              "receiver reneging probability, ppm (DESIGN 7.2)")
+// Planted bug for checker tests (DESIGN §7.3).
+UTCP_TCP_KNOB(TestFault, test_fault, TestFault::none, TestFault::none,
+              "planted fault for checker tests (DESIGN 7.3)")

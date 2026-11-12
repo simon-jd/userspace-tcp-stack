@@ -1,0 +1,10 @@
+// Configuration entries owned by m1-rx (RecvBuffer, SackGenerator, AckPolicy,
+// RcvWindow). Only m1-rx adds entries here. No include guard: included by
+// config.hpp, config.cpp and defs_test.cpp with the macros below defined.
+//
+//   UTCP_TCP_KNOB(type, name, rfc_value, linux_value, doc)  a TcpConfig field
+//   UTCP_STACK_KNOB(type, name, value, doc)                 a StackConfig field
+//
+// `type` must not contain a top-level comma (use an alias).
+
+// (no entries yet)

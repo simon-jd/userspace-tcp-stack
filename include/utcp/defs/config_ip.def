@@ -1,0 +1,13 @@
+// Configuration entries owned by m1-ip (IPv4, ICMP, UDP, identifiers, ports).
+// Only m1-ip adds entries here. No include guard: included by config.hpp,
+// config.cpp and defs_test.cpp with the macros below defined.
+//
+//   UTCP_TCP_KNOB(type, name, rfc_value, linux_value, doc)  a TcpConfig field
+//   UTCP_STACK_KNOB(type, name, value, doc)                 a StackConfig field
+//
+// `type` must not contain a top-level comma (use an alias).
+
+// RFC 6528 ISN override for tests: every ISN this stack chooses is this value
+// (DESIGN §4.6), e.g. 0xFFFF0000 to force sequence wrap early.
+UTCP_TCP_KNOB(std::optional<std::uint32_t>, test_isn, std::nullopt, std::nullopt,
+              "fixed ISN for tests (DESIGN 4.6)")

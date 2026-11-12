@@ -1,0 +1,30 @@
+// Counters owned by m1-tx (send side, ACK pipeline, CC, M1 recovery).
+// Only m1-tx adds entries here. No include guard: included by
+// stats.hpp and defs_test.cpp with both macros defined.
+//
+//   UTCP_STACK_STAT(name, doc)  a std::uint64_t field of StackStats
+//   UTCP_CONN_STAT(name, doc)   a std::uint64_t field of TcpCounters (per connection)
+//
+// Stack counters use the names `nstat -az` prints for the Linux MIB entry
+// they follow (group prefix Ip, IpExt, Icmp, Udp, Tcp, TcpExt), so runs can be
+// compared with a Linux peer field by field; counters without a Linux
+// equivalent are snake_case. Per-connection counters use TCP_INFO names.
+
+UTCP_STACK_STAT(TcpExtTCPSACKReneging,
+                "RTO found a SACKed head: receiver reneged, SACK marks cleared (DESIGN 5.3)")
+UTCP_STACK_STAT(TcpExtTCPSACKDiscard, "received SACK blocks discarded as invalid (DESIGN 4.5)")
+UTCP_STACK_STAT(TcpExtTCPDSACKRecv, "received D-SACK blocks")
+UTCP_STACK_STAT(TcpExtTCPSackRecovery, "Recovery entered with SACK")
+UTCP_STACK_STAT(TcpExtTCPRenoRecovery, "Recovery entered without SACK")
+UTCP_STACK_STAT(TcpExtTCPTimeouts, "RTO expiries with data outstanding")
+UTCP_STACK_STAT(TcpExtTCPFastRetrans, "retransmissions in Recovery")
+UTCP_STACK_STAT(TcpExtTCPSlowStartRetrans, "retransmissions in Loss")
+UTCP_STACK_STAT(TcpExtTCPLossProbes, "tail loss probes sent (M2a)")
+UTCP_STACK_STAT(TcpExtTCPOrigDataSent, "segments of new data sent")
+UTCP_STACK_STAT(TcpExtTCPDelivered, "packets delivered (cumulatively ACKed or SACKed)")
+
+UTCP_CONN_STAT(data_segs_out,
+               "segments with payload sent, retransmissions included (tcpi_data_segs_out)")
+UTCP_CONN_STAT(total_retrans, "retransmitted segments (tcpi_total_retrans)")
+UTCP_CONN_STAT(dsack_dups, "received D-SACK blocks (tcpi_dsack_dups, DESIGN 4.5)")
+UTCP_CONN_STAT(reord_seen, "reordering events detected (tcpi_reord_seen, M2a)")

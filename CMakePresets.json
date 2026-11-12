@@ -33,7 +33,24 @@
     { "name": "gcc-asan", "displayName": "GCC 15, ASan+UBSan", "inherits": ["gcc", "asan"] },
     { "name": "clang-debug", "displayName": "Clang 21, Debug", "inherits": ["clang", "debug"] },
     { "name": "clang-release", "displayName": "Clang 21, Release", "inherits": ["clang", "release"] },
-    { "name": "clang-asan", "displayName": "Clang 21, ASan+UBSan", "inherits": ["clang", "asan"] }
+    { "name": "clang-asan", "displayName": "Clang 21, ASan+UBSan", "inherits": ["clang", "asan"] },
+    {
+      "name": "gcc-sweep",
+      "displayName": "GCC 15, Release with UTCP_DCHECK (simulator sweeps)",
+      "inherits": ["gcc", "release"],
+      "cacheVariables": { "UTCP_DCHECKS": "ON" }
+    },
+    {
+      "name": "clang-fuzz",
+      "displayName": "Clang 21, libFuzzer targets, ASan+UBSan, UTCP_DCHECK",
+      "inherits": "clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "UTCP_SANITIZE": "ON",
+        "UTCP_FUZZ": "ON",
+        "UTCP_DCHECKS": "ON"
+      }
+    }
   ],
   "buildPresets": [
     { "name": "build-base", "hidden": true, "jobs": 8 },
@@ -42,7 +59,9 @@
     { "name": "gcc-asan", "inherits": "build-base", "configurePreset": "gcc-asan" },
     { "name": "clang-debug", "inherits": "build-base", "configurePreset": "clang-debug" },
     { "name": "clang-release", "inherits": "build-base", "configurePreset": "clang-release" },
-    { "name": "clang-asan", "inherits": "build-base", "configurePreset": "clang-asan" }
+    { "name": "clang-asan", "inherits": "build-base", "configurePreset": "clang-asan" },
+    { "name": "gcc-sweep", "inherits": "build-base", "configurePreset": "gcc-sweep" },
+    { "name": "clang-fuzz", "inherits": "build-base", "configurePreset": "clang-fuzz" }
   ],
   "testPresets": [
     {
@@ -65,7 +84,9 @@
     { "name": "gcc-asan", "inherits": "test-asan", "configurePreset": "gcc-asan" },
     { "name": "clang-debug", "inherits": "test-base", "configurePreset": "clang-debug" },
     { "name": "clang-release", "inherits": "test-base", "configurePreset": "clang-release" },
-    { "name": "clang-asan", "inherits": "test-asan", "configurePreset": "clang-asan" }
+    { "name": "clang-asan", "inherits": "test-asan", "configurePreset": "clang-asan" },
+    { "name": "gcc-sweep", "inherits": "test-base", "configurePreset": "gcc-sweep" },
+    { "name": "clang-fuzz", "inherits": "test-asan", "configurePreset": "clang-fuzz" }
   ],
   "workflowPresets": [
     {
@@ -114,6 +135,22 @@
         { "type": "configure", "name": "clang-asan" },
         { "type": "build", "name": "clang-asan" },
         { "type": "test", "name": "clang-asan" }
+      ]
+    },
+    {
+      "name": "gcc-sweep",
+      "steps": [
+        { "type": "configure", "name": "gcc-sweep" },
+        { "type": "build", "name": "gcc-sweep" },
+        { "type": "test", "name": "gcc-sweep" }
+      ]
+    },
+    {
+      "name": "clang-fuzz",
+      "steps": [
+        { "type": "configure", "name": "clang-fuzz" },
+        { "type": "build", "name": "clang-fuzz" },
+        { "type": "test", "name": "clang-fuzz" }
       ]
     }
   ]

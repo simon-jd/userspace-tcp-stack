@@ -1,0 +1,29 @@
+// Counters owned by m1-ip (ICMP).
+// Only m1-ip adds entries here. No include guard: included by
+// stats.hpp and defs_test.cpp with both macros defined.
+//
+//   UTCP_STACK_STAT(name, doc)  a std::uint64_t field of StackStats
+//   UTCP_CONN_STAT(name, doc)   a std::uint64_t field of TcpCounters (per connection)
+//
+// Stack counters use the names `nstat -az` prints for the Linux MIB entry
+// they follow (group prefix Ip, IpExt, Icmp, Udp, Tcp, TcpExt), so runs can be
+// compared with a Linux peer field by field; counters without a Linux
+// equivalent are snake_case. Per-connection counters use TCP_INFO names.
+
+UTCP_STACK_STAT(IcmpInMsgs, "ICMP messages received")
+UTCP_STACK_STAT(IcmpInErrors,
+                "ICMP messages dropped: too short, or quote shorter than IPv4 header + 8 bytes")
+UTCP_STACK_STAT(IcmpInCsumErrors, "bad ICMP checksum")
+UTCP_STACK_STAT(IcmpInDestUnreachs, "type 3 received")
+UTCP_STACK_STAT(IcmpInTimeExcds, "type 11 received (soft error)")
+UTCP_STACK_STAT(IcmpInSrcQuenchs, "type 4 received, ignored (RFC 6633)")
+UTCP_STACK_STAT(IcmpInRedirects, "type 5 received, ignored")
+UTCP_STACK_STAT(IcmpInEchos, "echo requests received")
+UTCP_STACK_STAT(IcmpInEchoReps, "echo replies received")
+UTCP_STACK_STAT(IcmpOutMsgs, "ICMP messages sent")
+UTCP_STACK_STAT(IcmpOutRateLimitGlobal,
+                "generated errors suppressed by the token bucket (DESIGN 3.7)")
+UTCP_STACK_STAT(IcmpOutDestUnreachs, "type 3 sent (port or protocol unreachable)")
+UTCP_STACK_STAT(IcmpOutEchos, "echo requests sent (icmp_echo)")
+UTCP_STACK_STAT(IcmpOutEchoReps, "echo replies sent")
+UTCP_STACK_STAT(echo_replies_dropped, "echo replies dropped: poll_echo_reply queue (64) full")

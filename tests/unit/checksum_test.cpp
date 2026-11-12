@@ -297,7 +297,7 @@ TEST(ChecksumUpdate, RandomizedAgainstRecompute) {
 
 // ---- IPv4 pseudo-header (RFC 9293 section 3.1, RFC 768) ----
 
-TEST(PseudoHeader, MatchesExplicitBytes) {
+TEST(ChecksumPseudoHeader, MatchesExplicitBytes) {
   const std::uint32_t src = 0xC0000201;  // 192.0.2.1
   const std::uint32_t dst = 0xC6336402;  // 198.51.100.2
   const auto payload = bytes({0x30, 0x39, 0x00, 0x35, 0x00, 0x0b, 0x00, 0x00, 'a', 'b', 'c'});
@@ -314,7 +314,7 @@ TEST(PseudoHeader, MatchesExplicitBytes) {
             static_cast<std::uint16_t>(~naive_sum(explicit_bytes)));
 }
 
-TEST(PseudoHeader, StoreThenVerify) {
+TEST(ChecksumPseudoHeader, StoreThenVerify) {
   const std::uint32_t src = 0x0A000001;
   const std::uint32_t dst = 0x0A000002;
   // TCP header (20 bytes, checksum at offset 16) plus 5 bytes of data: odd length.
@@ -332,7 +332,7 @@ TEST(PseudoHeader, StoreThenVerify) {
 }
 
 // RFC 768: a computed UDP checksum of 0x0000 is sent as 0xFFFF.
-TEST(PseudoHeader, UdpZeroIsSentAsAllOnes) {
+TEST(ChecksumPseudoHeader, UdpZeroIsSentAsAllOnes) {
   const std::uint32_t src = 0xC0000201;
   const std::uint32_t dst = 0xC0000202;
   // UDP header (length 10, checksum 0) plus one 16-bit word chosen so the
@@ -382,7 +382,7 @@ constexpr std::array<KernelPacket, 4> kernel_packets{{
                                       "e3d3f46a00000000e1ed0e00000000001011121314", 2},
 }};
 
-TEST(KernelPackets, ChecksumsMatchLinux) {
+TEST(ChecksumKernelPackets, ChecksumsMatchLinux) {
   for (const KernelPacket& kp : kernel_packets) {
     SCOPED_TRACE(kp.name);
     std::vector<std::byte> pkt = from_hex(kp.hex);
