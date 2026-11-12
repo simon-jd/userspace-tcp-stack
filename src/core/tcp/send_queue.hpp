@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "core/buffer/byte_ring.hpp"
 #include "core/buffer/chunk_pool.hpp"
@@ -109,15 +110,32 @@ public:
                      const RateState& rate);
 
   // Both call `fn` once per newly delivered segment, in sequence order, before
-  // it is popped. `new_una` is clipped to end() by the caller.
+  // it is popped. `new_una` is clipped to end() by the caller. A TxSeg is
+  // popped once its payload is acknowledged and, if it carries our FIN, the
+  // FIN too; a cumulative ACK inside a TxSeg trims its head (tcp_trim_head),
+  // so a FIN-bearing TxSeg whose payload is acknowledged but whose FIN is not
+  // stays as a bare FIN. Without SACK, a cumulative ACK of n TxSegs removes
+  // min(n - 1, sacked_out) (tcp_remove_reno_sacks).
   AckedSummary on_cumulative_ack(std::uint64_t new_una, Time now, DeliveredFn fn);  // pops/trims
+  // The same with `fin_acked`: the ACK covered our FIN (SEG.ACK = end() + 1
+  // at the engine boundary, clipped to end(); process_ack passes it).
+  AckedSummary on_cumulative_ack(std::uint64_t new_una, bool fin_acked, Time now,
+                                 DeliveredFn fn);
   // Blocks are offset ranges, validated and clipped by the caller. Only whole
-  // TxSegs are SACKed; a block covering a TxSeg partly never splits it.
+  // TxSegs are SACKed; a block covering a TxSeg partly never splits it. A
+  // bare FIN is never SACKed. As Linux tcp_sacktag_one: a lost segment loses
+  // its lost mark, and a retransmission in flight of a lost segment is no
+  // longer counted. `fn` runs after the segment is marked; its rate snapshot
+  // is then marked used (rate_used). Ignored without SACK (set_sack_ok).
   SackedSummary on_sack(std::span<const Range> blocks, Time now, DeliveredFn fn);
 
-  // Marks the TxSeg starting at `off` lost (by offset, stable across pops).
+  // Marks the TxSeg starting at `off` lost (by offset, stable across pops), as
+  // Linux tcp_mark_skb_lost: no effect on a SACKed TxSeg; a TxSeg already
+  // lost whose retransmission is in flight counts that retransmission as lost
+  // (retrans_inflight cleared). Precondition (checked): a TxSeg starts at off.
   void mark_lost(std::uint64_t off);
-  // Clears every SACK mark: reneging detected at RTO (§5.3).
+  // Clears every SACK mark: reneging detected at RTO (§5.3). Without SACK it
+  // resets the duplicate-ACK count sacked_out (tcp_reset_reno_sack).
   void clear_all_sacked();
   // Without SACK, a duplicate ACK counts as one SACKed packet, capped so that
   // sacked_out + max(lost_out, 1) <= packets_out (tcp_add_reno_sack,
@@ -127,10 +145,23 @@ public:
   // Whether SACK was negotiated (selects the reno accounting above).
   void set_sack_ok(bool sack_ok);
   // PMTU decrease (§4.13): splits queued TxSegs longer than `mss` into
-  // several, keeping ids of the first parts.
+  // several, keeping ids of the first parts. The parts inherit the flags,
+  // times and rate snapshot (Linux tcp_fragment); new parts get new ids.
   void split_to_mss(std::uint16_t mss);
 
   [[nodiscard]] const Counters& counters() const;
+  // Packets marked lost so far (Linux tp->lost): mark_lost calls that set a
+  // lost mark or found a lost retransmission. AckOutcome::newly_lost is its
+  // change over one ACK.
+  [[nodiscard]] std::uint64_t lost_total() const;
+  [[nodiscard]] bool sack_ok() const;
+  // A TxSeg carrying our FIN was transmitted; that TxSeg was acknowledged.
+  [[nodiscard]] bool fin_sent() const;
+  [[nodiscard]] bool fin_acked() const;
+  // SND.UNA and SND.NXT as offsets in which our FIN counts one unit past
+  // end(), as in sequence space (loss recovery's `recover`, RTT rounds).
+  [[nodiscard]] std::uint64_t una_with_fin() const;
+  [[nodiscard]] std::uint64_t nxt_with_fin() const;
   // In sequence order.
   [[nodiscard]] std::span<const TxSeg> segs() const;
   // The TxSeg starting at `off`, or nullptr.
@@ -140,7 +171,25 @@ public:
   void check_invariants() const;
 
 private:
-  // Implementation state is m1-tx's.
+  [[nodiscard]] TxSeg* find_mut(std::uint64_t off);
+  [[nodiscard]] std::size_t index_of(std::uint64_t off) const;  // first TxSeg with seg.off >= off
+  void snapshot(TxSeg& seg, const RateState& rate) const;
+  void limit_reno_sacked();
+  void compact();
+
+  ByteRing ring_;  // begin() is una()
+  std::uint32_t capacity_;
+  std::uint64_t nxt_ = 0, end_ = 0;
+  // TxSegs in sequence order: segs_[head_, size()); popped entries below
+  // head_ are dropped by compact() (amortised O(1) per pop).
+  std::vector<TxSeg> segs_;
+  std::size_t head_ = 0;
+  std::uint64_t next_id_ = 0;
+  Counters ctr_;
+  std::uint64_t lost_total_ = 0;
+  std::uint64_t high_sacked_ = 0;  // highest end of a TxSeg SACKed since the last clear
+  bool sack_ok_ = true;
+  bool fin_sent_ = false, fin_acked_ = false;
 };
 
 }  // namespace utcp
