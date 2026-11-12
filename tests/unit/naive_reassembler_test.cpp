@@ -163,6 +163,7 @@ public:
     r.filled_hole = r.advanced && std::ranges::any_of(old_ranges, [&](const Range& g) {
                       return g.begin <= r.contiguous_end;
                     });
+    r.ooo_held = !ooo_ranges().empty();
     return r;
   }
   void drop_out_of_order() { bytes_.erase(bytes_.lower_bound(contiguous_end()), bytes_.end()); }
@@ -219,7 +220,7 @@ bool same(const InsertResult& a, const InsertResult& b) {
   return a.contiguous_end == b.contiguous_end && a.advanced == b.advanced &&
          a.out_of_order == b.out_of_order && a.filled_hole == b.filled_hole &&
          a.duplicate == b.duplicate && a.stored == b.stored && a.dropped == b.dropped &&
-         a.range_limit == b.range_limit;
+         a.range_limit == b.range_limit && a.ooo_held == b.ooo_held;
 }
 
 TEST(NaiveReassembler, MatchesTheByteMapForm) {

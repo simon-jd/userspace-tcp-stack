@@ -83,6 +83,7 @@ public:
     r.filled_hole = r.advanced && std::ranges::any_of(old_ranges, [&](const Range& g) {
                       return g.begin <= r.contiguous_end;
                     });
+    r.ooo_held = !ooo_ranges().empty();
     return r;
   }
 

@@ -7,7 +7,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <vector>
 
 #include "core/tcp/recv_buffer.hpp"
 #include "utcp/types.hpp"
@@ -19,10 +21,17 @@ public:
   SackGenerator() = default;
 
   // A segment covering `seg` arrived and was inserted into `rb`: remembers the
-  // block containing it as the most recent (RFC 2018 §4, first block).
+  // block containing it as the most recent (RFC 2018 §4, first block). Called
+  // for duplicate out-of-order segments too (Linux tcp_data_queue_ofo goes to
+  // tcp_sack_new_ofo_skb for them). A segment that is not held out of order
+  // (in-order, or dropped) changes no order: RFC 2018 §4 exempts a segment
+  // that advanced the ACK, and like Linux nothing that is not held is
+  // reported. A pending D-SACK that does not lie in `seg` came from an earlier
+  // segment and is forgotten (RFC 2883 §4 rule 1, Linux tcp_data_queue).
   void on_arrival(Range seg, const RecvBuffer& rb);
   // Duplicate payload `dup` arrived (InsertResult::duplicate): the next ACK
-  // carries it as a D-SACK block (RFC 2883 §4.1).
+  // carries it as a D-SACK block (RFC 2883 §4.1). It replaces a D-SACK still
+  // pending (Linux tcp_dsack_set). The engine calls it only with D-SACK on.
   void on_duplicate(Range dup, const RecvBuffer& rb);
 
   // Writes at most max_blocks blocks to `out` and returns the count. Order: the
@@ -41,7 +50,13 @@ public:
   [[nodiscard]] bool dsack_pending() const;
 
 private:
-  // Implementation state is m1-rx's.
+  // Out-of-order blocks, most recently reported first, each as it was when
+  // last refreshed. Blocks only grow by merging or disappear (absorbed into
+  // the in-order data, or dropped by reneging), so an entry is matched to the
+  // current range that overlaps it. Allocated on the first out-of-order
+  // segment; at most max_ooo_ranges entries.
+  std::vector<Range> recent_;
+  std::optional<Range> dsack_;
 };
 
 }  // namespace utcp
