@@ -2,6 +2,15 @@
 // destination-unreachable errors with a global token bucket, and received
 // errors dispatched to TCP (TcpEngine::on_icmp_error) or UDP.
 //
+// Received errors, as Linux icmp_unreach / tcp_v4_err: destination
+// unreachable with codes 0-15 (codes above NR_ICMP_UNREACH = 15 are counted
+// and ignored), time exceeded and parameter problem go to the protocol of the
+// quoted datagram. RFC 1122 §4.2.3.9 handles parameter problem like the soft
+// unreachables; Linux tcp_v4_err maps it to EPROTO and treats it like every
+// other error it accepts (fatal in SYN-SENT, soft once synchronized). What
+// TCP does with each type and code is the engine's (§4.7). Source quench and
+// redirects are counted and ignored.
+//
 // Generated errors (port unreachable for UDP, protocol unreachable) quote as
 // much of the offending datagram as fits in 576 bytes or the path MTU, if
 // smaller (RFC 1812 §4.3.2.3, Linux icmp_send), and are never sent to a
@@ -35,6 +44,11 @@ namespace utcp {
 class StackCore;
 class UdpLayer;
 
+// RFC 792 type 12 (wire/icmp.hpp has no constant for it).
+inline constexpr std::uint8_t icmp_parameter_problem = 12;
+// Highest destination-unreachable code acted on (Linux NR_ICMP_UNREACH).
+inline constexpr std::uint8_t icmp_max_unreach_code = 15;
+
 // RFC 1191 §7: the largest plateau of the table (65535, 32000, 17914, 8166,
 // 4352, 2002, 1492, 1006, 508, 296, 68) below `total_len`; 68 if none is.
 [[nodiscard]] std::uint16_t pmtu_plateau_below(std::uint16_t total_len) noexcept;
@@ -54,10 +68,15 @@ class UdpLayer;
 // The TcpIcmpError for an error message `h` whose quote `q` is a TCP segment:
 // tuple from the quoted addresses and ports (local = the quoted source), the
 // quoted sequence number, and for type 3 code 4 new_pmtu =
-// min(frag_needed_mtu(...), current_pmtu), the value the cache holds once the
-// engine has lowered it (the engine compares it with the connection's PMTU,
-// as Linux tcp_v4_mtu_reduced does with icsk_pmtu_cookie). Precondition:
-// q.ip.proto is TCP.
+// min(frag_needed_mtu(...), current_pmtu), in [min_pmtu, current_pmtu] (if
+// current_pmtu >= min_pmtu): the value the cache holds once the engine has
+// lowered it (Linux dst_mtu after __ip_rt_update_pmtu). It is not always a
+// reduction of the connection's PMTU: it equals the cached value when the
+// next-hop MTU is at or above it, and it can exceed the connection's PMTU
+// when the cache entry expired back to the interface MTU. The engine applies
+// it only if it is below the connection's PMTU and never raises that (Linux
+// tcp_v4_mtu_reduced: icsk_pmtu_cookie > mtu). Precondition: q.ip.proto is
+// TCP.
 [[nodiscard]] TcpIcmpError tcp_icmp_error(const wire::IcmpHeader& h, const wire::IcmpQuote& q,
                                           std::uint16_t current_pmtu,
                                           std::uint16_t min_pmtu) noexcept;
@@ -80,13 +99,31 @@ private:
   Time stamp_;
 };
 
+// Receives the errors IcmpLayer parses from ICMP messages quoting TCP. In a
+// Stack it is the TcpEngine (StackImpl registers it); a test may register a
+// recorder instead.
+class TcpIcmpSink {
+public:
+  virtual void on_icmp_error(Time now, const TcpIcmpError& e) = 0;
+
+protected:
+  TcpIcmpSink() = default;
+  TcpIcmpSink(const TcpIcmpSink&) = default;
+  TcpIcmpSink& operator=(const TcpIcmpSink&) = default;
+  ~TcpIcmpSink() = default;
+};
+
 class IcmpLayer {
 public:
   static constexpr std::uint32_t echo_queue_capacity = 64;
 
-  IcmpLayer(StackCore& core, TcpEngine& tcp, UdpLayer& udp);
+  IcmpLayer(StackCore& core, UdpLayer& udp);
   IcmpLayer(const IcmpLayer&) = delete;
   IcmpLayer& operator=(const IcmpLayer&) = delete;
+
+  // The receiver of errors quoting TCP (StackImpl sets the engine). Must be
+  // set before such an error arrives.
+  void set_tcp_sink(TcpIcmpSink* sink) noexcept { tcp_ = sink; }
 
   // --- From the IP layer.
   // An ICMP message (ip.payload) in a validated datagram for the stack address.
@@ -117,7 +154,7 @@ private:
   bool transmit(Ipv4Addr dst, const wire::IcmpHeader& h, std::span<const std::byte> body);
 
   StackCore& core_;
-  TcpEngine& tcp_;
+  TcpIcmpSink* tcp_ = nullptr;
   UdpLayer& udp_;
   IcmpRateLimiter limiter_;
   std::array<EchoReply, echo_queue_capacity> echo_q_{};

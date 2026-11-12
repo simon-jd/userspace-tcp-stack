@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 
 #include "core/ip.hpp"
 #include "core/stack_impl.hpp"
@@ -53,6 +54,8 @@ bool StackCore::can_transmit() const { return !txq_.full() && pool_.available() 
 
 std::uint32_t StackCore::queued_for(std::uint32_t slot) const { return txq_.queued_for(slot); }
 
+void StackCore::release_tx_owner(std::uint32_t slot) { txq_.disown(slot); }
+
 void StackCore::block_tx(std::uint32_t slot) { blocked_.push(slot); }
 
 void StackCore::unblock_tx(std::uint32_t slot) { blocked_.erase(slot); }
@@ -60,12 +63,15 @@ void StackCore::unblock_tx(std::uint32_t slot) { blocked_.erase(slot); }
 bool StackCore::resumable() const { return !blocked_.empty() && can_transmit(); }
 
 void StackCore::resume_blocked(Time now) {
-  // §3.4: FIFO order; each producer queued at the start is resumed at most
-  // once; one that blocks again joins the back and waits for the next call.
-  for (std::uint32_t n = blocked_.size(); n > 0 && can_transmit(); --n) {
-    const auto slot = blocked_.pop();
+  // §3.4: FIFO order. Only producers queued before `mark` are resumed, each
+  // once: one that blocks again during the call joins the back with a later
+  // push number and waits for the next call, and one that a resumed
+  // producer removed (unblock_tx) is gone from the FIFO.
+  const std::uint64_t mark = blocked_.pushes();
+  while (can_transmit()) {
+    const auto slot = blocked_.pop_before(mark);
     if (!slot) {
-      break;  // a resumed producer removed others (unblock_tx)
+      break;
     }
     UTCP_CHECK(tx_listener_ != nullptr);
     tx_listener_->on_tx_space(now, *slot);
@@ -129,26 +135,36 @@ void StackCore::pmtu_lower(Ipv4Addr dst, std::uint16_t mtu) {
   }
 }
 
-void StackCore::on_pmtu_expiry(Time now) {
-  // RFC 1191 §6.3: expired estimates return to the interface MTU.
-  pmtu_.expire(now);
-  sync_pmtu_timer();
+void StackCore::trace_pmtu_timer(TimerOp op, Time t) {
   if (tracing(TraceKind::timer)) {
     TraceEvent e;
-    e.t = now;
+    e.t = t;
     e.kind = TraceKind::timer;
     e.timer = TraceTimer::pmtu_expiry;
-    e.timer_op = TimerOp::fired;
+    e.timer_op = op;
     trace(e);
   }
 }
 
+void StackCore::on_pmtu_expiry(Time now) {
+  trace_pmtu_timer(TimerOp::fired, now);
+  // RFC 1191 §6.3: expired estimates return to the interface MTU.
+  pmtu_.expire(now);
+  sync_pmtu_timer();
+}
+
 void StackCore::sync_pmtu_timer() {
+  // §10.2: every arm (or re-arm to another deadline) and every cancel of an
+  // armed timer is traced. TraceEvent has no deadline field.
   const Time t = pmtu_.next_expiry();
   if (t.is_never()) {
-    timers_.cancel(pmtu_timer_);
+    if (timers_.armed(pmtu_timer_)) {
+      timers_.cancel(pmtu_timer_);
+      trace_pmtu_timer(TimerOp::cancelled, now_);
+    }
   } else if (!timers_.armed(pmtu_timer_) || timers_.deadline(pmtu_timer_) != t) {
     timers_.arm(pmtu_timer_, t);
+    trace_pmtu_timer(TimerOp::armed, now_);
   }
 }
 
@@ -169,10 +185,10 @@ void StackCore::check_invariants() const {
 
 // --- StackImpl
 
-StackImpl::StackImpl(const StackConfig& cfg)
-    : core(cfg), tcp(core), udp(core), icmp(core, tcp, udp) {
+StackImpl::StackImpl(const StackConfig& cfg) : core(cfg), tcp(core), udp(core), icmp(core, udp) {
   core.set_tcp(&tcp);
   core.set_tx_listener(&tx_space_);
+  icmp.set_tcp_sink(&tcp_icmp_);
 }
 
 StackImpl::~StackImpl() = default;
@@ -193,28 +209,36 @@ void StackImpl::receive(Time now, std::span<const std::byte> ipv4, RxMeta meta) 
   ip_input(*this, ipv4, meta);
 }
 
-void StackImpl::advance(Time now) {
-  enter(now);
-  const Time t = core.now();
-  ++advance_count_;
-  // §6: blocked producers first (not a timer), then every timer due at t in
-  // (deadline, arm_seq) order, each handler run with t.
-  core.resume_blocked(t);
-  while (const auto f = core.timers().pop_due(t)) {
-    // §6: a handler may not arm a timer at or before now. Such a timer would
-    // fire a second time in this loop (and a timer that re-arms itself at or
-    // before now would loop forever).
+void DueTimerRunner::run(TimerHeap& heap, Time now, FunctionRef<void(const FiredTimer&)> fire) {
+  ++runs_;
+  std::optional<TimerKey> last;
+  while (const auto f = heap.pop_due(now)) {
+    // §6: a handler may not arm a timer at or before now (see the class
+    // comment for what these two checks cover).
     if (f->id >= fired_in_.size()) {
       fired_in_.resize(std::size_t{f->id} + 1, 0);
     }
-    UTCP_CHECK(fired_in_[f->id] != advance_count_);
-    fired_in_[f->id] = advance_count_;
-    if (f->kind == TimerKind::pmtu_expiry) {
+    UTCP_CHECK(fired_in_[f->id] != runs_);
+    UTCP_CHECK(!last.has_value() || *last < f->key);
+    fired_in_[f->id] = runs_;
+    last = f->key;
+    fire(*f);
+  }
+}
+
+void StackImpl::advance(Time now) {
+  enter(now);
+  const Time t = core.now();
+  // §6: blocked producers first (not a timer), then every timer due at t in
+  // (deadline, arm_seq) order, each handler run with t.
+  core.resume_blocked(t);
+  timer_runner_.run(core.timers(), t, [&](const FiredTimer& f) {
+    if (f.kind == TimerKind::pmtu_expiry) {
       core.on_pmtu_expiry(t);
     } else {
-      tcp.on_timer(t, f->owner, f->kind);
+      tcp.on_timer(t, f.owner, f.kind);
     }
-  }
+  });
 }
 
 std::optional<TxPacket> StackImpl::pop_transmit() { return core.tx_queue().pop(); }

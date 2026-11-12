@@ -313,6 +313,65 @@ TEST(Udp, HarnessDropReorderRewrite) {
   EXPECT_EQ(p.h.delivered(), 4u);
 }
 
+// The log holds each datagram as the stack sent it, whatever the hook does to
+// the copy it delivers, and the hook's verdict.
+TEST(Udp, HarnessLogKeepsTheBytesBeforeTheHook) {
+  Pair p;
+  p.h.set_hook([&](Side, t::Bytes& d) {
+    d[w::ipv4_header_len + w::udp_header_len] = std::byte{0xEE};
+    t::fix_checksums(d);
+    return t::Verdict::deliver;
+  });
+  ASSERT_TRUE(p.h.a().udp_send_to(p.sa, p.eb, t::Bytes(4, std::byte{1})));
+  p.h.settle();
+  ASSERT_EQ(p.h.log().size(), 1u);
+  const t::Sent& sent = p.h.log()[0];
+  EXPECT_EQ(sent.from, Side::a);
+  EXPECT_EQ(sent.verdict, t::Verdict::deliver);
+  ASSERT_EQ(sent.bytes.size(), w::ipv4_header_len + w::udp_header_len + 4);
+  EXPECT_EQ(sent.bytes[w::ipv4_header_len + w::udp_header_len], std::byte{1});
+  EXPECT_TRUE(w::parse_ipv4(sent.bytes).has_value());
+  // b got the rewritten copy.
+  const auto r = recv(p.h.b(), p.sb);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->second, (t::Bytes{std::byte{0xEE}, std::byte{1}, std::byte{1}, std::byte{1}}));
+  // A dropped datagram is logged with its verdict.
+  p.h.set_hook([](Side, t::Bytes& d) {
+    d[0] = std::byte{0};
+    return t::Verdict::drop;
+  });
+  ASSERT_TRUE(p.h.a().udp_send_to(p.sa, p.eb, t::Bytes(4, std::byte{2})));
+  p.h.settle();
+  ASSERT_EQ(p.h.log().size(), 2u);
+  EXPECT_EQ(p.h.log()[1].verdict, t::Verdict::drop);
+  EXPECT_EQ(p.h.log()[1].bytes[0], std::byte{0x45});
+}
+
+// Closing a socket forgets its pending ev_readable: poll_event never returns
+// a handle that is no longer valid.
+TEST(Udp, CloseDropsPendingEvents) {
+  utcp::StackImpl s(t::TcpHarness::default_config(Side::a));
+  s.advance(Time{1'000'000'000});
+  const Ipv4Addr us = s.core.local_addr();
+  const Ipv4Addr peer = Ipv4Addr::from_octets(192, 0, 2, 7);
+  const Handle a = *s.udp.open(Endpoint{{}, 53});
+  const Handle b = *s.udp.open(Endpoint{{}, 54});
+  s.receive(s.core.now(), t::udp_datagram(t::UdpSpec{Endpoint{peer, 1}, Endpoint{us, 53}, t::pattern(5)}));
+  s.receive(s.core.now(), t::udp_datagram(t::UdpSpec{Endpoint{peer, 1}, Endpoint{us, 54}, t::pattern(5)}));
+  EXPECT_EQ(s.debug_usage().events_queued, 2u);
+  ASSERT_TRUE(s.udp.close(a));
+  EXPECT_EQ(s.debug_usage().events_queued, 1u);
+  EXPECT_EQ(s.poll_event(), (utcp::SocketEvent{b, utcp::ev_readable}));
+  ASSERT_TRUE(s.udp.close(b));
+  EXPECT_EQ(s.poll_event(), std::nullopt);
+  EXPECT_EQ(s.debug_usage().events_queued, 0u);
+  // A new socket in the reused slot starts with no events.
+  const Handle c = *s.udp.open(Endpoint{{}, 53});
+  EXPECT_EQ(c.slot, a.slot);
+  EXPECT_EQ(s.poll_event(), std::nullopt);
+  s.debug_check();
+}
+
 TEST(Udp, HarnessDelayMovesTheClock) {
   Pair p;
   p.h.set_delay(Side::a, std::chrono::milliseconds(5));

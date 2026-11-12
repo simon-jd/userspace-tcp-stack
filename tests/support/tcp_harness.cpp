@@ -53,8 +53,12 @@ std::size_t TcpHarness::settle() {
         const auto view = p->buf.bytes();
         Bytes bytes(view.begin(), view.end());
         p.reset();  // the buffer goes back to the stack's pool
+        // The log keeps the bytes as the stack sent them; the hook may edit
+        // its copy.
+        const std::size_t entry = log_.size();
+        log_.push_back(Sent{now_, s, bytes, Verdict::deliver});
         const Verdict v = hook_ ? hook_(s, bytes) : Verdict::deliver;
-        log_.push_back(Sent{now_, s, bytes, v});
+        log_[entry].verdict = v;
         switch (v) {
           case Verdict::deliver:
             send(s, std::move(bytes));

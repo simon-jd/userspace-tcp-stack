@@ -8,12 +8,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "core/stack_impl.hpp"
+#include "core/timer/timer_heap.hpp"
 #include "core/wire/icmp.hpp"
 #include "core/wire/ipv4.hpp"
 #include "core/wire/tcp.hpp"
@@ -21,6 +24,7 @@
 #include "support/tcp_harness.hpp"
 #include "utcp/checksum.hpp"
 #include "utcp/stack.hpp"
+#include "utcp/trace.hpp"
 
 namespace {
 
@@ -304,11 +308,17 @@ public:
 
   void on_tx_space(Time, std::uint32_t slot) override {
     resumed.push_back(slot);
-    produce(slot);
+    if (on_resume) {
+      on_resume(slot);
+    } else {
+      produce(slot);
+    }
   }
 
   std::map<std::uint32_t, Conn> conns;
   std::vector<std::uint32_t> resumed;
+  // Replaces produce() in on_tx_space when set.
+  std::function<void(std::uint32_t)> on_resume;
 
 private:
   void send(std::uint32_t slot, char tag, bool ack) {
@@ -410,6 +420,171 @@ TEST(StackIp, ReblockedProducerGoesToTheBack) {
   s.core.unblock_tx(9);
   s.advance(s.core.now());
   EXPECT_EQ(f.resumed, (std::vector<std::uint32_t>{7, 4, 7, 7, 1, 3}));
+}
+
+// Each producer blocked when advance() starts is resumed at most once, even
+// when a resumed one removes a later one (unblock_tx) and blocks again; one
+// that blocks for the first time during the call also waits for the next.
+TEST(StackIp, ResumeRunsEachBlockedProducerAtMostOnce) {
+  StackImpl s(config());
+  s.advance(t0);
+  FakeProducer f(s.core);
+  s.core.set_tx_listener(&f);
+  f.on_resume = [&](std::uint32_t slot) {
+    if (slot == 1) {
+      s.core.unblock_tx(2);
+      s.core.block_tx(1);
+    }
+  };
+  s.core.block_tx(1);
+  s.core.block_tx(2);
+  s.advance(s.core.now());
+  EXPECT_EQ(f.resumed, (std::vector<std::uint32_t>{1}));
+  EXPECT_TRUE(s.core.blocked().contains(1));
+  EXPECT_FALSE(s.core.blocked().contains(2));
+  EXPECT_EQ(s.next_deadline(), s.core.now());
+  f.on_resume = [&](std::uint32_t slot) {
+    if (slot == 1) {
+      s.core.block_tx(5);
+    }
+  };
+  s.advance(s.core.now());
+  EXPECT_EQ(f.resumed, (std::vector<std::uint32_t>{1, 1}));
+  EXPECT_TRUE(s.core.blocked().contains(5));
+  s.advance(s.core.now());
+  EXPECT_EQ(f.resumed, (std::vector<std::uint32_t>{1, 1, 5}));
+  EXPECT_TRUE(s.core.blocked().empty());
+  EXPECT_EQ(s.next_deadline(), Time::never());
+  s.debug_check();
+}
+
+// §3.4, §6: advance() resumes blocked producers before it fires the timers
+// due at the same time.
+TEST(StackIp, AdvanceResumesProducersBeforeFiringTimers) {
+  auto cfg = config();
+  cfg.tx_queue_packets = 1;
+  cfg.trace_mask = utcp::trace_bit(utcp::TraceKind::timer);
+  StackImpl s(cfg);
+  s.advance(t0);
+  std::vector<std::string> order;
+  class Sink final : public utcp::TraceSink {
+  public:
+    explicit Sink(std::vector<std::string>& order) : order_(order) {}
+    void on_event(const utcp::TraceEvent& e) override {
+      if (e.timer == utcp::TraceTimer::pmtu_expiry && e.timer_op == utcp::TimerOp::fired) {
+        order_.emplace_back("pmtu_expiry fired");
+      }
+    }
+
+  private:
+    std::vector<std::string>& order_;
+  } sink(order);
+  s.core.set_trace_sink(&sink);
+  FakeProducer f(s.core);
+  s.core.set_tx_listener(&f);
+  f.on_resume = [&](std::uint32_t slot) {
+    order.push_back("resume " + std::to_string(slot));
+    f.produce(slot);
+  };
+  s.core.pmtu_lower(peer, 1000);  // pmtu_expiry due at t0 + 10 min
+  f.conns[4] = {2, false, 'A'};
+  f.produce(4);  // one packet fills the queue; 4 blocks
+  EXPECT_TRUE(s.core.blocked().contains(4));
+  EXPECT_EQ(drain_tags(s), "A");  // space again
+  s.advance(t0 + 10min);
+  EXPECT_EQ(order, (std::vector<std::string>{"resume 4", "pmtu_expiry fired"}));
+  EXPECT_EQ(s.core.pmtu(peer), 1500);
+  EXPECT_EQ(drain_tags(s), "A");
+  s.debug_check();
+}
+
+// A connection's queued packets stop counting for its slot once the engine
+// releases the slot, so the next connection in that slot starts at 0; the
+// packets are still sent.
+TEST(StackIp, ReleasedSlotsPacketsDoNotCountForTheNextConnection) {
+  StackImpl s(config());
+  s.advance(t0);
+  FakeProducer f(s.core);
+  f.conns[3] = {2, false, 'O'};
+  f.produce(3);
+  EXPECT_EQ(s.core.queued_for(3), 2u);
+  s.core.release_tx_owner(3);
+  EXPECT_EQ(s.core.queued_for(3), 0u);
+  s.debug_check();
+  f.conns[3] = {1, false, 'N'};  // a new connection in slot 3
+  f.produce(3);
+  EXPECT_EQ(s.core.queued_for(3), 1u);
+  s.core.release_tx_owner(4);  // nothing queued: no-op
+  EXPECT_EQ(drain_tags(s), "OON");
+  EXPECT_EQ(s.core.queued_for(3), 0u);
+  s.debug_check();
+}
+
+// §6: due timers fire in (deadline, arm_seq) order with handlers that
+// cancel a due timer, re-arm one later and arm a new one after now.
+TEST(StackIp, DueTimerRunnerFiresInKeyOrder) {
+  utcp::TimerHeap heap;
+  utcp::DueTimerRunner runner;
+  std::vector<utcp::TimerId> id;
+  for (std::uint32_t owner = 0; owner < 6; ++owner) {
+    id.push_back(heap.create(owner, utcp::TimerKind::delack));
+  }
+  heap.arm(id[2], t0 - 2ms);
+  heap.arm(id[1], t0 - 5ms);
+  heap.arm(id[3], t0 - 2ms);  // same deadline as 2, armed later: fires after it
+  heap.arm(id[4], t0);
+  heap.arm(id[5], t0 - 1ms);
+  std::vector<std::uint32_t> fired;
+  runner.run(heap, t0, [&](const utcp::FiredTimer& f) {
+    fired.push_back(f.owner);
+    if (f.owner == 1) {
+      heap.cancel(id[5]);
+      heap.arm(id[4], t0 + 1ms);
+      heap.arm(id[0], t0 + 1ns);
+    }
+  });
+  EXPECT_EQ(fired, (std::vector<std::uint32_t>{1, 2, 3}));
+  EXPECT_EQ(heap.next_deadline(), t0 + 1ns);
+  // The same timer may fire again in a later run.
+  heap.arm(id[1], t0 + 2ms);
+  runner.run(heap, t0 + 2ms, [&](const utcp::FiredTimer& f) { fired.push_back(f.owner); });
+  EXPECT_EQ(fired, (std::vector<std::uint32_t>{1, 2, 3, 0, 4, 1}));
+  heap.check_invariants();
+}
+
+// §6: a handler that arms a timer at or before now aborts.
+TEST(StackIpDeathTest, HandlerArmingATimerAtOrBeforeNowAborts) {
+  // The handled timer re-armed at now (once, so that without the check the
+  // run ends instead of looping).
+  EXPECT_DEATH(
+      {
+        utcp::TimerHeap heap;
+        utcp::DueTimerRunner runner;
+        const utcp::TimerId a = heap.create(1, utcp::TimerKind::delack);
+        heap.arm(a, t0 - 1ms);
+        int fired = 0;
+        runner.run(heap, t0, [&](const utcp::FiredTimer&) {
+          if (fired++ == 0) {
+            heap.arm(a, t0);
+          }
+        });
+      },
+      "UTCP_CHECK");
+  // Another timer armed before the handled timer's deadline.
+  EXPECT_DEATH(
+      {
+        utcp::TimerHeap heap;
+        utcp::DueTimerRunner runner;
+        const utcp::TimerId a = heap.create(1, utcp::TimerKind::delack);
+        const utcp::TimerId b = heap.create(2, utcp::TimerKind::delack);
+        heap.arm(a, t0 - 1ms);
+        runner.run(heap, t0, [&](const utcp::FiredTimer& f) {
+          if (f.id == a) {
+            heap.arm(b, t0 - 2ms);
+          }
+        });
+      },
+      "UTCP_CHECK");
 }
 
 // Pool space counts like queue space: a host that keeps popped packets

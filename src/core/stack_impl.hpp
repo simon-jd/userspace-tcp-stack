@@ -115,8 +115,9 @@ public:
   // datagram is dropped and counted in IpOutDiscards (§3.4; producers of data
   // check can_transmit first, so in practice these are control packets).
   // `owner_slot`: the TCP connection the datagram belongs to, counted by
-  // queued_for() until pop_transmit returns it; nullopt for UDP, ICMP and
-  // packets of no connection (RSTs to unknown tuples, TIME-WAIT ACKs).
+  // queued_for() until pop_transmit returns it or the slot is released
+  // (release_tx_owner); nullopt for UDP, ICMP and packets of no connection
+  // (RSTs to unknown tuples, TIME-WAIT ACKs).
   bool send_ipv4(Ipv4Addr dst, std::uint8_t proto, std::uint16_t ip_id, PacketBuf&& l4,
                  std::optional<std::uint32_t> owner_slot = std::nullopt);
   // Datagrams sent with this owner_slot that are still in the transmit queue:
@@ -124,13 +125,18 @@ public:
   // of the app-limited marker (§5.4, rate_check_app_limited's queued_in_stack;
   // Linux checks sk_wmem_alloc for the qdisc and NIC queues).
   [[nodiscard]] std::uint32_t queued_for(std::uint32_t slot) const;
+  // The engine frees the connection in `slot` (together with unblock_tx): its
+  // datagrams still in the queue are sent but no longer counted, so a new
+  // connection in the same slot starts with queued_for(slot) == 0 (in Linux
+  // the skbs keep the old socket alive through sk_wmem_alloc instead).
+  void release_tx_owner(std::uint32_t slot);
   // Joins the FIFO of connections blocked on transmit or pool space (at most
   // once per slot); advance() resumes them in FIFO order through the
   // TxSpaceListener (TcpEngine::on_tx_space in a Stack), and next_deadline()
   // is now() while space is free and the FIFO is not empty (§3.4).
   void block_tx(std::uint32_t slot);
   // Removes `slot` from the FIFO (no-op if absent): the engine frees a
-  // connection that was waiting for space.
+  // connection that was waiting for space (with release_tx_owner).
   void unblock_tx(std::uint32_t slot);
   // The receiver of the FIFO's resume calls; StackImpl sets the engine.
   void set_tx_listener(TxSpaceListener* listener) noexcept { tx_listener_ = listener; }
@@ -142,8 +148,10 @@ public:
   // Blocked producers can be resumed now: the FIFO is not empty and
   // can_transmit().
   [[nodiscard]] bool resumable() const;
-  // §3.4: resumes blocked producers in FIFO order while can_transmit(), each
-  // at most once per call (one that blocks again waits for the next call).
+  // §3.4: resumes, in FIFO order and while can_transmit(), the producers that
+  // were blocked when the call began and still are, each at most once. One
+  // that blocks again, or blocks for the first time, during the call waits
+  // for the next call.
   void resume_blocked(Time now);
 
   // --- Timers (§6). Owners create their TimerIds; the Stack dispatches
@@ -210,6 +218,7 @@ public:
 
 private:
   void sync_pmtu_timer();
+  void trace_pmtu_timer(TimerOp op, Time t);
 
   StackConfig cfg_;
   StackStats stats_;
@@ -229,6 +238,23 @@ private:
   TimerId pmtu_timer_ = no_timer;
   PortAllocator ports_;
   std::uint32_t slots_used_ = 0;
+};
+
+// §6: runs the timers due at `now` in (deadline, arm_seq) order, each with
+// `now`, and aborts if a handler armed a timer at or before now. Two checks
+// detect it: a timer that fires twice in one run (it re-armed itself, or was
+// re-armed, at or before now; unchecked it could loop forever) and a fired
+// key below the previous one (a timer armed with a deadline before that of
+// the timer being handled). Not detected: a handler arming another timer at a
+// deadline in [the handled timer's deadline, now]; that needs the heap's
+// arm_seq counter at entry, which TimerHeap does not expose.
+class DueTimerRunner {
+public:
+  void run(TimerHeap& heap, Time now, FunctionRef<void(const FiredTimer&)> fire);
+
+private:
+  std::uint64_t runs_ = 0;
+  std::vector<std::uint64_t> fired_in_;  // by TimerId: runs_ of its last firing
 };
 
 // The object behind Stack (Stack::impl_): the core services and the protocol
@@ -269,9 +295,18 @@ private:
   private:
     TcpEngine* engine_;
   };
+  // Forwards ICMP errors quoting TCP to tcp.on_icmp_error.
+  class EngineIcmp final : public TcpIcmpSink {
+  public:
+    explicit EngineIcmp(TcpEngine& engine) noexcept : engine_(&engine) {}
+    void on_icmp_error(Time now, const TcpIcmpError& e) override { engine_->on_icmp_error(now, e); }
+
+  private:
+    TcpEngine* engine_;
+  };
   EngineTxSpace tx_space_{tcp};
-  std::uint64_t advance_count_ = 0;  // advance calls, for the timer re-arm check
-  std::vector<std::uint64_t> fired_in_;  // by TimerId: advance_count_ of its last firing
+  EngineIcmp tcp_icmp_{tcp};
+  DueTimerRunner timer_runner_;
 };
 
 }  // namespace utcp

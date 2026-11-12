@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "core/stack_impl.hpp"
@@ -11,6 +12,7 @@
 #include "support/packet_builder.hpp"
 #include "utcp/checksum.hpp"
 #include "utcp/config.hpp"
+#include "utcp/trace.hpp"
 
 namespace {
 
@@ -128,6 +130,44 @@ TEST(PmtuCache, StackTimerRestoresTheMtuAfterTenMinutes) {
   EXPECT_FALSE(s.core.pmtu_timer_armed());
   EXPECT_EQ(s.next_deadline(), Time::never());
   EXPECT_EQ(s.debug_usage().stack_timers_armed, 0u);
+  s.debug_check();
+}
+
+// The pmtu_expiry timer is traced when it is armed (or moved), fires and is
+// cancelled (§10.2: TraceKind::timer).
+TEST(PmtuCache, TimerArmFireAndCancelAreTraced) {
+  class Sink final : public utcp::TraceSink {
+  public:
+    void on_event(const utcp::TraceEvent& e) override {
+      EXPECT_EQ(e.kind, utcp::TraceKind::timer);
+      EXPECT_EQ(e.timer, utcp::TraceTimer::pmtu_expiry);
+      ops.emplace_back(e.t, e.timer_op);
+    }
+    std::vector<std::pair<Time, utcp::TimerOp>> ops;
+  } sink;
+  auto cfg = stack_config();
+  cfg.trace_mask = utcp::trace_bit(utcp::TraceKind::timer);
+  utcp::StackImpl s(cfg);
+  s.core.set_trace_sink(&sink);
+  s.advance(t0);
+  s.core.pmtu_lower(dst1, 1400);  // armed for t0 + 10 min
+  s.advance(t0 + 5min);
+  s.core.pmtu_lower(dst2, 1300);  // expires later: the deadline stays
+  s.core.pmtu_lower(dst1, 1300);  // dst1 now expires at t0 + 15 min too: moved
+  EXPECT_EQ(s.next_deadline(), t0 + 15min);
+  s.advance(t0 + 15min);          // fires; nothing left, so not re-armed
+  EXPECT_FALSE(s.core.pmtu_timer_armed());
+  s.core.pmtu_lower(dst1, 1400);  // armed for t0 + 25 min
+  t::Bytes probe = t::udp_datagram(t::UdpSpec{Endpoint{dst2, 1}, Endpoint{us, 9}, {}});
+  s.receive(t0 + 26min, probe);   // no advance: the timer is still armed
+  EXPECT_EQ(s.core.pmtu(dst1), 1500);  // lazy expiry cancels it
+  using Op = utcp::TimerOp;
+  const std::vector<std::pair<Time, Op>> want{{t0, Op::armed},
+                                              {t0 + 5min, Op::armed},
+                                              {t0 + 15min, Op::fired},
+                                              {t0 + 15min, Op::armed},
+                                              {t0 + 26min, Op::cancelled}};
+  EXPECT_EQ(sink.ops, want);
   s.debug_check();
 }
 

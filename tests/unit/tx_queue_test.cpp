@@ -74,6 +74,37 @@ TEST(TxQueue, CountsPacketsPerOwner) {
   q.check_invariants();
 }
 
+// A freed slot's queued packets stay queued but count for no owner.
+TEST(TxQueue, DisownForgetsAFreedSlotsPackets) {
+  PacketPool pool(16, 64);
+  TxQueue q(4);
+  q.push(packet(pool, 0), 3u);
+  q.push(packet(pool, 1), 5u);
+  q.pop();
+  q.push(packet(pool, 2), 3u);
+  q.push(packet(pool, 3), 3u);
+  q.push(packet(pool, 4), 5u);  // the ring wraps
+  EXPECT_EQ(q.queued_for(3), 2u);
+  q.disown(3);
+  EXPECT_EQ(q.queued_for(3), 0u);
+  EXPECT_EQ(q.queued_for(5), 2u);
+  q.disown(3);    // again: no-op
+  q.disown(999);  // never used: no-op
+  q.check_invariants();
+  EXPECT_EQ(tag(*q.pop()), 1u);
+  q.push(packet(pool, 5), 3u);  // the next connection in slot 3
+  EXPECT_EQ(q.queued_for(3), 1u);
+  EXPECT_EQ(q.queued_for(5), 1u);
+  q.check_invariants();
+  // Disowned packets still leave in order.
+  for (std::uint8_t i = 2; i < 6; ++i) {
+    EXPECT_EQ(tag(*q.pop()), i);
+  }
+  EXPECT_EQ(q.queued_for(3), 0u);
+  EXPECT_EQ(q.queued_for(5), 0u);
+  q.check_invariants();
+}
+
 TEST(TxQueueDeathTest, PushOnFullAborts) {
   PacketPool pool(4, 64);
   TxQueue q(1);
@@ -98,6 +129,43 @@ TEST(TxQueue, BlockedFifoKeepsOrderAndDeduplicates) {
   EXPECT_EQ(f.pop(), 9u);
   EXPECT_EQ(f.pop(), 5u);
   EXPECT_EQ(f.pop(), std::nullopt);
+  f.check_invariants();
+}
+
+// pop_before(mark) hands out only the slots pushed before the mark.
+TEST(TxQueue, BlockedFifoPopBeforeMark) {
+  BlockedFifo f;
+  EXPECT_EQ(f.pushes(), 0u);
+  f.push(4);
+  f.push(6);
+  f.push(4);  // already queued: not a push
+  EXPECT_EQ(f.pushes(), 2u);
+  const std::uint64_t mark = f.pushes();
+  EXPECT_EQ(f.pop_before(mark), 4u);
+  f.push(4);  // back of the queue, after the mark
+  f.push(8);
+  EXPECT_EQ(f.pop_before(mark), 6u);
+  EXPECT_EQ(f.pop_before(mark), std::nullopt);
+  EXPECT_EQ(f.size(), 2u);
+  f.check_invariants();
+  EXPECT_EQ(f.pop_before(f.pushes()), 4u);
+  EXPECT_EQ(f.pop_before(f.pushes()), 8u);
+  EXPECT_EQ(f.pop_before(f.pushes()), std::nullopt);
+  // Erase and growth keep the push order.
+  for (std::uint32_t s = 0; s < 40; ++s) {
+    f.push(s);
+  }
+  EXPECT_TRUE(f.erase(0));
+  const std::uint64_t mark2 = f.pushes();
+  f.push(0);
+  std::vector<std::uint32_t> got;
+  while (const auto s = f.pop_before(mark2)) {
+    got.push_back(*s);
+  }
+  EXPECT_EQ(got.size(), 39u);
+  EXPECT_EQ(got.front(), 1u);
+  EXPECT_EQ(got.back(), 39u);
+  EXPECT_EQ(f.pop(), 0u);
   f.check_invariants();
 }
 

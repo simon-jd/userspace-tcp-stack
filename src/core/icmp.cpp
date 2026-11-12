@@ -82,9 +82,8 @@ bool IcmpRateLimiter::allow(Time now) noexcept {
 
 // --- IcmpLayer
 
-IcmpLayer::IcmpLayer(StackCore& core, TcpEngine& tcp, UdpLayer& udp)
+IcmpLayer::IcmpLayer(StackCore& core, UdpLayer& udp)
     : core_(core),
-      tcp_(tcp),
       udp_(udp),
       limiter_(core.config().icmp.rate_per_s, core.config().icmp.burst) {}
 
@@ -126,10 +125,17 @@ void IcmpLayer::on_message(const wire::Ipv4View& ip) {
       break;
     case wire::icmp_dest_unreach:
       ++st.IcmpInDestUnreachs;
-      on_error(*m);
+      // Linux icmp_unreach: codes above NR_ICMP_UNREACH reach no protocol.
+      if (m->h.code <= icmp_max_unreach_code) {
+        on_error(*m);
+      }
       break;
     case wire::icmp_time_exceeded:
       ++st.IcmpInTimeExcds;  // a soft error for TCP (§3.7)
+      on_error(*m);
+      break;
+    case icmp_parameter_problem:
+      ++st.IcmpInParmProbs;  // a soft error for TCP (RFC 1122 §4.2.3.9)
       on_error(*m);
       break;
     case wire::icmp_source_quench:
@@ -193,7 +199,8 @@ void IcmpLayer::on_error(const wire::IcmpView& m) {
       // §4.7, §4.13: the engine finds the connection, checks the quoted
       // sequence number (RFC 5927 §4.1) and then applies the error.
       const TcpIcmpError e = tcp_icmp_error(m.h, *q, core_.pmtu(q->ip.dst), min_pmtu);
-      tcp_.on_icmp_error(core_.now(), e);
+      UTCP_CHECK(tcp_ != nullptr);
+      tcp_->on_icmp_error(core_.now(), e);
       break;
     }
     case ip_proto_udp: {

@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <utility>
 #include <vector>
 
 #include "core/stack_impl.hpp"
@@ -329,8 +331,23 @@ TEST(Icmp, TcpErrorFromQuote) {
   EXPECT_EQ(e.tuple, (utcp::FourTuple{Endpoint{us, 40000}, Endpoint{peer, 80}}));
   EXPECT_EQ(e.seq, Seq32(0x12345678));
   EXPECT_EQ(e.new_pmtu, 1400);
-  // Never above the cache's current value (another connection lowered it).
+  // Never above the cache's current value (another connection lowered it):
+  // then it equals that value and is no reduction.
   EXPECT_EQ(utcp::tcp_icmp_error(frag, *q, 1300, 552).new_pmtu, 1300);
+  EXPECT_EQ(utcp::tcp_icmp_error(frag, *q, 1400, 552).new_pmtu, 1400);
+  // An expired entry reads as the interface MTU, so the value can be above a
+  // connection's PMTU (say 1400): the engine compares it with tcb.pmtu.
+  EXPECT_EQ(utcp::tcp_icmp_error(w::icmp_unreach_header(w::icmp_frag_needed, 1450), *q, 1500, 552)
+                .new_pmtu,
+            1450);
+  // A next-hop MTU above the cache or below min_pmtu is clamped into
+  // [min_pmtu, cache].
+  EXPECT_EQ(utcp::tcp_icmp_error(w::icmp_unreach_header(w::icmp_frag_needed, 9000), *q, 1500, 552)
+                .new_pmtu,
+            1500);
+  EXPECT_EQ(utcp::tcp_icmp_error(w::icmp_unreach_header(w::icmp_frag_needed, 100), *q, 1500, 552)
+                .new_pmtu,
+            552);
   // Next-hop MTU 0: plateau below the quoted 1500 bytes.
   EXPECT_EQ(utcp::tcp_icmp_error(w::icmp_unreach_header(w::icmp_frag_needed, 0), *q, 1500, 552).new_pmtu,
             1492);
@@ -389,6 +406,119 @@ TEST(Icmp, ReceivedErrorsAreCountedAndDispatched) {
   EXPECT_EQ(st.IcmpInMsgs, 9u);
   EXPECT_TRUE(drain(s).empty());  // ICMP errors are never answered
   s.debug_check();
+}
+
+// Records what IcmpLayer hands to TCP.
+class TcpErrorRecorder final : public utcp::TcpIcmpSink {
+public:
+  void on_icmp_error(Time now, const utcp::TcpIcmpError& e) override {
+    times.push_back(now);
+    got.push_back(e);
+  }
+  std::vector<Time> times;
+  std::vector<utcp::TcpIcmpError> got;
+};
+
+// Received errors quoting TCP reach TcpEngine::on_icmp_error through
+// Stack::receive with the quoted tuple and sequence number (§4.7, §4.13), as
+// Linux icmp_unreach/tcp_v4_err: destination unreachable codes 0-15, time
+// exceeded and parameter problem; not codes above 15, source quench,
+// redirects, or quotes of other hosts' or other protocols' datagrams.
+TEST(Icmp, TcpErrorsReachTheEngineThroughReceive) {
+  StackImpl s(config());
+  TcpErrorRecorder rec;
+  s.icmp.set_tcp_sink(&rec);
+  s.advance(t0);
+  const Ipv4Addr us = s.core.local_addr();
+  const Ipv4Addr router = Ipv4Addr::from_octets(192, 0, 2, 254);
+  const t::Bytes seg = tcp_offending(us, 1000, 100);
+  const auto quote = std::span<const std::byte>(seg).first(28);
+  auto receive_icmp = [&](std::uint8_t type, std::uint8_t code, std::uint32_t rest,
+                          std::span<const std::byte> body) {
+    t::IpSpec ip;
+    ip.src = router;
+    ip.dst = us;
+    ip.proto = utcp::ip_proto_icmp;
+    s.receive(s.core.now(), t::ipv4(ip, t::icmp(type, code, rest, body)));
+  };
+  const utcp::FourTuple tuple{Endpoint{us, 40000}, Endpoint{peer, 80}};
+  receive_icmp(w::icmp_dest_unreach, w::icmp_frag_needed, 1400, seg);
+  ASSERT_EQ(rec.got.size(), 1u);
+  EXPECT_EQ(rec.times[0], t0);
+  EXPECT_EQ(rec.got[0].type, w::icmp_dest_unreach);
+  EXPECT_EQ(rec.got[0].code, w::icmp_frag_needed);
+  EXPECT_EQ(rec.got[0].tuple, tuple);
+  EXPECT_EQ(rec.got[0].seq, Seq32(1000));
+  EXPECT_EQ(rec.got[0].new_pmtu, 1400);
+  // The IP layer leaves the cache alone (the engine lowers it after its
+  // sequence check); new_pmtu follows the cache.
+  EXPECT_EQ(s.core.pmtu(peer), 1500);
+  s.core.pmtu_lower(peer, 1300);
+  receive_icmp(w::icmp_dest_unreach, w::icmp_frag_needed, 1400, seg);
+  ASSERT_EQ(rec.got.size(), 2u);
+  EXPECT_EQ(rec.got[1].new_pmtu, 1300);
+  // After the entry expires the cache reads 1500 again.
+  s.advance(t0 + 10min);
+  receive_icmp(w::icmp_dest_unreach, w::icmp_frag_needed, 1450, seg);
+  ASSERT_EQ(rec.got.size(), 3u);
+  EXPECT_EQ(rec.got[2].new_pmtu, 1450);
+  EXPECT_EQ(rec.times[2], t0 + 10min);
+  // Other errors carry no MTU.
+  receive_icmp(w::icmp_dest_unreach, w::icmp_port_unreach, 0, quote);
+  receive_icmp(w::icmp_dest_unreach, 15, 0, quote);  // precedence cutoff, the last code
+  receive_icmp(w::icmp_time_exceeded, 0, 0, quote);
+  receive_icmp(utcp::icmp_parameter_problem, 0, 20u << 24, quote);
+  ASSERT_EQ(rec.got.size(), 7u);
+  const std::vector<std::pair<std::uint8_t, std::uint8_t>> want{
+      {w::icmp_dest_unreach, w::icmp_port_unreach},
+      {w::icmp_dest_unreach, 15},
+      {w::icmp_time_exceeded, 0},
+      {utcp::icmp_parameter_problem, 0}};
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    EXPECT_EQ(rec.got[3 + i].type, want[i].first);
+    EXPECT_EQ(rec.got[3 + i].code, want[i].second);
+    EXPECT_EQ(rec.got[3 + i].tuple, tuple);
+    EXPECT_EQ(rec.got[3 + i].seq, Seq32(1000));
+    EXPECT_EQ(rec.got[3 + i].new_pmtu, 0);
+  }
+  EXPECT_EQ(s.core.stats().IcmpInParmProbs, 1u);
+  // Not dispatched.
+  const auto dest_unreachs = s.core.stats().IcmpInDestUnreachs;
+  receive_icmp(w::icmp_dest_unreach, 16, 0, quote);  // above NR_ICMP_UNREACH
+  receive_icmp(w::icmp_dest_unreach, 255, 0, quote);
+  EXPECT_EQ(s.core.stats().IcmpInDestUnreachs, dest_unreachs + 2);  // counted all the same
+  receive_icmp(w::icmp_source_quench, 0, 0, quote);
+  receive_icmp(w::icmp_redirect, 1, router.v, quote);
+  receive_icmp(13, 0, 0, quote);  // timestamp request: ignored
+  const t::Bytes foreign = tcp_offending(Ipv4Addr::from_octets(10, 9, 9, 9), 1, 10);
+  receive_icmp(w::icmp_dest_unreach, w::icmp_port_unreach, 0,
+               std::span<const std::byte>(foreign).first(28));
+  const t::Bytes udp = t::udp_datagram(t::UdpSpec{Endpoint{us, 7}, Endpoint{peer, 7}, t::pattern(4)});
+  receive_icmp(w::icmp_dest_unreach, w::icmp_port_unreach, 0, udp);
+  receive_icmp(w::icmp_dest_unreach, w::icmp_port_unreach, 0, quote.first(27));  // short quote
+  EXPECT_EQ(rec.got.size(), 7u);
+  EXPECT_TRUE(drain(s).empty());
+  s.debug_check();
+}
+
+// UDP gets the same set: parameter problem is counted for it, codes above
+// 15 are not.
+TEST(Icmp, UdpErrorsFollowTheSameCodeRules) {
+  StackImpl s(config());
+  s.advance(t0);
+  const Ipv4Addr us = s.core.local_addr();
+  const t::Bytes udp = t::udp_datagram(t::UdpSpec{Endpoint{us, 7}, Endpoint{peer, 7}, t::pattern(4)});
+  auto receive_icmp = [&](std::uint8_t type, std::uint8_t code) {
+    s.receive(t0, t::icmp_error(peer, us, type, code, 0, udp, 28));
+  };
+  receive_icmp(utcp::icmp_parameter_problem, 0);
+  EXPECT_EQ(s.core.stats().udp_icmp_errors, 1u);
+  receive_icmp(w::icmp_dest_unreach, 16);
+  EXPECT_EQ(s.core.stats().udp_icmp_errors, 1u);
+  receive_icmp(w::icmp_dest_unreach, w::icmp_port_unreach);
+  EXPECT_EQ(s.core.stats().udp_icmp_errors, 2u);
+  EXPECT_EQ(s.core.stats().IcmpInParmProbs, 1u);
+  EXPECT_EQ(s.core.stats().IcmpInDestUnreachs, 2u);
 }
 
 }  // namespace
