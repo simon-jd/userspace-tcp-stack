@@ -241,13 +241,10 @@ private:
 };
 
 // §6: runs the timers due at `now` in (deadline, arm_seq) order, each with
-// `now`, and aborts if a handler armed a timer at or before now. Two checks
-// detect it: a timer that fires twice in one run (it re-armed itself, or was
-// re-armed, at or before now; unchecked it could loop forever) and a fired
-// key below the previous one (a timer armed with a deadline before that of
-// the timer being handled). Not detected: a handler arming another timer at a
-// deadline in [the handled timer's deadline, now]; that needs the heap's
-// arm_seq counter at entry, which TimerHeap does not expose.
+// `now`, and aborts if a handler armed a timer at or before now: a fired timer
+// whose arm_seq is at or above the heap's next_arm_seq() at entry was armed
+// during this run. Two further checks stay as a second line: a timer that
+// fires twice in one run, and a fired key below the previous one.
 class DueTimerRunner {
 public:
   void run(TimerHeap& heap, Time now, FunctionRef<void(const FiredTimer&)> fire);

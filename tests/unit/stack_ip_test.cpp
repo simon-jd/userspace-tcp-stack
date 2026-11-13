@@ -585,6 +585,22 @@ TEST(StackIpDeathTest, HandlerArmingATimerAtOrBeforeNowAborts) {
         });
       },
       "UTCP_CHECK");
+  // Another timer armed between the handled timer's deadline and now: only
+  // the next_arm_seq() mark catches it.
+  EXPECT_DEATH(
+      {
+        utcp::TimerHeap heap;
+        utcp::DueTimerRunner runner;
+        const utcp::TimerId a = heap.create(1, utcp::TimerKind::delack);
+        const utcp::TimerId b = heap.create(2, utcp::TimerKind::delack);
+        heap.arm(a, t0 - 2ms);
+        runner.run(heap, t0, [&](const utcp::FiredTimer& f) {
+          if (f.id == a) {
+            heap.arm(b, t0 - 1ms);
+          }
+        });
+      },
+      "UTCP_CHECK");
 }
 
 // Pool space counts like queue space: a host that keeps popped packets

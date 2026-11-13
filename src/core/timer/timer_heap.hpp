@@ -89,6 +89,9 @@ public:
   std::optional<FiredTimer> pop_due(Time now) noexcept;
 
   [[nodiscard]] std::size_t armed_count() const noexcept { return heap_.size(); }
+  // The arm_seq the next arm() call takes: every timer armed from now on has
+  // a key with arm_seq >= this value (DueTimerRunner's check, §6).
+  [[nodiscard]] std::uint64_t next_arm_seq() const noexcept { return next_seq_; }
   [[nodiscard]] std::size_t timer_count() const noexcept { return nodes_.size() - free_.size(); }
 
   // Verifies the heap order, the position index, key <= wanted and an exact

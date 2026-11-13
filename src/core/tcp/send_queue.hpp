@@ -172,6 +172,8 @@ public:
   [[nodiscard]] std::span<const TxSeg> segs() const;
   // The TxSeg starting at `off`, or nullptr.
   [[nodiscard]] const TxSeg* find(std::uint64_t off) const;
+  // Memory held by the ring (debug_usage, §12).
+  [[nodiscard]] std::uint32_t chunks_held() const { return ring_.chunks_held(); }
 
   // Counters equal a recount of segs(); aborts on failure (Tcb::check_invariants).
   void check_invariants() const;

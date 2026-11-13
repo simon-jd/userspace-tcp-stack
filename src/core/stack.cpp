@@ -211,8 +211,10 @@ void StackImpl::receive(Time now, std::span<const std::byte> ipv4, RxMeta meta) 
 
 void DueTimerRunner::run(TimerHeap& heap, Time now, FunctionRef<void(const FiredTimer&)> fire) {
   ++runs_;
+  const std::uint64_t mark = heap.next_arm_seq();
   std::optional<TimerKey> last;
   while (const auto f = heap.pop_due(now)) {
+    UTCP_CHECK(f->key.arm_seq < mark);  // armed by a handler of this run at or before now
     // §6: a handler may not arm a timer at or before now (see the class
     // comment for what these two checks cover).
     if (f->id >= fired_in_.size()) {
