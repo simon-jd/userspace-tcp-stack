@@ -230,5 +230,25 @@ there; sysctls are set with `docker run --sysctl`.
 Checks: `tests/interop/backend_testbed.sh` (m1-backend tests 3-6, the
 UtcpTransport self-check on utcp0 and a DNS query through the NAT),
 `tests/interop/backend_lateness.sh` (test 2, timing),
-`tests/interop/backend_udp_echo.sh` (test 7, needs the m1-ip Stack). Results
-are in the m1-backend report.
+`tests/interop/backend_udp_echo.sh` (test 7, needs the m1-ip Stack).
+
+### Last results (2026-11-12, image `utcp-m1-backend-testbed:dev`)
+
+- `backend_testbed.sh`: all PASS. Peer ping 3/3 answered by `tun_probe
+  --reply` on utcp0 (`qdisc pfifo ... qlen 10000`, `limit 10000p`, peer
+  `tcp_no_metrics_save = 1`); `backend_transport_check --tun utcp0` 13/13 and
+  open() on a down utcp0 refused; a 1500-byte DF datagram from 198.18.0.2 to
+  198.19.3.4 got `198.18.0.1 > 198.18.0.2: ICMP 198.19.3.4 unreachable - need
+  to frag (mtu 1400)` on utcp0, and the peer's `ping -M do -s 1472` got `From
+  198.19.3.3 ... Frag needed and DF set (mtu = 1400)`; a DNS query through the
+  NAT got 2 A records; N1-N4 and N0 installed on eth0 and utcp0; all 10
+  combo.sh peers read back the requested values (tcp_ecn=3 accepted); down.sh
+  left nothing.
+- `backend_lateness.sh` (container on CPUs 8-15, which were 0-4.5 % busy with
+  other tenants' processes before and after): 10 000 waits of 1 ms, lateness
+  p50 2.44 us, p90 8.65 us, p99 11.9 us, p99.9 47.8 us, max 247 us, process
+  CPU 0.25 %. With `--spin-us 50`: p50 95 ns, p99 1.11 us, p99.9 4.05 us, max
+  491 us, CPU 4.9 % (spinning 458 ms of 10.0 s).
+- `backend_udp_echo.sh`: not run on this branch (the Stack is the link stub).
+  On a local merge with the m1-ip branch: ping 3/3 answered by the stack,
+  100/100 datagrams echoed unchanged.
