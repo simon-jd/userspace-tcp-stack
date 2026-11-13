@@ -62,11 +62,17 @@ public:
   // RTO expiry (§5.3): reneging check (a SACKed head clears every SACK mark,
   // counts TcpExtTCPSACKReneging, and makes rate samples invalid until
   // recovery ends), every non-SACKed segment marked lost, ssthresh per RFC
-  // 5681 §3.1, cwnd = 1, Loss with recover = SND.NXT.
+  // 5681 §3.1, cwnd = in-flight + 1 (1 unless reneging), Loss with recover =
+  // SND.NXT. The engine then increments backoff and rto_count and runs
+  // transmit(); the rto_rexmit re-arms the RTO at the new backoff (Linux
+  // tcp_retransmit_timer).
   void on_rto(RecoveryCtx& c);
-  // PMTU decrease (§4.13, Linux tcp_simple_retransmit): segments longer than
-  // the new MSS were marked lost; enter Loss without a cwnd cut, ssthresh =
-  // max(ssthresh, 3/4 cwnd).
+  // PMTU decrease (§4.13, Linux tcp_simple_retransmit), with cc.mss already
+  // the new mss_cache: marks TxSegs longer than it lost, splits them
+  // (SendQueue::split_to_mss), and if anything is lost enters Loss without a
+  // cwnd cut, recover = SND.NXT, ssthresh = tcp_current_ssthresh (max(ssthresh,
+  // 3/4 cwnd) outside a cwnd reduction); a pending fast retransmit is
+  // dropped, as the head is then resent under cwnd (§4.9).
   void on_pmtu_drop(RecoveryCtx& c);
   // Kind and deadline of the xmit timer once the connection is synchronized.
   // M1: rto with data or FIN outstanding (RFC 6298 §5), persist at zero
@@ -74,8 +80,20 @@ public:
   // our SYN or SYN-ACK is unacknowledged (it is not a TxSeg, §3.2) the engine
   // arms the xmit timer as rto itself, with the SYN schedule of §4.8
   // (syn_linear_timeouts, rto_after_syn_rexmit), and does not call this.
+  // Deadlines are fixed when armed (Linux icsk_timeout), at now +
+  // rto_backed_off(backoff): rto by the first data transmission with the
+  // timer not running as rto, by a retransmission of the SND.UNA segment, and
+  // by an ACK that advances SND.UNA (RFC 6298 §5.1, §5.3; Linux
+  // tcp_rearm_rto), or at now + max(srtt/2, 10 ms) by an ACK that stops at a
+  // SACKed segment; persist when nothing is in flight and SND.WND <
+  // min(unsent, mss) (zero window or the SWS override), re-armed by ACKs
+  // (tcp_ack_probe) and by on_burst_end once it has expired. none otherwise,
+  // deadline Time::never(). A queued FIN that was never sent is not visible
+  // here (the engine covers that case).
   [[nodiscard]] std::pair<XmitTimer, Time> xmit_timer(const RecoveryCtx& c) const;
-  // reo and pto expiries (M2a); the engine handles rto and persist itself.
+  // reo and pto expiries (M2a). For rto and persist the engine runs the
+  // expiry itself (on_rto; the probe); calling this for them only stops the
+  // timer until the next arming event.
   void on_xmit_timer(RecoveryCtx& c, XmitTimer kind);
 
   [[nodiscard]] CaState state() const;
@@ -88,7 +106,23 @@ public:
   [[nodiscard]] bool sack_reneg() const;
 
 private:
-  // Implementation state is m1-tx's.
+  void refresh(RecoveryCtx& c) const;  // the CcConn views recovery owns
+  void set_state(RecoveryCtx& c, CaState s);
+  void fastretrans_alert(RecoveryCtx& c, bool dupack, bool advanced, AckOutcome& out);
+  void enter_recovery(RecoveryCtx& c);
+  void try_to_open(RecoveryCtx& c);
+  void mark_head_lost(RecoveryCtx& c);
+  void reno_dupack(RecoveryCtx& c, AckOutcome& out);
+  void timer_after_ack(RecoveryCtx& c);
+  [[nodiscard]] bool persist_wanted(const RecoveryCtx& c) const;
+  void arm(XmitTimer kind, Time deadline);
+
+  CaState state_ = CaState::open;
+  std::uint64_t recover_ = 0;  // Linux high_seq, as SendQueue::nxt_with_fin
+  bool fast_rexmit_pending_ = false;
+  bool sack_reneg_ = false;  // Linux is_sack_reneg
+  XmitTimer timer_ = XmitTimer::none;
+  Time deadline_ = Time::never();
 };
 
 }  // namespace utcp

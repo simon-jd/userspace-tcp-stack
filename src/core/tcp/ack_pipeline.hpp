@@ -39,8 +39,17 @@ struct AckContext {
 // LossRecovery::on_ack (tcp_fastretrans_alert); delivered and lost counts;
 // the rate sample (tcp_rate_gen, M2b); then cong_control, or cong_avoid
 // outside cwnd reduction, and the pacing rate (tcp_cong_control). Clips
-// in.new_una and the SACK blocks to end() and reports the FIN ACK. The engine
-// then updates the window, timers and state.
+// in.new_una and the SACK blocks to end() and reports the first ACK that
+// covers our FIN (ack_fin_acked); a SACK block must start above the new
+// SND.UNA (Linux tcp_is_sackblock_valid). A valid RTT sample (out.seq_rtt >=
+// 0) means the engine resets backoff (RFC 6298 §5.7); the timers recovery
+// re-armed already assume it. The engine then updates the window, timers and
+// state.
 AckOutcome process_ack(AckContext& c, const AckInput& in);
+// The same, calling `observe` first for each newly delivered TxSeg, in the
+// order the pipeline delivers them: SACKed segments (via_sack) before the
+// cumulatively acknowledged ones, each group in sequence order (tracing and
+// the pipeline-order test).
+AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe);
 
 }  // namespace utcp

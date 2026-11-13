@@ -14,8 +14,8 @@ namespace utcp {
 
 // RFC 5681 slow start (cwnd += delivered, capped at ssthresh, Linux
 // tcp_slow_start), congestion avoidance with cwnd_cnt (tcp_cong_avoid_ai),
-// growth only while cwnd-limited, ssthresh = max(FlightSize / 2, 2) (RFC 5681
-// eq. 4; Linux reno uses cwnd / 2).
+// growth only while is_cwnd_limited(), ssthresh = max(FlightSize / 2, 2) (RFC 5681
+// eq. 4, FlightSize = CcConn::packets_out; Linux reno uses cwnd / 2).
 class NewReno final : public CongestionControl {
 public:
   [[nodiscard]] std::string_view name() const override;
