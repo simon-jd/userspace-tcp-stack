@@ -137,8 +137,11 @@ three are reported.
   preset. GitHub-hosted runners do not have g++ 15 or clang 21, hence the
   container. Not run yet: the repository has not been pushed to GitHub.
 
-Last result (2026-11-11, `ci/docker-ci.sh` on commit 35c86e1): all six
-presets ok, 23 of 23 tests passed in each, about 50 s wall time for all six.
+Last result (2026-11-12, `ci/docker-ci.sh` on commit e4361b0 of the
+m1-backend branch): all eight presets ok, 231-234 tests passed in each, no
+compiler warnings; the digest step was skipped (no `utcp-sim` yet). The same
+with `UTCP_IMAGE=utcp-m1-backend-testbed:dev`, the image built from the
+Dockerfile with nftables.
 
 ## verify-env
 
