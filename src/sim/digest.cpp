@@ -23,6 +23,14 @@ void RunDigest::packet(std::uint32_t node, Time t, std::span<const std::byte> da
   h_.update(datagram);
 }
 
+void RunDigest::delivery(std::uint32_t node, Time t, std::span<const std::byte> datagram) noexcept {
+  h_.update_u8('D');
+  h_.update_u32(node);
+  h_.update_u64(static_cast<std::uint64_t>(t.ns));
+  h_.update_u32(static_cast<std::uint32_t>(datagram.size()));
+  h_.update(datagram);
+}
+
 void RunDigest::socket_event(std::uint32_t node, Time t, std::uint32_t slot, std::uint32_t gen,
                              std::uint8_t proto, std::uint16_t events) noexcept {
   h_.update_u8('E');

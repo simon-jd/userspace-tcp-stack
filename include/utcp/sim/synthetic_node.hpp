@@ -76,7 +76,7 @@ public:
     std::vector<std::byte> bytes;
   };
   [[nodiscard]] const std::vector<Received>& received() const noexcept { return received_; }
-  // 'r' receive, 'a' advance, 'p' run_apps with a due action, in call order.
+  // 'r' receive, 'a' advance, 'p' run_apps that acted, in call order.
   [[nodiscard]] const std::vector<std::pair<char, Time>>& calls() const noexcept { return calls_; }
   [[nodiscard]] std::uint32_t pool_available() const noexcept { return pool_.available(); }
   [[nodiscard]] std::uint32_t pool_size() const noexcept { return pool_.count(); }
@@ -92,10 +92,13 @@ public:
   // Test behaviours. fixed_deadline: next_deadline() always returns it (a
   // deadline that never moves). activity_per_advance: advance() bumps
   // activity() by this much. usage: what debug_usage() reports (nullopt: a
-  // node without a Stack).
+  // node without a Stack). act_on_every_call: run_apps() acts (logs 'p',
+  // calls on_app) on every call, as StackNode's applications do, not only
+  // when an app_at time is due.
   std::optional<Time> fixed_deadline;
   std::uint64_t activity_per_advance = 0;
   std::optional<StackUsage> usage;
+  bool act_on_every_call = false;
   bool done = true;  // finished()
 
   void receive(Time now, std::span<const std::byte> datagram) override;

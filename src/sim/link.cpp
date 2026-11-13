@@ -250,18 +250,27 @@ std::size_t mutate_garbage(std::span<std::byte> buf, std::size_t len, Rng& rng, 
   UTCP_CHECK(len <= buf.size());
   const auto d = buf.first(len);
   const std::size_t ihl = ipv4_ihl(d);
+  // One draw per statement, in a fixed order (§13.1: function arguments and
+  // the operands of most operators are evaluated in an unspecified order, so
+  // two draws in one expression can differ between g++ and clang).
   const auto random_byte = [&](std::size_t from) {
     if (from < len) {
-      d[from + rng.below(static_cast<std::uint32_t>(len - from))] =
-          static_cast<std::byte>(rng.below(256));
+      const std::size_t at = from + rng.below(static_cast<std::uint32_t>(len - from));
+      const auto v = static_cast<std::byte>(rng.below(256));
+      d[at] = v;
     }
   };
   // Sequence-like fields: half the time a value near the old one (so it can
   // land inside the window), otherwise anything.
   const auto near_or_random = [&](std::size_t at) {
     const std::uint32_t old = wire::load_be32(d, at);
-    const std::uint32_t v = rng.below(2) == 0 ? old + rng.below(131072) - 65536
-                                              : static_cast<std::uint32_t>(rng.next());
+    std::uint32_t v = 0;
+    if (rng.below(2) == 0) {
+      const std::uint32_t delta = rng.below(131072);
+      v = old + delta - 65536;
+    } else {
+      v = static_cast<std::uint32_t>(rng.next());
+    }
     wire::store_be32(d, at, v);
   };
   if (ihl == 0) {
@@ -290,8 +299,10 @@ std::size_t mutate_garbage(std::span<std::byte> buf, std::size_t len, Rng& rng, 
       case GarbageKind::options:
         if (doff > wire::tcp_header_min_len && t + doff <= len) {
           const std::size_t optlen = doff - wire::tcp_header_min_len;
-          d[t + wire::tcp_header_min_len + rng.below(static_cast<std::uint32_t>(optlen))] =
-              static_cast<std::byte>(rng.below(256));
+          const std::size_t at =
+              t + wire::tcp_header_min_len + rng.below(static_cast<std::uint32_t>(optlen));
+          const auto v = static_cast<std::byte>(rng.below(256));
+          d[at] = v;
         } else {
           kind = GarbageKind::window;
           wire::store_be16(d, t + 14, static_cast<std::uint16_t>(rng.below(65536)));
@@ -325,7 +336,11 @@ std::size_t mutate_garbage(std::span<std::byte> buf, std::size_t len, Rng& rng, 
     switch (rng.below(3)) {
       case 0:
         kind = GarbageKind::ports;
-        wire::store_be16(d, ihl + 2 * rng.below(2), static_cast<std::uint16_t>(rng.below(65536)));
+        {
+          const std::size_t at = ihl + 2 * std::size_t{rng.below(2)};  // source or destination
+          const auto v = static_cast<std::uint16_t>(rng.below(65536));
+          wire::store_be16(d, at, v);
+        }
         break;
       case 1:
         kind = GarbageKind::truncate;

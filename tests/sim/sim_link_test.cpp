@@ -5,6 +5,7 @@
 #include <bit>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "core/wire/icmp.hpp"
@@ -14,6 +15,7 @@
 #include "utcp/checksum.hpp"
 #include "utcp/random.hpp"
 #include "utcp/sim/datagram.hpp"
+#include "utcp/sim/digest.hpp"
 #include "utcp/sim/link.hpp"
 
 namespace utcp::sim {
@@ -391,6 +393,70 @@ TEST(SimLink, GarbageCoversEveryKind) {
       EXPECT_GT(seen[k], 0u) << "kind " << k;
     }
   }
+}
+
+TEST(SimLink, GarbageDrawOrderIsFixed) {
+  // §13.1: one draw per statement, so the g++ and clang builds mutate the
+  // same bytes (two draws in the arguments of one call are evaluated in an
+  // unspecified order). A copy of the stream replays the documented order of
+  // the UDP `ports` case: the case, which port, then its value.
+  const auto base = udp_packet(5, 64);
+  std::uint32_t ports = 0;
+  for (std::uint32_t i = 0; i < 300; ++i) {
+    Rng rng = Rng::derive(master, "test/order/" + std::to_string(i));
+    Rng ref = rng;
+    auto d = base;
+    GarbageKind kind = GarbageKind::payload;
+    const std::size_t len = mutate_garbage(d, d.size(), rng, kind);
+    if (ref.below(3) != 0) {
+      continue;  // truncate or payload
+    }
+    ASSERT_EQ(kind, GarbageKind::ports);
+    const std::size_t at = 20 + 2 * std::size_t{ref.below(2)};
+    const auto v = static_cast<std::uint16_t>(ref.below(65536));
+    const std::size_t other = at == 20 ? 22 : 20;
+    EXPECT_EQ(wire::load_be16(d, at), v) << i;
+    EXPECT_EQ(wire::load_be16(d, other), wire::load_be16(base, other)) << i;
+    EXPECT_EQ(len, base.size());
+    EXPECT_EQ(rng.state(), ref.state()) << i;  // nothing else drawn
+    ++ports;
+  }
+  EXPECT_GT(ports, 50u);
+}
+
+TEST(SimLink, CorruptionOutputIsTheSameInEveryBuild) {
+  // A digest of 6000 bit flips and garbage mutations of TCP (with and without
+  // options), UDP and ICMP datagrams of many sizes. Both compilers' builds
+  // run this test against the same value, so an evaluation-order difference
+  // anywhere in the corruption code fails one of them.
+  Rng rng = Rng::derive(master, "test/golden");
+  RunDigest h;
+  for (std::uint32_t i = 0; i < 6000; ++i) {
+    std::vector<std::byte> d;
+    switch (i % 4) {
+      case 0: d = udp_packet(i, i % 300); break;
+      case 1: d = tcp_packet(i * 7919, i % 300); break;
+      case 2: d = tcp_packet(i * 7919, i % 300, true, true); break;
+      default: {
+        const std::vector<std::byte> body(i % 100, std::byte{0x33});
+        d = build_icmp_echo(node_addr(0), node_addr(1), wire::icmp_echo_request,
+                            static_cast<std::uint16_t>(i), 1, body, 9);
+        break;
+      }
+    }
+    std::size_t len = d.size();
+    std::uint32_t tag = 100;
+    if ((i / 4) % 2 == 0) {
+      tag = static_cast<std::uint32_t>(flip_one_bit(d, rng));
+    } else {
+      GarbageKind kind = GarbageKind::payload;
+      len = mutate_garbage(d, d.size(), rng, kind);
+      tag = static_cast<std::uint32_t>(kind);
+    }
+    h.packet(tag, Time{i}, std::span<const std::byte>(d).first(len));
+  }
+  const auto hex = RunDigest::hex(h.value());
+  EXPECT_EQ(std::string(hex.data(), hex.size()), "895771f004314abf");
 }
 
 // --- Test 4: MTU.

@@ -6,12 +6,13 @@
 // generation and are skipped), application wake-ups and delayed host drains.
 // Virtual time jumps from event to event.
 //
-// After every node call the World lets the node's applications act
-// (run_apps), drains pop_transmit() into link storage (at most
-// host_drain_max per wake-up, the rest after host_delay), runs debug_check(),
-// and calls advance(now) again while next_deadline() <= now. Application
-// wake-ups call advance(t) before the applications act. Trace events reach
-// the checkers as the stack emits them.
+// After every node call the World calls advance(now) unless the call was
+// one, lets the node's applications act (run_apps), drains pop_transmit()
+// into link storage (at most host_drain_max per wake-up, the rest after
+// host_delay), runs debug_check(), and calls advance(now) again while
+// next_deadline() <= now. So every application action follows an advance(t)
+// at its instant (§7.1). Trace events reach the checkers as the stack emits
+// them.
 //
 // The run ends when the workload has finished and every node has settled
 // (no connection timer armed, nothing queued, no datagram on a link), or at

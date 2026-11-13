@@ -316,7 +316,8 @@ Time ScriptedNode::next_app_deadline() const {
 }
 
 void ScriptedNode::run_apps(Time now) {
-  if (app_times_.empty() || app_times_.front() > now) {
+  const bool due = !app_times_.empty() && app_times_.front() <= now;
+  if (!due && !act_on_every_call) {
     return;
   }
   calls_.emplace_back('p', now);

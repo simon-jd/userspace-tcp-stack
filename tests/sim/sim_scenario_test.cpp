@@ -2,8 +2,13 @@
 // seeded start time (m1-sim acceptance test 5, generator part).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <map>
+#include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "utcp/random.hpp"
 #include "utcp/sim/link.hpp"
@@ -53,7 +58,8 @@ TEST(SimScenario, ParseRejectsBadInput) {
   EXPECT_TRUE(parse_kv("# comment\n\n" + good).has_value());
   // A newer generator's scenario.
   std::string newer = good;
-  newer.replace(newer.find("gen_version=1"), 13, "gen_version=" + std::to_string(gen_version + 1));
+  const std::string ours = "gen_version=" + std::to_string(gen_version);
+  newer.replace(newer.find(ours), ours.size(), "gen_version=" + std::to_string(gen_version + 1));
   EXPECT_FALSE(parse_kv(newer).has_value());
   EXPECT_FALSE(parse_kv(good + "no_such_key=1\n").has_value());
   EXPECT_FALSE(parse_kv(good + "seed=1\n").has_value());  // duplicate
@@ -172,6 +178,73 @@ TEST(SimScenario, GeneratedRangesMatchDesign) {
   EXPECT_GT(garbage, 100u);   // 5 %
   EXPECT_GT(renege, 250u);    // 5 % per node
   EXPECT_GT(isn, 700u);       // 10 % per node
+}
+
+bool listener_mode(const ConnSpec& c) {
+  return c.mode == CloseMode::close || c.mode == CloseMode::half_close ||
+         c.mode == CloseMode::abort;
+}
+
+TEST(SimScenario, SomeSeedsShareAListenerBeyondItsBacklog) {
+  // Backlog limits (§7.2): several clients start within 10 ms against one
+  // listener whose backlog is smaller than their number.
+  std::uint64_t shared = 0;
+  for (std::uint64_t seed = 0; seed < 5000; ++seed) {
+    const Scenario s = generate_scenario(seed);
+    std::map<std::pair<std::uint32_t, std::uint16_t>, std::vector<const ConnSpec*>> listeners;
+    for (const ConnSpec& c : s.conn) {
+      if (listener_mode(c)) {
+        listeners[{1 - c.client, c.server_port}].push_back(&c);
+      }
+    }
+    for (const auto& [key, group] : listeners) {
+      if (group.size() < 2) {
+        continue;
+      }
+      ++shared;
+      std::set<std::uint16_t> ports;
+      Duration lo = group[0]->start, hi = group[0]->start;
+      for (const ConnSpec* c : group) {
+        ASSERT_NE(c->client_port, 0u) << seed;
+        ports.insert(c->client_port);
+        ASSERT_EQ(c->backlog, group[0]->backlog) << seed;
+        lo = std::min(lo, c->start);
+        hi = std::max(hi, c->start);
+      }
+      ASSERT_EQ(ports.size(), group.size()) << seed;
+      ASSERT_GE(group[0]->backlog, 1u) << seed;
+      ASSERT_LT(group[0]->backlog, group.size()) << seed;
+      ASSERT_LT(hi - lo, 10ms) << seed;
+    }
+  }
+  // 10 % of seeds, of which about 83 % have two or more listener-mode
+  // connections.
+  EXPECT_GT(shared, 300u);
+  EXPECT_LT(shared, 550u);
+}
+
+TEST(SimScenario, ParseRejectsAmbiguousSharedListener) {
+  Scenario s = two_node_scenario(1, LinkParams{}, LinkParams{});
+  s.conn.resize(2);
+  s.conn[0].server_port = s.conn[1].server_port = 5000;
+  s.conn[0].client_port = 41000;
+  s.conn[1].client_port = 41001;
+  ASSERT_TRUE(parse_kv(to_kv(s)).has_value());
+  Scenario bad = s;
+  bad.conn[1].client_port = 0;  // the server cannot tell the two apart
+  EXPECT_FALSE(parse_kv(to_kv(bad)).has_value());
+  bad = s;
+  bad.conn[1].client_port = 41000;
+  EXPECT_FALSE(parse_kv(to_kv(bad)).has_value());
+  bad = s;
+  bad.conn[1].backlog = 2;
+  EXPECT_FALSE(parse_kv(to_kv(bad)).has_value());
+  bad = s;
+  bad.conn[1].mode = CloseMode::refused;  // would not be refused
+  EXPECT_FALSE(parse_kv(to_kv(bad)).has_value());
+  bad = s;
+  bad.conn[1].client = 1;  // the other node's port 5000: no conflict
+  EXPECT_TRUE(parse_kv(to_kv(bad)).has_value());
 }
 
 }  // namespace

@@ -35,6 +35,7 @@ std::string_view to_string(Plant p) noexcept {
     case Plant::fail: return "fail";
     case Plant::abort: return "abort";
     case Plant::hang: return "hang";
+    case Plant::segv: return "segv";
   }
   return "?";
 }
@@ -192,7 +193,11 @@ Scenario generate_scenario(std::uint64_t seed, NodeKind nodes, const GenOptions&
   // Path character, shared by both directions.
   Rng rp = Rng::derive(master, "gen/path");
   const std::uint64_t delay = log_uniform(rp, 100'000, 100'000'000);  // 0.1-100 ms
-  const std::uint64_t jitter = rp.below(2) == 0 ? 0 : rp.below64(delay / 2 + 1);
+  // One draw per statement, conditions before values (§13.1).
+  std::uint64_t jitter = 0;
+  if (rp.below(2) != 0) {
+    jitter = rp.below64(delay / 2 + 1);
+  }
   const bool reorder = rp.below(10) < 3;
   const std::uint32_t loss_class = rp.below(100);  // < 20 none, < 22 heavy (30 %), else up to 10 %
   const bool burst = loss_class >= 22 && rp.below(10) == 0;
@@ -200,10 +205,15 @@ Scenario generate_scenario(std::uint64_t seed, NodeKind nodes, const GenOptions&
   const bool spoof = rp.below(100) < 5;
   const bool dup_on = rp.below(10) < 3;
   const bool flip_on = rp.below(10) < 3;
-  const std::uint64_t rate = rp.below(10) < 3 ? 0 : log_uniform(rp, 1'000'000, 10'000'000'000);
+  std::uint64_t rate = 0;
+  if (rp.below(10) >= 3) {
+    rate = log_uniform(rp, 1'000'000, 10'000'000'000);
+  }
   const std::uint64_t queue_packets = log_uniform(rp, 2, 2000);
-  const std::uint16_t mtu =
-      rp.below(10) < 7 ? std::uint16_t{1500} : static_cast<std::uint16_t>(576 + rp.below(924));
+  std::uint16_t mtu = 1500;
+  if (rp.below(10) >= 7) {
+    mtu = static_cast<std::uint16_t>(576 + rp.below(924));
+  }
 
   LinkParams dir_params[2];
   for (std::uint32_t d = 0; d < 2; ++d) {
@@ -268,8 +278,12 @@ Scenario generate_scenario(std::uint64_t seed, NodeKind nodes, const GenOptions&
     c.client_port = c.mode == CloseMode::simultaneous ? static_cast<std::uint16_t>(40000 + i) : 0;
     c.backlog = 1 + rc.below(4);
     c.start = 1ms + ns(rc.below64(1'000'000'000));
-    c.bytes_c2s = rc.below(10) == 0 ? 0 : log_uniform(rc, 1, 4 * mib);
-    c.bytes_s2c = rc.below(10) == 0 ? 0 : log_uniform(rc, 1, 4 * mib);
+    if (rc.below(10) != 0) {
+      c.bytes_c2s = log_uniform(rc, 1, 4 * mib);
+    }
+    if (rc.below(10) != 0) {
+      c.bytes_s2c = log_uniform(rc, 1, 4 * mib);
+    }
     c.write_max_c = static_cast<std::uint32_t>(log_uniform(rc, 1, 65536));
     c.write_max_s = static_cast<std::uint32_t>(log_uniform(rc, 1, 65536));
     if (rc.below(5) == 0) {  // readers that pause: zero windows
@@ -284,6 +298,36 @@ Scenario generate_scenario(std::uint64_t seed, NodeKind nodes, const GenOptions&
       c.abort_after = ns(log_uniform(rc, 1'000'000, 5'000'000'000));
     }
     s.conn.push_back(c);
+  }
+
+  // Backlog limits: in 10 % of seeds every connection with a listener
+  // (close, half_close, abort) uses the first one's listener and client
+  // node, and the clients start within 10 ms of each other, so more SYNs
+  // arrive than the backlog admits (SYNs beyond it are dropped, §3.5, and
+  // retransmitted).
+  Rng rb = Rng::derive(master, "gen/wl/backlog");
+  if (rb.below(10) == 0) {
+    std::vector<std::size_t> group;
+    for (std::size_t i = 0; i < s.conn.size(); ++i) {
+      const CloseMode m = s.conn[i].mode;
+      if (m == CloseMode::close || m == CloseMode::half_close || m == CloseMode::abort) {
+        group.push_back(i);
+      }
+    }
+    if (group.size() >= 2) {
+      const ConnSpec first = s.conn[group[0]];
+      const std::uint32_t backlog = 1 + rb.below(static_cast<std::uint32_t>(group.size()) - 1);
+      for (const std::size_t i : group) {
+        ConnSpec& c = s.conn[i];
+        c.client = first.client;
+        c.server_port = first.server_port;
+        c.client_port = static_cast<std::uint16_t>(41000 + i);
+        c.backlog = backlog;
+        if (i != group[0]) {
+          c.start = first.start + ns(rb.below64(10'000'000));
+        }
+      }
+    }
   }
   return s;
 }
@@ -311,8 +355,11 @@ struct EnumName {
 
 constexpr std::array<EnumName<NodeKind>, 2> node_kinds{
     {{NodeKind::stack, "stack"}, {NodeKind::synthetic, "synthetic"}}};
-constexpr std::array<EnumName<Plant>, 4> plants{
-    {{Plant::none, "none"}, {Plant::fail, "fail"}, {Plant::abort, "abort"}, {Plant::hang, "hang"}}};
+constexpr std::array<EnumName<Plant>, 5> plants{{{Plant::none, "none"},
+                                                 {Plant::fail, "fail"},
+                                                 {Plant::abort, "abort"},
+                                                 {Plant::hang, "hang"},
+                                                 {Plant::segv, "segv"}}};
 constexpr std::array<EnumName<CloseMode>, 5> close_modes{{{CloseMode::close, "close"},
                                                           {CloseMode::half_close, "half_close"},
                                                           {CloseMode::abort, "abort"},
@@ -692,6 +739,26 @@ std::optional<std::string> validate(const Scenario& s) {
     }
     if (c.mode == CloseMode::simultaneous && c.client_port == 0) {
       return "simultaneous conn needs a client_port";
+    }
+  }
+  // Connections on one server port of one node share a listener (ConnSpec).
+  for (std::size_t i = 0; i < s.conn.size(); ++i) {
+    for (std::size_t j = i + 1; j < s.conn.size(); ++j) {
+      const ConnSpec& x = s.conn[i];
+      const ConnSpec& y = s.conn[j];
+      if (x.client != y.client || x.server_port != y.server_port) {
+        continue;
+      }
+      const auto shares = [](const ConnSpec& c) {
+        return c.mode == CloseMode::close || c.mode == CloseMode::half_close ||
+               c.mode == CloseMode::abort;
+      };
+      if (!shares(x) || !shares(y) || x.client_port == 0 || y.client_port == 0 ||
+          x.client_port == y.client_port || x.backlog != y.backlog) {
+        return "conns " + std::to_string(i) + " and " + std::to_string(j) +
+               " share a server port: both need a listener mode (close, half_close, abort), "
+               "distinct client ports and the same backlog";
+      }
     }
   }
   for (const UdpSpec& u : s.udp) {

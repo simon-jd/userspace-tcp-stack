@@ -3,6 +3,7 @@
 // stuck, livelock).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -123,6 +124,49 @@ TEST(SimWorld, AdvanceBeforeEveryApplicationAction) {
   ASSERT_GE(calls.size(), 3u);
   EXPECT_EQ(calls[calls.size() - 3].first, 'r');
   EXPECT_EQ(calls[calls.size() - 3].second, s.start + 9ms);
+}
+
+TEST(SimWorld, AdvanceBeforeApplicationsThatActOnEveryCall) {
+  // A StackNode's applications act on every call (they poll events and pump
+  // every connection), after a receive too. A deadline due at the arrival
+  // instant (here: the receive queues a datagram for now, as a receive that
+  // frees transmit space makes next_deadline() == now, §3.4) is served by
+  // advance(now) before they act.
+  const Scenario s = two_node_scenario(18, with_delay(1ms), with_delay(1ms));
+  auto t = scripted_world(s);
+  t.a->act_on_every_call = true;
+  t.b->send_at(s.start + 4ms, udp_ba(1));
+  t.b->send_at(s.start + 6ms, udp_ba(2));
+  t.a->on_receive = [](ScriptedNode& n, Time now, std::span<const std::byte>) {
+    n.send_at(now, udp_ab(9));
+  };
+  std::size_t queued_at_action = 0;
+  t.a->on_app = [&](ScriptedNode& n, Time) {
+    // Whatever was due went out first: nothing is left pending.
+    if (n.next_deadline() == Time::never()) {
+      ++queued_at_action;
+    }
+  };
+  const RunResult r = t.w->run();
+  ASSERT_EQ(r.verdict, Verdict::ok);
+  const auto& calls = t.a->calls();
+  int actions = 0, after_receive = 0;
+  for (std::size_t i = 0; i < calls.size(); ++i) {
+    if (calls[i].first != 'p') {
+      continue;
+    }
+    ++actions;
+    ASSERT_GT(i, 0u);
+    EXPECT_EQ(calls[i - 1].first, 'a') << "action " << i;
+    EXPECT_EQ(calls[i - 1].second, calls[i].second);
+    if (i >= 2 && calls[i - 2].first == 'r') {
+      ++after_receive;
+    }
+  }
+  EXPECT_GE(actions, 3);
+  EXPECT_EQ(after_receive, 2);  // both receives: r, a, p
+  EXPECT_EQ(queued_at_action, static_cast<std::size_t>(actions));
+  EXPECT_EQ(t.b->received().size(), 2u);
 }
 
 TEST(SimWorld, HostDrainMaxLimitsDrainsPerWakeup) {
@@ -290,6 +334,68 @@ TEST(SimWorld, ProgressBoundFires) {
   const RunResult r = t.w->run();
   ASSERT_EQ(r.verdict, Verdict::progress);
   EXPECT_EQ(r.end, s.start + progress_bound(tcp_config(ProfileId::linux_compat)));
+}
+
+TEST(SimWorld, TraceEventsOtherThanStateAreNotProgress) {
+  // Transmissions, timers, RTOs and probes without a state change are not
+  // progress (§7.3): a connection that retransmits or probes forever trips
+  // the bound.
+  const Scenario s = two_node_scenario(19, with_delay(1ms), with_delay(1ms));
+  auto t = scripted_world(s);
+  t.a->done = false;
+  for (int i = 1; i <= 30; ++i) {
+    t.a->app_at(s.start + i * 100s);
+  }
+  t.a->on_app = [](ScriptedNode& n, Time now) {
+    TraceEvent e;
+    e.t = now;
+    e.conn_id = 1;
+    e.tuple = FourTuple{{node_addr(0), 40000}, {node_addr(1), 5000}};
+    for (const TraceKind k : {TraceKind::tx, TraceKind::rx, TraceKind::ack, TraceKind::rtt,
+                              TraceKind::rto, TraceKind::cwnd, TraceKind::recovery,
+                              TraceKind::timer, TraceKind::icmp, TraceKind::drop}) {
+      e.kind = k;
+      e.tx = TxKind::zwp;
+      e.timer = TraceTimer::persist;
+      e.timer_op = TimerOp::fired;
+      n.ctx()->on_trace(n.index(), e);
+    }
+  };
+  const RunResult r = t.w->run();
+  ASSERT_EQ(r.verdict, Verdict::progress);
+  EXPECT_EQ(r.end, s.start + progress_bound(tcp_config(ProfileId::linux_compat)));
+}
+
+TEST(SimWorld, StateChangesAreProgress) {
+  const Scenario s = two_node_scenario(20, with_delay(1ms), with_delay(1ms));
+  auto t = scripted_world(s);
+  t.a->done = false;
+  for (int i = 1; i <= 30; ++i) {
+    t.a->app_at(s.start + i * 100s);
+  }
+  int step = 0;
+  t.a->on_app = [&](ScriptedNode& n, Time now) {
+    // One connection walks through states 100 s apart, then closes.
+    static constexpr TcpState walk[] = {TcpState::syn_sent, TcpState::established,
+                                        TcpState::fin_wait_1, TcpState::fin_wait_2,
+                                        TcpState::time_wait};
+    TraceEvent e;
+    e.t = now;
+    e.conn_id = 1;
+    e.tuple = FourTuple{{node_addr(0), 40000}, {node_addr(1), 5000}};
+    e.kind = TraceKind::state;
+    if (++step < 30) {
+      e.state = walk[std::min<std::size_t>(static_cast<std::size_t>(step - 1) / 6, 4)];
+    } else {
+      e.state = TcpState::closed;
+      e.cause = CloseCause::time_wait_expired;
+      n.done = true;
+    }
+    n.ctx()->on_trace(n.index(), e);
+  };
+  const RunResult r = t.w->run();
+  EXPECT_EQ(r.verdict, Verdict::ok) << (r.violations.empty() ? "" : r.violations[0].message);
+  EXPECT_EQ(r.end, s.start + 3000s);
 }
 
 TEST(SimWorld, ProgressKeepsTheRunAlive) {

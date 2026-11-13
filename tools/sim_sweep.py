@@ -4,18 +4,25 @@
     tools/sim_sweep.py --seeds A:B [--jobs 8] [--out DIR] [--sim PATH]
                        [--timeout 120] [--nodes stack|synthetic]
                        [--plant-fail LIST] [--plant-abort LIST] [--plant-hang LIST]
+                       [--plant-segv LIST]
+
+--sim defaults to the gcc-sweep preset's utcp-sim (Release with UTCP_DCHECK:
+sweeps use a release build with assertions, DESIGN §7.4).
 
 The range [A, B) is cut into chunks; up to --jobs worker processes run
 `utcp-sim --seed-range a:b --jsonl -` under `taskset -c 16-31 nice -n 10`.
 A seed that runs longer than --timeout seconds of wall-clock time is killed
 and recorded with verdict `timeout`; a worker that dies (abort, signal) is
 recorded as `crash` for its current seed, with the rolling digest and event
-count from utcp-sim's SIGABRT line, and the worker restarts at the next seed.
+count from the line utcp-sim's fatal-signal handler prints, and the worker
+restarts at the next seed.
 
 Every failing seed (verdict not ok, timeout, crash) is re-run twice with pcap
 and trace output to confirm the digest, and once more under --asan-sim (an
 ASan/UBSan build) if given; seeds with seed % --sample-mod == 0 get pcap and
-trace too. Output in --out:
+trace too. A crash without a digest (killed before the handler could print
+one, e.g. SIGKILL) counts as reproduced when the re-runs crash with the same
+exit status, and is listed under `crash_no_digest`. Output in --out:
 
     results.jsonl    one line per seed, sorted by seed
     failures.jsonl   failing seeds: verdict, digests of the three runs, files
@@ -41,7 +48,7 @@ import threading
 import time
 from pathlib import Path
 
-ABORT_RE = re.compile(r"utcp-sim: abort (\{.*\})")
+ABORT_RE = re.compile(r"utcp-sim: (?:abort|crash) (\{.*\})")
 
 
 def parse_range(s):
@@ -77,7 +84,7 @@ class Sweep:
 
     def sim_args(self):
         a = ["--nodes", self.args.nodes]
-        for name in ("plant_fail", "plant_abort", "plant_hang"):
+        for name in ("plant_fail", "plant_abort", "plant_hang", "plant_segv"):
             v = getattr(self.args, name)
             if v:
                 a += ["--" + name.replace("_", "-"), v]
@@ -221,16 +228,22 @@ class Sweep:
         d = self.out / "failures" / f"seed-{seed}"
         runs = [self.rerun(seed, d, f"run{i}") for i in (1, 2)]
         keys = [(r.get("verdict"), r.get("digest"), r.get("events")) for r in [first] + runs]
+        no_digest = False
         if first["verdict"] == "timeout":
             # A hang has no digest; the re-runs must hang too.
             identical = all(r["verdict"] == "timeout" for r in runs)
+        elif first["verdict"] == "crash" and all(r.get("digest") is None for r in [first] + runs):
+            # No handler line (e.g. SIGKILL): the same crash, by exit status.
+            no_digest = True
+            identical = all(r["verdict"] == "crash" and r.get("exit") == first.get("exit")
+                            for r in runs)
         else:
             identical = len(set(keys)) == 1 and first.get("digest") is not None
         out = {"seed": seed, "verdict": first["verdict"],
                "violation": first.get("violation"), "events": first.get("events"),
                "digests": [r.get("digest") for r in [first] + runs],
                "verdicts": [r.get("verdict") for r in [first] + runs],
-               "identical": identical, "dir": str(d)}
+               "identical": identical, "no_digest": no_digest, "dir": str(d)}
         if self.args.asan_sim:
             a = self.rerun(seed, d, "asan", self.args.asan_sim)
             out["asan"] = {"verdict": a.get("verdict"), "digest": a.get("digest")}
@@ -247,13 +260,15 @@ def main():
     p.add_argument("--seeds", type=parse_range, required=True, help="A:B, seeds A..B-1")
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--out", default="sweep-out")
-    p.add_argument("--sim", default="build/gcc-release/apps/utcp-sim/utcp-sim")
+    p.add_argument("--sim", default="build/gcc-sweep/apps/utcp-sim/utcp-sim",
+                   help="utcp-sim to run (default: the gcc-sweep build, Release with UTCP_DCHECK)")
     p.add_argument("--asan-sim", help="utcp-sim of an ASan/UBSan build to replay failing seeds")
     p.add_argument("--timeout", type=float, default=120.0, help="wall-clock seconds per seed")
     p.add_argument("--nodes", choices=("stack", "synthetic"), default="stack")
     p.add_argument("--plant-fail", default="", help="seeds that fail (tests the tooling)")
     p.add_argument("--plant-abort", default="", help="seeds that abort")
     p.add_argument("--plant-hang", default="", help="seeds that hang")
+    p.add_argument("--plant-segv", default="", help="seeds that get SIGSEGV")
     p.add_argument("--plant-after", type=int, help="events before a planted abort or hang")
     p.add_argument("--sample-mod", type=int, default=500, help="pcap+trace for seed %% N == 0")
     p.add_argument("--chunk", type=int, default=0, help="seeds per worker process")
@@ -262,10 +277,10 @@ def main():
     p.add_argument("--progress", type=int, default=0, help="report every N seeds on stderr")
     args = p.parse_args()
     if not Path(args.sim).exists():
-        p.error(f"{args.sim}: not found (build gcc-release first, or pass --sim)")
+        p.error(f"{args.sim}: not found (build the gcc-sweep preset first, or pass --sim)")
     if args.asan_sim and not Path(args.asan_sim).exists():
         p.error(f"{args.asan_sim}: not found")
-    for name in ("plant_fail", "plant_abort", "plant_hang"):
+    for name in ("plant_fail", "plant_abort", "plant_hang", "plant_segv"):
         parse_list(getattr(args, name))  # validate
 
     sweep = Sweep(args)
@@ -299,6 +314,7 @@ def main():
         "failures": failing,
         "timeouts": [s for s in failing if sweep.results[s]["verdict"] == "timeout"],
         "crashes": [s for s in failing if sweep.results[s]["verdict"] == "crash"],
+        "crash_no_digest": [c["seed"] for c in confirmed if c["no_digest"]],
         "replay_mismatch": [c["seed"] for c in confirmed if not c["identical"]],
         "sampled": sampled,
         "sample_mismatch": sample_mismatch,
@@ -308,8 +324,8 @@ def main():
         json.dump(summary, f, indent=2)
         f.write("\n")
     print(json.dumps({k: summary[k] for k in ("runs", "verdicts", "failures", "timeouts",
-                                              "crashes", "replay_mismatch", "sample_mismatch",
-                                              "wall_s")}))
+                                              "crashes", "crash_no_digest", "replay_mismatch",
+                                              "sample_mismatch", "wall_s")}))
     bad = failing or missing or summary["replay_mismatch"] or sample_mismatch
     return 1 if bad else 0
 

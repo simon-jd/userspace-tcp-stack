@@ -26,6 +26,11 @@ std::string conn_string(std::uint32_t node, std::uint32_t conn_id, const FourTup
          ")";
 }
 
+// RFC 9293 §3.3.2: the states after the handshake (TIME-WAIT included).
+bool synchronized(TcpState s) noexcept {
+  return s >= TcpState::established;
+}
+
 std::string hex2(std::byte b) {
   std::array<char, 8> buf{};
   std::snprintf(buf.data(), buf.size(), "0x%02x", std::to_integer<unsigned>(b));
@@ -136,6 +141,12 @@ std::optional<std::string> StreamChecker::on_datagram(std::uint32_t flow, std::u
 // --- TerminationChecker.
 
 void TerminationChecker::on_trace(std::uint32_t node, const TraceEvent& e) {
+  if (e.kind == TraceKind::tx && e.tx == TxKind::rst) {
+    // Kept apart from the connection record: the RST may come before or
+    // after the state event to CLOSED.
+    rst_sent_.insert(std::make_pair(node, e.conn_id));
+    return;
+  }
   if (e.kind != TraceKind::state) {
     return;
   }
@@ -214,14 +225,23 @@ std::optional<std::string> TerminationChecker::judge(const Conn& c) const {
     case CloseCause::last_ack:
     case CloseCause::time_wait_expired:
     case CloseCause::time_wait_reused:
-    case CloseCause::timed_out:
     case CloseCause::synack_timed_out:
       return std::nullopt;
-    case CloseCause::fin_wait2_timeout:
-      if (c.before_close == TcpState::fin_wait_2) {
-        return std::nullopt;
+    case CloseCause::timed_out:
+      // §4.7, §4.8: retry exhaustion in a synchronized state sends RST.
+      if (synchronized(c.before_close) && !rst_sent_.contains(std::make_pair(c.node, c.conn_id))) {
+        return "timed_out in a synchronized state without sending RST";
       }
-      return "fin_wait2_timeout outside FIN-WAIT-2";
+      return std::nullopt;
+    case CloseCause::fin_wait2_timeout:
+      if (c.before_close != TcpState::fin_wait_2) {
+        return "fin_wait2_timeout outside FIN-WAIT-2";
+      }
+      // §4.12: only an orphan (closed by its application) times out there.
+      if (!c.app_close || *c.app_close > c.end) {
+        return "fin_wait2_timeout of a connection its application had not closed";
+      }
+      return std::nullopt;
     case CloseCause::aborted:
       if (c.app_close && *c.app_close <= c.end) {
         return std::nullopt;
@@ -473,7 +493,13 @@ void InFlightChecker::on_ingress(std::uint32_t node, std::span<const std::byte> 
 }
 
 std::optional<std::string> InFlightChecker::on_trace(std::uint32_t node, const TraceEvent& e) {
-  if (e.kind != TraceKind::tx || e.len == 0) {
+  const auto conn = std::make_pair(node, e.conn_id);
+  if (e.kind == TraceKind::rto ||
+      (e.kind == TraceKind::timer && e.timer == TraceTimer::rto && e.timer_op == TimerOp::fired)) {
+    rto_pending_.insert(conn);
+    return std::nullopt;
+  }
+  if (e.kind != TraceKind::tx) {
     return std::nullopt;
   }
   switch (e.tx) {
@@ -482,10 +508,25 @@ std::optional<std::string> InFlightChecker::on_trace(std::uint32_t node, const T
     case TxKind::rexmit:
     case TxKind::pmtu_rexmit:
       break;
-    default:
-      // fast_rexmit, rto_rexmit and tlp are exempt (RFC 6675 §5 (4.3), RFC
-      // 8985 §7.3); the other kinds carry no data.
+    case TxKind::rto_rexmit:
+      // Only the head retransmission of an RTO expiry skips the cwnd gate
+      // (§4.9, Linux tcp_retransmit_timer); a further rto_rexmit is checked
+      // like rexmit.
+      if (rto_pending_.erase(conn) != 0) {
+        return std::nullopt;
+      }
+      break;
+    case TxKind::syn:
+    case TxKind::synack:
+      rto_pending_.erase(conn);  // the expiry retransmitted the SYN or SYN-ACK
       return std::nullopt;
+    default:
+      // fast_rexmit and tlp are exempt (RFC 6675 §5 (4.3), RFC 8985 §7.3);
+      // the other kinds carry no data.
+      return std::nullopt;
+  }
+  if (e.len == 0) {
+    return std::nullopt;
   }
   if (e.in_flight > e.cwnd) {
     return "node " + node_name(node) + " (" + tuple_string(e.tuple) + ") " +

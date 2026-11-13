@@ -1,6 +1,7 @@
 #include "utcp/sim/world.hpp"
 
 #include <algorithm>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -215,6 +216,7 @@ void World::deliver(std::uint32_t n, std::span<const std::byte> d) {
   if (opt_.on_wire) {
     opt_.on_wire(WireEvent{n, false, now_, d});
   }
+  digest_.delivery(n, now_, d);
   inflight_.on_ingress(n, d);
   ns.node->receive(now_, d);
   after_call(n, false);
@@ -223,8 +225,12 @@ void World::deliver(std::uint32_t n, std::span<const std::byte> d) {
 
 void World::after_call(std::uint32_t n, bool advanced) {
   Node& node = *nodes_[n].node;
-  // An application action is always preceded by advance(now) (§7.1).
-  if (!advanced && node.next_app_deadline() <= now_) {
+  // An application action is always preceded by advance(now) (§7.1): after a
+  // receive too, since a StackNode's applications act on every call (they
+  // poll events and pump every connection). Timers due at the arrival instant
+  // and blocked connections the receive can resume (§3.4) go first; with
+  // nothing due, advance(now) does nothing.
+  if (!advanced) {
     node.advance(now_);
   }
   node.run_apps(now_);
@@ -343,6 +349,9 @@ void World::check_plant() {
       break;
     case Plant::abort:
       std::abort();
+    case Plant::segv:
+      std::raise(SIGSEGV);
+      std::abort();  // not reached unless SIGSEGV is ignored
     case Plant::hang:
       for (;;) {
         hang_counter = hang_counter + 1;
@@ -386,8 +395,12 @@ std::optional<CloseMode> World::design(std::uint32_t node, const FourTuple& t) c
       }
       continue;
     }
-    if ((node == c.client && t.remote.port == c.server_port) ||
-        (node == server && t.local.port == c.server_port)) {
+    // A fixed client port (shared listeners) identifies the connection.
+    const bool client_side = node == c.client && t.remote.port == c.server_port &&
+                             (c.client_port == 0 || t.local.port == c.client_port);
+    const bool server_side = node == server && t.local.port == c.server_port &&
+                             (c.client_port == 0 || t.remote.port == c.client_port);
+    if (client_side || server_side) {
       return c.mode;
     }
   }

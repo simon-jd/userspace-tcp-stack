@@ -51,16 +51,17 @@ while IFS= read -r -d '' scenario; do
       failed=1
       continue
     fi
-    # Sections are "Errors (N)", "Warnings (N)", "Notes (N)", "Chats (N)",
-    # each followed by a ruler, a header line and one line per item:
-    # frequency, group, protocol, summary.
+    # Sections are "Errors (N)", "Warns (N)", "Notes (N)", "Chats (N)" (as
+    # TShark 4.6 prints them; "Warnings (N)" is accepted too), each followed
+    # by a ruler, a header line and one line per item: frequency, group,
+    # protocol, summary.
     errors=$(awk '/^Errors \(/ { sub(/^Errors \(/, ""); sub(/\).*/, ""); print; exit }' <<<"$out")
     if [[ -n $errors && $errors != 0 ]]; then
       echo "tshark_expert: $f: $errors Error-severity item(s):"
       awk '/^Errors \(/ { on = 1; next } /^[A-Z][a-z]+ \(/ { on = 0 } on' <<<"$out"
       failed=1
     fi
-    awk '/^Warnings \(/ { on = 1; next } /^[A-Z][a-z]+ \(/ { on = 0 }
+    awk '/^(Warns|Warnings) \(/ { on = 1; next } /^[A-Z][a-z]+ \(/ { on = 0 }
          on && $1 ~ /^[0-9]+$/ { n = $1; $1 = ""; sub(/^ +/, ""); print n "\t" $0 }' \
       <<<"$out" >>"$warnings"
   done

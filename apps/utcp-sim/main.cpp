@@ -3,12 +3,18 @@
 //   utcp-sim --seed N | --seed-range A:B | --scenario FILE | --corpus DIR
 //            [--nodes stack|synthetic] [--jsonl FILE] [--pcap DIR] [--trace FILE]
 //            [--dump-scenario] [--plant-fail LIST] [--plant-abort LIST]
-//            [--plant-hang LIST] [--plant-after N] [--test-fault NAME]
+//            [--plant-hang LIST] [--plant-segv LIST] [--plant-after N]
+//            [--test-fault NAME]
 //
 // One JSON line per run (seed, verdict, digest, ...), flushed after each run.
-// A SIGABRT handler prints the running seed's rolling digest and event count
-// to stderr, so crashing seeds can be compared too. Exit status: 0 if every
-// run passed, 1 if any failed, 2 for usage errors.
+// A handler for SIGABRT, SIGSEGV, SIGBUS, SIGFPE and SIGILL prints the
+// running seed's rolling digest and event count to stderr, so crashing seeds
+// can be compared too (DESIGN §7.2):
+//   utcp-sim: crash {"seed":S,"signal":N,"events":E,"digest":"D"}
+// then the signal kills the process as before. In ASan builds only SIGABRT
+// is caught, so ASan still reports the other signals itself. Exit status: 0
+// if every run passed, 1 if any failed, 2 for usage errors.
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -56,11 +62,15 @@ std::size_t put_str(char* out, std::string_view s) {
   return s.size();
 }
 
-extern "C" void on_abort(int sig) {
-  char line[160];
+// Async-signal-safe: atomics, arithmetic and write(2) only. SA_RESETHAND
+// has restored the default action, so the re-raised signal ends the process.
+extern "C" void on_fatal_signal(int sig) {
+  char line[192];
   std::size_t n = 0;
-  n += put_str(line + n, "utcp-sim: abort {\"seed\":");
+  n += put_str(line + n, "utcp-sim: crash {\"seed\":");
   n += put_u64(line + n, g_seed.load());
+  n += put_str(line + n, ",\"signal\":");
+  n += put_u64(line + n, static_cast<std::uint64_t>(sig));
   const World* w = g_world.load();
   if (w != nullptr) {
     n += put_str(line + n, ",\"events\":");
@@ -72,8 +82,38 @@ extern "C" void on_abort(int sig) {
   }
   n += put_str(line + n, "}\n");
   [[maybe_unused]] const auto r = ::write(2, line, n);
-  std::signal(sig, SIG_DFL);
   std::raise(sig);
+}
+
+#if defined(__SANITIZE_ADDRESS__)
+constexpr bool asan_build = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr bool asan_build = true;
+#else
+constexpr bool asan_build = false;
+#endif
+#else
+constexpr bool asan_build = false;
+#endif
+
+// The handler runs on its own stack, so a stack overflow is reported too.
+void install_crash_handlers() {
+  static std::array<char, 64 * 1024> alt_stack{};
+  stack_t ss{};
+  ss.ss_sp = alt_stack.data();
+  ss.ss_size = alt_stack.size();
+  ::sigaltstack(&ss, nullptr);
+  struct sigaction sa {};
+  sa.sa_handler = on_fatal_signal;
+  ::sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_ONSTACK | SA_RESETHAND;
+  ::sigaction(SIGABRT, &sa, nullptr);
+  if (!asan_build) {
+    for (const int sig : {SIGSEGV, SIGBUS, SIGFPE, SIGILL}) {
+      ::sigaction(sig, &sa, nullptr);
+    }
+  }
 }
 
 std::expected<std::set<std::uint64_t>, std::string> parse_list(const std::optional<std::string>& s) {
@@ -100,7 +140,7 @@ std::expected<std::set<std::uint64_t>, std::string> parse_list(const std::option
 
 struct Options {
   NodeKind nodes = NodeKind::stack;
-  std::set<std::uint64_t> plant_fail, plant_abort, plant_hang;
+  std::set<std::uint64_t> plant_fail, plant_abort, plant_hang, plant_segv;
   std::optional<std::uint64_t> plant_after;
   std::optional<TestFault> test_fault;
   std::string pcap_dir;
@@ -116,6 +156,8 @@ void apply(const Options& o, Scenario& s) {
     s.plant = Plant::abort;
   } else if (o.plant_hang.contains(s.seed)) {
     s.plant = Plant::hang;
+  } else if (o.plant_segv.contains(s.seed)) {
+    s.plant = Plant::segv;
   }
   if (o.plant_after) {
     s.plant_after_events = *o.plant_after;
@@ -193,6 +235,7 @@ int main(int argc, char** argv) {
       .option("plant-fail", "LIST", "seeds (comma-separated) whose run ends with verdict planted")
       .option("plant-abort", "LIST", "seeds that abort after --plant-after events")
       .option("plant-hang", "LIST", "seeds that hang after --plant-after events")
+      .option("plant-segv", "LIST", "seeds that get SIGSEGV after --plant-after events")
       .option("plant-after", "N", "events before a planted abort or hang")
       .option("test-fault", "NAME", "set TcpConfig::test_fault on every node (none, unscaled_peer_window)")
       .option("max-events", "N", "livelock limit per run");
@@ -217,7 +260,7 @@ int main(int argc, char** argv) {
     return usage_error("--nodes: stack or synthetic");
   }
   for (auto [name, set] : {std::pair{"plant-fail", &o.plant_fail}, std::pair{"plant-abort", &o.plant_abort},
-                           std::pair{"plant-hang", &o.plant_hang}}) {
+                           std::pair{"plant-hang", &o.plant_hang}, std::pair{"plant-segv", &o.plant_segv}}) {
     auto l = parse_list(args->get(name));
     if (!l) {
       return usage_error(std::string("--") + name + ": " + l.error());
@@ -327,7 +370,7 @@ int main(int argc, char** argv) {
   if (!out) {
     return usage_error(out.error());
   }
-  std::signal(SIGABRT, on_abort);
+  install_crash_handlers();
   bool all_ok = true;
   for (std::uint64_t i = 0; i < runs; ++i) {
     all_ok = run_one(scenario_at(i), o, *out) && all_ok;

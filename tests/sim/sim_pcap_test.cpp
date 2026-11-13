@@ -16,6 +16,10 @@
 #include <string_view>
 #include <vector>
 
+#include "core/wire/tcp.hpp"
+#include "utcp/sim/datagram.hpp"
+#include "utcp/sim/pcap_writer.hpp"
+#include "utcp/sim/results.hpp"
 #include "utcp/sim/scenario.hpp"
 #include "utcp/sim/world.hpp"
 
@@ -151,6 +155,52 @@ TEST(SimPcap, TsharkReadsWithoutErrors) {
     EXPECT_EQ(first.find_first_not_of("0123456789", dot + 1), dot + 10) << first;
     EXPECT_GE(std::stoll(first.substr(0, dot)), s.start.ns / 1'000'000'000) << first;
   }
+}
+
+// tools/tshark_expert.sh, from the corpus directory the build passes in
+// (tests/sim/corpus -> tools/).
+std::string expert_script() {
+  return (fs::path(UTCP_SIM_CORPUS_DIR) / ".." / ".." / ".." / "tools" / "tshark_expert.sh")
+      .lexically_normal()
+      .string();
+}
+
+// A seed directory as utcp-sim --pcap writes it, whose a.egress.pcap holds
+// segments TShark warns about: two zero-window segments and a gap before the
+// second ("Previous segment(s) not captured").
+void write_warning_seed(const fs::path& dir) {
+  fs::create_directories(dir);
+  ASSERT_TRUE(write_scenario_file((dir / "scenario.txt").string(),
+                                  two_node_scenario(1, LinkParams{}, LinkParams{})));
+  auto w = PcapWriter::open((dir / "a.egress.pcap").string(), 65535);
+  ASSERT_TRUE(w.has_value()) << w.error();
+  const std::vector<std::byte> payload(100, std::byte{0x78});
+  for (const std::uint32_t seq : {1000u, 5000u}) {
+    TcpSegmentSpec t;
+    t.src = Endpoint{node_addr(0), 40000};
+    t.dst = Endpoint{node_addr(1), 5000};
+    t.seq = seq;
+    t.ack = 1;
+    t.flags = wire::tcp_ack | wire::tcp_psh;
+    t.window = 0;
+    t.payload = payload;
+    ASSERT_TRUE(w->write(Time{1'000'000'000 + seq}, build_tcp(t)));
+  }
+}
+
+TEST(SimPcap, ExpertScriptTalliesWarnings) {
+  if (run("command -v tshark").first != 0) {
+    GTEST_SKIP() << "tshark not installed (runs in the testbed image)";
+  }
+  TempDir dir;
+  write_warning_seed(dir.path() / "seed-1");
+  const auto [st, out] = run("bash " + expert_script() + " " + dir.path().string());
+  EXPECT_EQ(st, 0) << out;  // warnings do not fail the check
+  EXPECT_NE(out.find("1 file(s) checked"), std::string::npos) << out;
+  EXPECT_NE(out.find("Warnings (count, group protocol summary):"), std::string::npos) << out;
+  EXPECT_NE(out.find("Zero Window"), std::string::npos) << out;
+  EXPECT_NE(out.find("Previous segment(s) not captured"), std::string::npos) << out;
+  EXPECT_NE(out.find("ok (no Error-severity items)"), std::string::npos) << out;
 }
 
 }  // namespace

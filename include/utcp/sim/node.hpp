@@ -78,9 +78,10 @@ public:
   // Earliest application action (an application timer); never if none.
   [[nodiscard]] virtual Time next_app_deadline() const { return Time::never(); }
   // Lets the applications act: take socket events, run due application
-  // timers. The World calls it after every receive/advance, and at
-  // next_app_deadline() after advance(now) (the World calls advance(t) before
-  // every application action, §7.1).
+  // timers. The World calls it after every receive/advance and at
+  // next_app_deadline(), each time right after an advance(now) at the same
+  // instant (the World calls advance(t) before every application action,
+  // §7.1).
   virtual void run_apps(Time now) { static_cast<void>(now); }
   // All applications have finished (sockets closed).
   [[nodiscard]] virtual bool finished() const { return true; }

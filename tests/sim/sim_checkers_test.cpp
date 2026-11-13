@@ -45,15 +45,17 @@ constexpr std::uint16_t syn = wire::tcp_syn;
 constexpr std::uint16_t ack = wire::tcp_ack;
 constexpr std::uint32_t iss_a = 1000, iss_b = 900'000;
 
-// a and b handshake on the wire: a's SYN offers wscale `wa`, b's SYN-ACK
-// offers `wb` (nullopt: no option) with window `synack_window`. Each datagram
-// is seen leaving its sender and arriving at the other node.
+// a and b handshake on the wire with ISNs `ia` and `ib`: a's SYN offers
+// wscale `wa`, b's SYN-ACK offers `wb` (nullopt: no option) with window
+// `synack_window`. Each datagram is seen leaving its sender and arriving at
+// the other node.
 void handshake(InFlightChecker& c, std::optional<std::uint8_t> wa, std::optional<std::uint8_t> wb,
-               std::uint16_t synack_window = 1000) {
-  const auto s1 = seg(ea, eb, iss_a, 0, syn, 65535, 0, wa);
+               std::uint16_t synack_window = 1000, std::uint32_t ia = iss_a,
+               std::uint32_t ib = iss_b) {
+  const auto s1 = seg(ea, eb, ia, 0, syn, 65535, 0, wa);
   ASSERT_FALSE(c.on_egress(0, s1));
   c.on_ingress(1, s1);
-  const auto s2 = seg(eb, ea, iss_b, iss_a + 1, syn | ack, synack_window, 0, wb);
+  const auto s2 = seg(eb, ea, ib, ia + 1, syn | ack, synack_window, 0, wb);
   ASSERT_FALSE(c.on_egress(1, s2));
   c.on_ingress(0, s2);
 }
@@ -185,6 +187,87 @@ TEST(SimCheckersInFlight, WireSackReducesBytesInFlight) {
   e.cwnd = 2;
   e.in_flight = 2;
   EXPECT_TRUE(c.on_trace(0, e).has_value());
+  // The wire check applies only in Open with no loss marks: in Recovery or
+  // Loss, or with segments marked lost, lost segments still count on the
+  // wire although the sender no longer counts them in flight.
+  for (const CaState ca : {CaState::disorder, CaState::cwr, CaState::recovery, CaState::loss}) {
+    e.ca = ca;
+    EXPECT_FALSE(c.on_trace(0, e)) << static_cast<int>(ca);
+  }
+  e.ca = CaState::open;
+  e.lost_out = 1;
+  EXPECT_FALSE(c.on_trace(0, e));
+  e.lost_out = 0;
+  EXPECT_TRUE(c.on_trace(0, e).has_value());
+}
+
+// Sequence numbers wrap past 2^32 inside the window (DESIGN §7.2 starts 10 %
+// of seeds near 2^32): the edge, the highest sent and ACKed sequence numbers
+// and the SACK ranges are compared modulo 2^32.
+constexpr std::uint32_t wrap_iss_a = 0xffff'f000u;  // a's data crosses 2^32 after 4095 bytes
+constexpr std::uint32_t wrap_iss_b = 0xffff'ff00u;
+
+TEST(SimCheckersInFlight, EdgeAcrossSequenceWrap) {
+  InFlightChecker c;
+  handshake(c, 0, 0, 1000, wrap_iss_a, wrap_iss_b);
+  // b ACKs a's SYN with window 8000: the edge lies past 2^32.
+  c.on_ingress(0, seg(eb, ea, wrap_iss_b + 1, wrap_iss_a + 1, ack, 8000));
+  ASSERT_EQ(c.right_edge(ab), Seq32(wrap_iss_a + 1 + 8000));
+  EXPECT_LT(c.right_edge(ab)->raw(), wrap_iss_a);  // wrapped
+  std::uint32_t seq = wrap_iss_a + 1;
+  for (int i = 0; i < 8; ++i) {  // up to the edge, crossing 2^32 in the fifth segment
+    ASSERT_FALSE(c.on_egress(0, seg(ea, eb, seq, wrap_iss_b + 1, ack, 500, 1000))) << i;
+    seq += 1000;
+  }
+  // One byte past the wrapped edge fires; its retransmission does not.
+  EXPECT_TRUE(c.on_egress(0, seg(ea, eb, seq, wrap_iss_b + 1, ack, 500, 1)).has_value());
+  EXPECT_FALSE(c.on_egress(0, seg(ea, eb, seq, wrap_iss_b + 1, ack, 500, 1)));
+  // A later ACK below the wrap with a smaller window does not move the edge
+  // back; one past 2^32 moves it on.
+  c.on_ingress(0, seg(eb, ea, wrap_iss_b + 1, wrap_iss_a + 1001, ack, 100));
+  EXPECT_EQ(c.right_edge(ab), Seq32(wrap_iss_a + 1 + 8000));
+  c.on_ingress(0, seg(eb, ea, wrap_iss_b + 1, wrap_iss_a + 6001, ack, 8000));
+  EXPECT_EQ(c.right_edge(ab), Seq32(wrap_iss_a + 6001 + 8000));
+  EXPECT_FALSE(c.on_egress(0, seg(ea, eb, seq + 1, wrap_iss_b + 1, ack, 500, 1000)));
+}
+
+TEST(SimCheckersInFlight, WireSackAcrossSequenceWrap) {
+  // As WireSackReducesBytesInFlight, with the flight, the cumulative ACK and
+  // the SACK block on both sides of 2^32.
+  InFlightChecker c;
+  handshake(c, 0, 0, 1000, wrap_iss_a, wrap_iss_b);
+  c.on_ingress(0, seg(eb, ea, wrap_iss_b + 1, wrap_iss_a + 1, ack, 65535));
+  std::uint32_t seq = wrap_iss_a + 1;
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_FALSE(c.on_egress(0, seg(ea, eb, seq, wrap_iss_b + 1, ack, 500, 1000)));
+    seq += 1000;
+  }
+  // ACK 2000 bytes (below 2^32), SACK [4001, 9001) (across it), and an older
+  // overlapping block that must merge, not add.
+  c.on_ingress(0, seg(eb, ea, wrap_iss_b + 1, wrap_iss_a + 2001, ack, 65535, 0, std::nullopt,
+                      {{wrap_iss_a + 4001, wrap_iss_a + 9001}, {wrap_iss_a + 3501, wrap_iss_a + 5001}}));
+  TraceEvent e;
+  e.kind = TraceKind::tx;
+  e.tx = TxKind::data;
+  e.tuple = ab;
+  e.ca = CaState::open;
+  e.mss = 1000;
+  e.seq = wrap_iss_a + 9001;
+  e.len = 1000;
+  // On the wire: 10000 sent - 2000 acked - 5500 SACKed = 2500 bytes.
+  e.in_flight = 3;
+  e.cwnd = 3;
+  EXPECT_FALSE(c.on_trace(0, e));
+  e.in_flight = 2;
+  e.cwnd = 2;
+  EXPECT_TRUE(c.on_trace(0, e).has_value());
+  // The cumulative ACK passes 2^32 and part of the SACKed range: 10000 sent
+  // - 4500 acked - 4500 still SACKed above it = 1000 bytes, one segment.
+  c.on_ingress(0, seg(eb, ea, wrap_iss_b + 1, wrap_iss_a + 4501, ack, 65535, 0, std::nullopt,
+                      {{wrap_iss_a + 4001, wrap_iss_a + 9001}}));
+  e.in_flight = 1;
+  e.cwnd = 1;
+  EXPECT_FALSE(c.on_trace(0, e));
 }
 
 // --- InFlightChecker: self-reported numbers and the exemptions.
@@ -210,9 +293,17 @@ TEST(SimCheckersInFlight, InFlightAboveCwndFiresForData) {
   EXPECT_TRUE(c.on_trace(0, tx_event(TxKind::pmtu_rexmit, 11, 10)).has_value());
 }
 
+TraceEvent rto_expiry() {
+  TraceEvent e;
+  e.kind = TraceKind::rto;
+  e.tuple = ab;
+  return e;
+}
+
 TEST(SimCheckersInFlight, FastRexmitRtoRexmitTlpExempt) {
   InFlightChecker c;
   EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::fast_rexmit, 20, 10)));
+  EXPECT_FALSE(c.on_trace(0, rto_expiry()));
   EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 20, 1)));
   EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::tlp, 20, 10)));
   // Segments without data are not data transmissions.
@@ -225,10 +316,53 @@ TEST(SimCheckersInFlight, FastRexmitRtoRexmitTlpExempt) {
   EXPECT_FALSE(c.on_trace(0, rx));
 }
 
+TEST(SimCheckersInFlight, OnlyTheHeadRtoRexmitIsExempt) {
+  InFlightChecker c;
+  // Without an RTO expiry an rto_rexmit is not a head retransmission.
+  EXPECT_TRUE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 2, 1)).has_value());
+  // After an expiry the first one is exempt, a second one is not.
+  EXPECT_FALSE(c.on_trace(0, rto_expiry()));
+  EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 2, 1)));
+  EXPECT_TRUE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 3, 1)).has_value());
+  EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 1, 1)));  // within cwnd: fine
+  // The expiry can also come as the xmit timer firing as kind rto.
+  TraceEvent fired;
+  fired.kind = TraceKind::timer;
+  fired.tuple = ab;
+  fired.timer = TraceTimer::rto;
+  fired.timer_op = TimerOp::armed;
+  EXPECT_FALSE(c.on_trace(0, fired));
+  EXPECT_TRUE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 2, 1)).has_value());  // armed is no expiry
+  fired.timer_op = TimerOp::fired;
+  EXPECT_FALSE(c.on_trace(0, fired));
+  EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 2, 1)));
+  // An expiry of another connection exempts nothing here.
+  TraceEvent other = rto_expiry();
+  other.conn_id = 7;
+  EXPECT_FALSE(c.on_trace(0, other));
+  EXPECT_TRUE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 2, 1)).has_value());
+  // An expiry that retransmitted the SYN leaves no exemption behind.
+  EXPECT_FALSE(c.on_trace(0, rto_expiry()));
+  TraceEvent syn_tx = tx_event(TxKind::syn, 1, 1);
+  syn_tx.len = 0;
+  EXPECT_FALSE(c.on_trace(0, syn_tx));
+  EXPECT_TRUE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 2, 1)).has_value());
+}
+
 // --- TerminationChecker.
 
 class Conns {
 public:
+  // An RST that connection `id` on `node` sent.
+  void rst(std::uint32_t node, std::uint32_t id, std::int64_t t_s) {
+    TraceEvent e;
+    e.kind = TraceKind::tx;
+    e.tx = TxKind::rst;
+    e.t = Time{t_s * 1'000'000'000};
+    e.conn_id = id;
+    e.tuple = node == 0 ? ab : ba;
+    c.on_trace(node, e);
+  }
   // A state event of connection `id` on `node`.
   void state(std::uint32_t node, std::uint32_t id, TcpState s, std::int64_t t_s,
              CloseCause cause = CloseCause::none, const FourTuple* tuple = nullptr) {
@@ -314,6 +448,60 @@ TEST(SimCheckersTermination, OrphanFinWait2TimeoutIsLegal) {
   // b closes later: its FIN draws an RST from a's side.
   k.state(1, 1, TcpState::last_ack, 100);
   k.state(1, 1, TcpState::closed, 100, CloseCause::rst_received);
+  EXPECT_TRUE(k.finish().empty());
+}
+
+TEST(SimCheckersTermination, FinWait2TimeoutNeedsAnOrphan) {
+  // Only an orphan times out in FIN-WAIT-2 (§4.12); a connection whose
+  // application still holds it waits for the peer's FIN.
+  Conns k;
+  k.state(0, 1, TcpState::established, 1);
+  k.state(0, 1, TcpState::fin_wait_1, 2);
+  k.state(0, 1, TcpState::fin_wait_2, 2);
+  k.state(0, 1, TcpState::closed, 62, CloseCause::fin_wait2_timeout);
+  const auto v = k.finish();
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_NE(v[0].message.find("had not closed"), std::string::npos) << v[0].message;
+  // An application close after the timeout does not make it an orphan.
+  k.c.on_app_close(0, 1, Time{70'000'000'000});
+  EXPECT_EQ(k.finish().size(), 1u);
+}
+
+TEST(SimCheckersTermination, TimedOutWhenSynchronizedNeedsRst) {
+  // Retry exhaustion in a synchronized state sends RST (§4.8).
+  Conns k;
+  k.state(0, 1, TcpState::established, 1);
+  k.state(0, 1, TcpState::closed, 900, CloseCause::timed_out);
+  const auto v = k.finish();
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_NE(v[0].message.find("without sending RST"), std::string::npos) << v[0].message;
+
+  Conns sent;  // the RST may be traced before or after the state change
+  sent.state(0, 1, TcpState::established, 1);
+  sent.state(0, 1, TcpState::fin_wait_1, 2);
+  sent.rst(0, 1, 900);
+  sent.state(0, 1, TcpState::closed, 900, CloseCause::timed_out);
+  sent.state(0, 2, TcpState::close_wait, 1);
+  sent.state(0, 2, TcpState::closed, 900, CloseCause::timed_out);
+  sent.rst(0, 2, 900);
+  EXPECT_TRUE(sent.finish().empty());
+
+  Conns other;  // another connection's RST does not count
+  other.state(0, 1, TcpState::established, 1);
+  other.rst(0, 2, 900);
+  other.rst(1, 1, 900);
+  other.state(0, 1, TcpState::closed, 900, CloseCause::timed_out);
+  EXPECT_EQ(other.finish().size(), 1u);
+}
+
+TEST(SimCheckersTermination, TimedOutBeforeSynchronizedNeedsNoRst) {
+  // SYN-SENT and an active open's SYN-RECEIVED give up silently.
+  Conns k;
+  k.state(0, 1, TcpState::syn_sent, 1);
+  k.state(0, 1, TcpState::closed, 130, CloseCause::timed_out);
+  k.state(0, 2, TcpState::syn_sent, 1);
+  k.state(0, 2, TcpState::syn_received, 2);
+  k.state(0, 2, TcpState::closed, 130, CloseCause::timed_out);
   EXPECT_TRUE(k.finish().empty());
 }
 

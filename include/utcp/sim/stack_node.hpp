@@ -1,8 +1,10 @@
 // StackNode (DESIGN §7.1): a Stack plus the scenario's scripted workload for
 // that node, written against the Stack TCP, UDP and ICMP API.
 //
-// TCP connections (ConnSpec): listeners and clients, writes of 1..write_max
-// bytes of pattern data, readers that check every byte through the
+// TCP connections (ConnSpec): listeners and clients (a listener accepts
+// every client designed for its port, then closes; with a shared listener
+// the client port tells which ConnSpec an accepted connection is), writes of
+// 1..write_max bytes of pattern data, readers that check every byte through the
 // StreamChecker and pause (zero windows), the close modes of §7.2, and an
 // application idle timeout after which an endpoint closes (§7.3: a survivor
 // whose peer failed must still end by its own retry rules). UDP echo flows

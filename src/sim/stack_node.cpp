@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,9 @@ public:
 
   void on_event(const TraceEvent& e) override {
     ++activity_;
+    if (shared_listener_ && e.kind == TraceKind::state && e.tuple.remote.port != 0) {
+      remote_port_.try_emplace(e.conn_id, e.tuple.remote.port);
+    }
     if (ctx_ != nullptr) {
       ctx_->on_trace(index_, e);
     }
@@ -113,15 +117,17 @@ public:
     Rng writes{Seed{}};
   };
 
+  // One per server port: the passive ends of every ConnSpec on that port
+  // (several when they share the listener, ConnSpec).
   struct Listener {
-    std::uint32_t conn = 0;
+    std::uint32_t conn = 0;  // the first ConnSpec
     std::uint16_t port = 0;
     std::uint32_t backlog = 1;
-    std::size_t end = 0;  // the passive TcpEnd
+    std::vector<std::size_t> ends;  // the passive TcpEnds
     bool open = false, done = false;
     Handle h;
     std::uint32_t conn_id = 0;
-    Time give_up = Time::never();  // no client by then: close
+    Time give_up = Time::never();  // clients not connected by then: close
   };
 
   struct UdpEnd {
@@ -185,13 +191,21 @@ public:
         e.local_port = c.server_port;
       } else {
         e.passive = true;
-        Listener l;
-        l.conn = i;
-        l.port = c.server_port;
-        l.backlog = c.backlog;
-        l.end = ends_.size();
-        l.give_up = s_.start + c.start + s_.app_idle_timeout;
-        listeners_.push_back(l);
+        const auto same_port = [&](const Listener& x) { return x.port == c.server_port; };
+        auto it = std::ranges::find_if(listeners_, same_port);
+        if (it == listeners_.end()) {
+          Listener l;
+          l.conn = i;
+          l.port = c.server_port;
+          l.backlog = c.backlog;
+          l.give_up = s_.start + c.start + s_.app_idle_timeout;
+          listeners_.push_back(l);
+          it = listeners_.end() - 1;
+        } else {
+          shared_listener_ = true;
+          it->give_up = std::max(it->give_up, s_.start + c.start + s_.app_idle_timeout);
+        }
+        it->ends.push_back(ends_.size());
       }
       ends_.push_back(std::move(e));
     }
@@ -340,9 +354,10 @@ public:
     for (Listener& l : listeners_) {
       if (l.open && l.give_up <= t) {
         listener_close(l);
-        TcpEnd& e = ends_[l.end];
-        if (e.phase == Phase::waiting) {
-          e.phase = Phase::done;
+        for (const std::size_t i : l.ends) {
+          if (ends_[i].phase == Phase::waiting) {
+            ends_[i].phase = Phase::done;  // its client never connected
+          }
         }
       }
     }
@@ -356,6 +371,28 @@ public:
 
   // --- TCP.
 
+  // The waiting passive end of `l` that the accepted connection `conn_id`
+  // belongs to: the only end, or with a shared listener the end whose
+  // client port is the connection's remote port (from its trace events).
+  std::optional<std::size_t> match(const Listener& l, std::uint32_t conn_id) {
+    if (l.ends.size() == 1) {
+      const std::size_t i = l.ends[0];
+      return ends_[i].phase == Phase::waiting ? std::optional{i} : std::nullopt;
+    }
+    const auto it = remote_port_.find(conn_id);
+    if (it == remote_port_.end()) {
+      return std::nullopt;
+    }
+    const std::uint16_t port = it->second;
+    remote_port_.erase(it);
+    for (const std::size_t i : l.ends) {
+      if (ends_[i].phase == Phase::waiting && s_.conn[ends_[i].conn].client_port == port) {
+        return i;
+      }
+    }
+    return std::nullopt;
+  }
+
   void accept_all(Listener& l) {
     for (;;) {
       auto c = stack_.tcp_accept(l.h);
@@ -365,23 +402,29 @@ public:
         }
         return;
       }
-      TcpEnd& e = ends_[l.end];
-      if (e.phase != Phase::waiting) {
-        // Not the designed client (cannot happen without garbage): close it.
-        ctx_->on_app_close(index_, conn_id_of(*c));
+      const std::uint32_t id = conn_id_of(*c);
+      const auto i = match(l, id);
+      if (!i) {
+        // Not a designed client (cannot happen without garbage): close it.
+        ctx_->on_app_close(index_, id);
         if (auto r = stack_.tcp_close(*c); !r) {
           fail("tcp_close", r.error());
         }
         continue;
       }
+      TcpEnd& e = ends_[*i];
       e.h = *c;
-      e.conn_id = conn_id_of(e.h);
+      e.conn_id = id;
       e.phase = Phase::open;
       touch(e);
-      tcp_handles_.emplace(e.h, l.end);
+      tcp_handles_.emplace(e.h, *i);
       ctx_->on_progress();
-      listener_close(l);
-      return;
+      const bool all = std::ranges::none_of(
+          l.ends, [&](std::size_t k) { return ends_[k].phase == Phase::waiting; });
+      if (all) {
+        listener_close(l);  // every designed client is in
+        return;
+      }
     }
   }
 
@@ -769,6 +812,8 @@ public:
   std::vector<UdpEnd> udp_;
   std::vector<PingEnd> pings_;
   std::map<Handle, std::size_t> tcp_handles_, listener_handles_, udp_handles_;
+  bool shared_listener_ = false;  // some listener has several ends
+  std::map<std::uint32_t, std::uint16_t> remote_port_;  // conn_id -> remote port (shared listeners)
   std::uint64_t activity_ = 0;
   Counts counts_;
 };

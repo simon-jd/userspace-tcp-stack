@@ -26,7 +26,8 @@
 namespace utcp::sim {
 
 // Bumped whenever generate_scenario() changes what a seed produces.
-inline constexpr std::uint32_t gen_version = 1;
+// 2: shared listeners (backlog limits).
+inline constexpr std::uint32_t gen_version = 2;
 
 enum class NodeKind : std::uint8_t {
   stack,      // StackNode: a Stack running the scripted workload
@@ -39,6 +40,7 @@ enum class Plant : std::uint8_t {
   fail,   // the run ends with verdict `planted`
   abort,  // the process aborts after `plant_after_events` events
   hang,   // the process spins forever after `plant_after_events` events
+  segv,   // the process gets SIGSEGV after `plant_after_events` events
 };
 
 // How a TCP workload connection ends (DESIGN §7.2).
@@ -84,11 +86,16 @@ struct PathSpec {
   bool operator==(const PathSpec&) const = default;
 };
 
+// Connections of the same server node and server_port (close, half_close or
+// abort) share one listener: its backlog is theirs (all equal), and each has
+// a distinct fixed client_port, by which the server tells the accepted
+// connections apart. A listener with one connection may use an ephemeral
+// client port.
 struct ConnSpec {
   CloseMode mode = CloseMode::close;
   std::uint32_t client = 0;  // node index; the server is the other node
   std::uint16_t server_port = 5000;
-  std::uint16_t client_port = 0;  // 0 = ephemeral (RFC 6056); fixed for `simultaneous`
+  std::uint16_t client_port = 0;  // 0 = ephemeral (RFC 6056); fixed for `simultaneous` and shared listeners
   std::uint32_t backlog = 1;
   Duration start{};               // after the run start
   std::uint64_t bytes_c2s = 0, bytes_s2c = 0;

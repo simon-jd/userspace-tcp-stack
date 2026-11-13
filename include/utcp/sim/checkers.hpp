@@ -4,8 +4,8 @@
 //
 // | Checker            | Input                                    | Relaxed for garbage runs |
 // | StreamChecker      | application writes and reads             | off                      |
-// | TerminationChecker | TraceKind::state events, app closes      | any close cause          |
-// | InFlightChecker    | wire datagrams, TraceKind::tx events     | on                       |
+// | TerminationChecker | state and tx rst events, app closes      | any close cause          |
+// | InFlightChecker    | wire datagrams, tx and RTO events        | on                       |
 // | ProgressChecker    | progress events (World)                  | on                       |
 // | QuiescenceChecker  | Stack::debug_usage() at the end (World)  | on                       |
 // SelfCheck (Stack::debug_check() after every call) is in the World.
@@ -16,6 +16,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -113,9 +114,13 @@ private:
 // --- TerminationChecker (§7.3): every connection ends in CLOSED, through a
 // legal end:
 // - after a FIN exchange both ways: last_ack, time_wait_expired, time_wait_reused;
-// - retry exhaustion: timed_out (RST sent if synchronized), synack_timed_out
-//   (a SYN-RECEIVED child freed after synack_retries);
-// - fin_wait2_timeout from FIN-WAIT-2 (an orphan whose FIN was ACKed);
+// - retry exhaustion: timed_out, from a synchronized state only after a
+//   TraceKind::tx rst event of the connection (§4.8: the stack sends RST
+//   before it gives up; the event is expected even if the transmit queue
+//   then drops the RST, §3.4), synack_timed_out (a SYN-RECEIVED child freed
+//   after synack_retries);
+// - fin_wait2_timeout from FIN-WAIT-2, of an orphan: the application closed
+//   the connection before (§4.12);
 // - aborted: only if the application closed or aborted the connection;
 // - listener_closed: a listener the application closed, or a child of one;
 // - rst_received: the peer's matching connection ended before, and either the
@@ -135,7 +140,8 @@ public:
   void set_relaxed(bool on) noexcept { relaxed_ = on; }
   void set_design(DesignFn fn) { design_ = std::move(fn); }
 
-  // TraceKind::state events; other kinds are ignored.
+  // TraceKind::state events and TraceKind::tx rst events; other kinds are
+  // ignored.
   void on_trace(std::uint32_t node, const TraceEvent& e);
   // The application closed or aborted connection `conn_id` of `node` at t.
   void on_app_close(std::uint32_t node, std::uint32_t conn_id, Time t);
@@ -167,6 +173,7 @@ private:
   DesignFn design_;
   std::vector<Conn> conns_;  // in order of first appearance
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> by_id_;  // (node, conn_id)
+  std::set<std::pair<std::uint32_t, std::uint32_t>> rst_sent_;            // (node, conn_id)
 };
 
 // --- InFlightChecker (§7.3).
@@ -178,10 +185,14 @@ private:
 // datagrams that pass the IPv4 and TCP checksum checks count, and a delivered
 // SYN counts only if its sequence number is the ISN its sender actually used.
 // Self-reported (TraceKind::tx events of data segments): packets_in_flight <=
-// cwnd, except fast_rexmit, rto_rexmit and tlp (RFC 6675 §5 (4.3), RFC 8985
-// §7.3); in Open with no loss marks, the wire bytes in flight (highest sent -
-// highest delivered ACK - bytes SACKed on the wire) <= cwnd * mss. Trace tx
-// events carry in_flight after the transmission.
+// cwnd, except fast_rexmit, the head rto_rexmit and tlp (RFC 6675 §5 (4.3),
+// Linux tcp_retransmit_timer, RFC 8985 §7.3); in Open with no loss marks, the
+// wire bytes in flight (highest sent - highest delivered ACK - bytes SACKed
+// on the wire) <= cwnd * mss. Trace tx events carry in_flight after the
+// transmission. The head rto_rexmit is the first rto_rexmit of the
+// connection after an RTO expiry (a TraceKind::rto event, or a timer event
+// of TraceTimer::rto with TimerOp::fired); a second one before the next
+// expiry is checked like rexmit.
 class InFlightChecker {
 public:
   // A datagram `node` handed to the host (before impairment).
@@ -211,6 +222,8 @@ private:
   [[nodiscard]] static std::uint32_t sacked_bytes(const Dir& d) noexcept;
 
   std::map<FourTuple, Dir> dirs_;  // keyed by (sender, receiver)
+  // (node, conn_id) with an RTO expiry whose head rto_rexmit is still to come.
+  std::set<std::pair<std::uint32_t, std::uint32_t>> rto_pending_;
 };
 
 // --- ProgressChecker: while any workload connection is unfinished, some
