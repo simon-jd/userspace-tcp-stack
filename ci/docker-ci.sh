@@ -3,13 +3,14 @@
 # the build CPUs. The source tree is mounted read-only and copied into the
 # container, so nothing is written to the host checkout.
 # Usage: ci/docker-ci.sh [preset...]
-# Environment: UTCP_IMAGE (default utcp-testbed:dev), UTCP_CI_CPUS (default 16-31).
+# Environment: UTCP_IMAGE (default utcp-testbed:dev), UTCP_CI_CPUS (default 16-31),
+# UTCP_CI_NAME (container name prefix, default utcp-ci; use utcp-<task id>-ci).
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 image=${UTCP_IMAGE:-utcp-testbed:dev}
 cpus=${UTCP_CI_CPUS:-16-31}
-name=utcp-ci-$(date +%Y%m%d-%H%M%S)-$$
+name=${UTCP_CI_NAME:-utcp-ci}-$(date +%Y%m%d-%H%M%S)-$$
 
 cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
