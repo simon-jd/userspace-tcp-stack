@@ -163,6 +163,7 @@ public:
     r.filled_hole = r.advanced && std::ranges::any_of(old_ranges, [&](const Range& g) {
                       return g.begin <= r.contiguous_end;
                     });
+    r.ooo_held = !ooo_ranges().empty();
     return r;
   }
   void drop_out_of_order() { bytes_.erase(bytes_.lower_bound(contiguous_end()), bytes_.end()); }
@@ -219,7 +220,7 @@ bool same(const InsertResult& a, const InsertResult& b) {
   return a.contiguous_end == b.contiguous_end && a.advanced == b.advanced &&
          a.out_of_order == b.out_of_order && a.filled_hole == b.filled_hole &&
          a.duplicate == b.duplicate && a.stored == b.stored && a.dropped == b.dropped &&
-         a.range_limit == b.range_limit;
+         a.range_limit == b.range_limit && a.ooo_held == b.ooo_held;
 }
 
 TEST(NaiveReassembler, MatchesTheByteMapForm) {
@@ -276,6 +277,24 @@ TEST(NaiveReassembler, RangeLimitAndDropOutOfOrder) {
   EXPECT_EQ(n.contiguous_end(), 0u);
   n.grow(20'000);
   EXPECT_EQ(n.right_edge(), 20'000u);
+}
+
+TEST(NaiveReassembler, DropFromForgetsTheHeldBytesAboveAnOffset) {
+  NaiveReassembler n(10'000);
+  put(n, 0, 100, 10'000);
+  put(n, 200, 100, 10'000);
+  put(n, 400, 100, 10'000);
+  put(n, 600, 100, 10'000);
+  n.drop_from(450);  // inside a range: its upper part goes too
+  EXPECT_EQ(n.ooo_ranges(), (std::vector<Range>{{200, 300}, {400, 450}}));
+  n.drop_from(400);
+  EXPECT_EQ(n.ooo_ranges(), (std::vector<Range>{{200, 300}}));
+  n.drop_from(5000);  // nothing held there
+  EXPECT_EQ(n.ooo_ranges(), (std::vector<Range>{{200, 300}}));
+  n.drop_from(100);  // the in-order end: like drop_out_of_order
+  EXPECT_TRUE(n.ooo_ranges().empty());
+  EXPECT_EQ(n.contiguous_end(), 100u);
+  EXPECT_EQ(n.readable(), 100u);
 }
 
 }  // namespace

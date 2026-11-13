@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "core/buffer/byte_ring.hpp"
 #include "core/buffer/chunk_pool.hpp"
@@ -29,8 +30,18 @@ struct InsertResult {
   // Advanced up to or into data held out of order (at least one range of
   // ooo_ranges() before the insert joined the in-order data).
   bool filled_hole = false;
+  // Out-of-order data is held after the insert (ooo_ranges() is not empty).
+  // With `advanced`, the segment filled part of a gap (RFC 5681 §4.2: ACK at
+  // once; Linux sends it through the out-of-order branch of
+  // __tcp_ack_snd_check).
+  bool ooo_held = false;
   // The lowest run of segment bytes that were already received (below the old
   // contiguous_end or inside an old range): the D-SACK candidate (RFC 2883 §4).
+  // As Linux, not set for a segment at or above the old contiguous_end that
+  // was dropped whole (tcp_data_queue_ofo drops before tcp_dsack_set), nor
+  // for a run inside a range pruned for this segment; a segment below it
+  // keeps [off, old contiguous_end) even when dropped (tcp_data_queue sets
+  // that D-SACK first).
   std::optional<Range> duplicate;
   // [max(off, read_offset()), clipped end): the part of the segment held
   // after the insert; empty (Range{}) when the segment was dropped or nothing
@@ -38,9 +49,18 @@ struct InsertResult {
   Range stored;
   // Bytes of the segment not stored for lack of a chunk or because they would
   // have created range number max_ooo_ranges + 1 (the engine counts
-  // TcpExtTCPOFODrop or TcpExtTCPRcvQDrop).
+  // TcpExtTCPOFODrop or TcpExtTCPRcvQDrop). Either way the whole segment is
+  // dropped: Linux drops a whole skb when tcp_try_rmem_schedule fails.
   std::uint64_t dropped = 0;
   bool range_limit = false;          // dropped because of the range limit
+  // Out-of-order bytes discarded to find chunks for this segment (Linux
+  // tcp_prune_ofo_queue, reached from tcp_try_rmem_schedule): whole ranges
+  // that begin at or above the segment's offset, highest first, until the
+  // segment's chunks fit or no such range is left. Set even when the segment
+  // was then dropped anyway. This is reneging (RFC 2018 §8): the engine
+  // counts TcpExtOfoPruned; ooo_ranges() no longer holds the data, so
+  // SackGenerator stops reporting it.
+  std::uint64_t pruned = 0;
 };
 
 class RecvBuffer {
@@ -53,7 +73,12 @@ public:
   // `limit` (rcv_adv as an offset: the highest right edge ever advertised,
   // RFC 7323 §2.4) are clipped, as are bytes at or above a known FIN offset.
   // Bytes already held are kept (the first copy wins). A segment that would
-  // create range number max_ooo_ranges + 1 is dropped whole.
+  // create range number max_ooo_ranges + 1 is dropped whole. A segment whose
+  // new bytes need more chunks than the pool has free first prunes
+  // out-of-order ranges at or above its offset (InsertResult::pruned), so
+  // the segment that fills a hole is not dropped for memory the connection's
+  // own out-of-order data holds; if the chunks still do not fit, it is
+  // dropped whole.
   // Precondition (checked): limit <= right_edge().
   InsertResult insert(std::uint64_t off, std::span<const std::byte> data, std::uint64_t limit);
 
@@ -91,7 +116,26 @@ public:
   void check_invariants() const;
 
 private:
-  // Implementation state is m1-rx's.
+  // Number of ranges above the in-order data if [lo, hi) were held too.
+  [[nodiscard]] std::size_t range_count_with(std::uint64_t lo, std::uint64_t hi) const;
+  // Bytes of [lo, hi) not held yet.
+  [[nodiscard]] std::uint64_t unheld_bytes(std::uint64_t lo, std::uint64_t hi) const;
+  // Chunks the ring must take to store [lo, hi).
+  [[nodiscard]] std::uint32_t chunks_needed(std::uint64_t lo, std::uint64_t hi) const;
+  // Whether the chunks for [lo, hi) are free in the pool.
+  [[nodiscard]] bool chunks_fit(std::uint64_t lo, std::uint64_t hi) const;
+  // Forgets the highest out-of-order range and returns its chunks; returns
+  // its length.
+  std::uint64_t prune_last_range();
+
+  ChunkPool* pool_;
+  ByteRing ring_;            // begin() is read_offset()
+  std::uint32_t capacity_;
+  std::uint64_t rcv_end_ = 0;  // contiguous_end()
+  // Sorted, disjoint and not touching, every begin above rcv_end_. Allocated
+  // on the first out-of-order segment.
+  std::vector<Range> ooo_;
+  std::optional<std::uint64_t> fin_;
 };
 
 }  // namespace utcp

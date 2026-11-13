@@ -33,10 +33,31 @@ public:
 
   // RecvBuffer::insert without a chunk pool (nothing is dropped for memory).
   InsertResult insert(std::uint64_t off, std::span<const std::byte> data, std::uint64_t limit) {
-    UTCP_CHECK(limit <= right_edge());
     const std::uint64_t old_end = contiguous_end();
     const std::vector<Range> old_ranges = ooo_ranges();
-    const std::uint64_t seg_end = off + data.size();
+    InsertResult r = plan(off, data.size(), limit);
+    for (std::uint64_t o = r.stored.begin; o < r.stored.end; ++o) {
+      if (!held(o)) {  // first copy wins
+        put(o, data[static_cast<std::size_t>(o - off)]);
+      }
+    }
+    r.contiguous_end = contiguous_end();
+    r.advanced = r.contiguous_end != old_end;
+    r.filled_hole = r.advanced && std::ranges::any_of(old_ranges, [&](const Range& g) {
+                      return g.begin <= r.contiguous_end;
+                    });
+    r.ooo_held = !ooo_ranges().empty();
+    return r;
+  }
+
+  // What insert(off, data, limit) with data.size() == len decides before it
+  // stores anything: out_of_order, duplicate, range_limit and dropped, and
+  // stored. Changes nothing; contiguous_end, advanced, filled_hole and
+  // ooo_held keep their defaults.
+  [[nodiscard]] InsertResult plan(std::uint64_t off, std::uint64_t len, std::uint64_t limit) const {
+    UTCP_CHECK(limit <= right_edge());
+    const std::uint64_t old_end = contiguous_end();
+    const std::uint64_t seg_end = off + len;
 
     InsertResult r;
     r.out_of_order = off > old_end;
@@ -69,27 +90,21 @@ public:
           r.dropped += held(o) ? 0 : 1;
         }
       } else {
-        for (std::uint64_t o = lo; o < hi; ++o) {
-          if (!held(o)) {  // first copy wins
-            put(o, data[static_cast<std::size_t>(o - off)]);
-          }
-        }
         r.stored = Range{lo, hi};
       }
     }
-
-    r.contiguous_end = contiguous_end();
-    r.advanced = r.contiguous_end != old_end;
-    r.filled_hole = r.advanced && std::ranges::any_of(old_ranges, [&](const Range& g) {
-                      return g.begin <= r.contiguous_end;
-                    });
     return r;
   }
 
-  void drop_out_of_order() {
-    const std::uint64_t end = contiguous_end();
-    if (end < stored_end()) {
-      std::fill(held_.begin() + static_cast<std::ptrdiff_t>(index(end)), held_.end(), std::uint8_t{0});
+  void drop_out_of_order() { drop_from(contiguous_end()); }
+
+  // Forgets every held byte at or above `off` (off >= contiguous_end()): the
+  // reference side of RecvBuffer pruning its highest out-of-order ranges
+  // (InsertResult::pruned), which a pool-less model cannot decide itself.
+  void drop_from(std::uint64_t off) {
+    UTCP_CHECK(off >= contiguous_end());
+    if (off < stored_end()) {
+      std::fill(held_.begin() + static_cast<std::ptrdiff_t>(index(off)), held_.end(), std::uint8_t{0});
     }
   }
 
