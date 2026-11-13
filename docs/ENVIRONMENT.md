@@ -137,11 +137,11 @@ three are reported.
   preset. GitHub-hosted runners do not have g++ 15 or clang 21, hence the
   container. Not run yet: the repository has not been pushed to GitHub.
 
-Last result (2026-11-12, `ci/docker-ci.sh` on commit e4361b0 of the
-m1-backend branch): all eight presets ok, 231-234 tests passed in each, no
-compiler warnings; the digest step was skipped (no `utcp-sim` yet). The same
-with `UTCP_IMAGE=utcp-m1-backend-testbed:dev`, the image built from the
-Dockerfile with nftables.
+Last result (2026-11-12, `ci/docker-ci.sh` on commit e40c467 of the
+m1-backend branch): all eight presets ok, 234-237 tests passed in each, no
+compiler warnings; the digest step was skipped (no `utcp-sim` yet). On
+commit e4361b0 the same also with `UTCP_IMAGE=utcp-m1-backend-testbed:dev`,
+the image built from the Dockerfile with nftables.
 
 ## verify-env
 
@@ -228,18 +228,24 @@ lost its ICMP reply in 1 of 4 tries. `TunDevice::wait_running` waits until
 `/sys/class/net/<if>/operstate` is `up`, then 1 ms more; `UtcpTransport::open`
 and `backend_tun_tool` call it (15 of 15 tries then got the reply).
 `/proc/sys` is read-only in the containers, so `ip route flush cache` fails
-there; sysctls are set with `docker run --sysctl`.
+there; sysctls are set with `docker run --sysctl`. `UtcpTransport::open`
+refuses an interface that `/sys/class/net` does not list: TUNSETIFF would
+create a new one, down, that disappears with the fd.
 
 Checks: `tests/interop/backend_testbed.sh` (m1-backend tests 3-6, the
 UtcpTransport self-check on utcp0 and a DNS query through the NAT),
 `tests/interop/backend_lateness.sh` (test 2, timing),
 `tests/interop/backend_udp_echo.sh` (test 7, needs the m1-ip Stack).
 
+`nft` is in the image only once it is rebuilt from `testbed/Dockerfile`; with
+the older `utcp-testbed:dev` the nat step of `backend_testbed.sh` fails
+(`nft: command not found`).
+
 ### Last results (2026-11-12, image `utcp-m1-backend-testbed:dev`)
 
 - `backend_testbed.sh`: all PASS. Peer ping 3/3 answered by `tun_probe
   --reply` on utcp0 (`qdisc pfifo ... qlen 10000`, `limit 10000p`, peer
-  `tcp_no_metrics_save = 1`); `backend_transport_check --tun utcp0` 13/13 and
+  `tcp_no_metrics_save = 1`); `backend_transport_check --tun utcp0` 17/17 and
   open() on a down utcp0 refused; a 1500-byte DF datagram from 198.18.0.2 to
   198.19.3.4 got `198.18.0.1 > 198.18.0.2: ICMP 198.19.3.4 unreachable - need
   to frag (mtu 1400)` on utcp0, and the peer's `ping -M do -s 1472` got `From
@@ -253,5 +259,9 @@ UtcpTransport self-check on utcp0 and a DNS query through the NAT),
   CPU 0.25 %. With `--spin-us 50`: p50 95 ns, p99 1.11 us, p99.9 4.05 us, max
   491 us, CPU 4.9 % (spinning 458 ms of 10.0 s).
 - `backend_udp_echo.sh`: not run on this branch (the Stack is the link stub).
-  On a local merge with the m1-ip branch: ping 3/3 answered by the stack,
-  100/100 datagrams echoed unchanged.
+  On a local merge with the m1-ip branch (image `utcp-testbed:dev`): ping 3/3
+  answered by the stack, 100/100 datagrams echoed unchanged. With `--pcap`,
+  the file held 624 bytes (header and 6 records) while the program was still
+  running after 3 pings, and the same 624 bytes after `pkill -KILL`.
+- `backend_transport_check --expect-stack` on that merge: 18/18 (gcc-release,
+  gcc-asan), 20 of 20 repeated runs under gcc-asan.
