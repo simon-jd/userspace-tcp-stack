@@ -382,7 +382,7 @@ Linux limits count `skb->truesize`, so a Linux buffer of nominal size N holds le
 | `recovery_reduction` (M2a) | `rfc6675` (cwnd = ssthresh on entry) | `prr` (SafeACK, as Linux 7.0) | RFC 6675 §5; RFC 9937; `tcp_cwnd_reduction` |
 | `frto`, `undo` | same: not modelled | | Linux `tcp_frto = 2` and `tcp_try_undo_*` are on; named in M2 results (§1.2) |
 | `rack_tlp` (M2a) | same: on | | RFC 8985; Linux `tcp_recovery=1`, `tcp_early_retrans=3` |
-| `dupthresh` / adaptive reordering | 3 / fixed | 3 / adaptive up to 300 | RFC 5681; `tcp_reordering`, `tcp_max_reordering` |
+| `dupthresh` / adaptive reordering | 3 / fixed | 3 / adaptive up to 300 (M2a; M1: fixed 3) | RFC 5681; `tcp_reordering`, `tcp_max_reordering` |
 | `cc` | same: `newreno` in M1; `cubic` from M2b | | |
 | `hystart` (M2b) | `hystart_pp` | `hystart_classic` (ACK train + delay, low window 16, ack delta 2 ms) | RFC 9406; `tcp_cubic.c` |
 | `pacing`, `pacing_ss_ratio`/`_ca_ratio` | same: rate always computed (§5.5), applied only if the CC requests it (BBR); 200 % / 120 % | | the 2d sender has no fq qdisc, so Linux CUBIC is unpaced; `tcp_update_pacing_rate` |
@@ -487,6 +487,11 @@ struct Tcb {
   void check_invariants() const;                              // snd_una <= snd_nxt, counters vs a recount
 };
 ```
+
+As built (`src/core/tcp/tcb.hpp`), SND.UNA, SND.NXT and RCV.NXT are not stored: they are derived from the
+queues' stream offsets (`snd_una()`, `snd_nxt()`, `rcv_nxt()`; SYN and FIN add one unit through `syn_acked`,
+`SendQueue::fin_sent/fin_acked` and `fin_rcvd`), so the sequence and offset views cannot disagree; `rcv_adv` is
+`RcvWindow::rcv_adv()`.
 
 Buffers inside `SendQueue` and `RecvBuffer` are allocated on first use, not at SYN time, which keeps
 SYN-RECEIVED children and idle connections small (§12, item 4).
@@ -688,7 +693,9 @@ Duration retry_abort_time(std::uint8_t retries, Duration rto_base, Duration rto_
    - Nagle (§3.9 variants) unless `nodelay`; FIN-bearing segments are exempt;
    - pacing (§5.5): `now ≥ pacing_next`, else arm the `pace` timer;
    - transmit queue and pool space (§3.4).
-3. FIN when the queue is empty and `fin_queued`; it rides on the last data segment when possible.
+3. FIN when the queue is empty and `fin_queued`; it rides on the last data segment when possible. A bare FIN is
+   exempt from the cwnd gate (Linux `tcp_cwnd_test`) and, as a deviation, is also sent with no usable receive
+   window: it carries no payload and needs no persist timer.
 4. A pure ACK if `AckPolicy` wants one and nothing above carried it.
 
 Payload size is `mss_cache − sack_option_bytes` when SACK blocks are being sent (Linux `tcp_current_mss`).
@@ -751,6 +758,11 @@ class SackGenerator {                               // RFC 2018 §4, RFC 2883 §
 - Linux-profile autotuning (`tcp_rcv_space_adjust`): once per receiver RTT estimate (from TS echo or per window,
   `tcp_rcv_rtt_update`) the buffer grows to 2 × bytes read in that RTT, up to `rcv_buf_max`. Window-update ACKs
   after reads follow `window_update_after_read`.
+- Deviations from Linux (m1-rx): windows round down (above); no zero window when chunks run out (in-order data
+  dropped for lack of chunks is ACKed at once instead); `ato` is capped at `delack_max`; autotuning grows to 2 ×
+  copied plus Linux 7.0's slow-start term (about 6 × at a receiver RTT ≥ 1 ms); the `rcv_ssthresh` step is
+  max(2·adv_mss, 2·len); with nothing unread a closed window reopens by less than the SWS step; there is no
+  pingpong mode and PSH is not used.
 
 ### 4.11 Send buffer and retransmission queue
 
@@ -807,13 +819,16 @@ sees EOF and may keep sending (half-close).
 ### 4.13 MSS and PMTU
 
 - `mss_cache = max(min(peer_mss, pmtu − 40, mss_clamp), min_snd_mss) − (ts_ok ? 12 : 0)` in 32-bit arithmetic,
-  recomputed on PMTU change (Linux `tcp_mtu_to_mss`); at least 8 payload bytes remain after TS and SACK options.
+  recomputed on PMTU change (Linux `tcp_mtu_to_mss`), with the floor at least 48 (`TCP_MIN_SND_MSS`); at least 8
+  payload bytes remain after TS and SACK options.
 - PMTU cache: sorted vector keyed by destination (256 entries, deterministic eviction by oldest update), initial
   value `mtu`, entries expire after `pmtu_expiry` (RFC 1191 §6.3), checked lazily and by a stack timer.
 - ICMP type 3 code 4 (RFC 1191 §6): find the connection from the quoted 4-tuple; require the quoted sequence
   number in `[SND.UNA, SND.NXT)` (RFC 5927 §4.1; Linux `tcp_v4_err`), otherwise ignore and count
   `icmp_seq_invalid`. New PMTU = the next-hop MTU field, or the RFC 1191 §7 plateau below the quoted total length
-  when the field is 0; clamped to `[min_pmtu, current)`. Update the cache and `mss_cache`, split queued segments,
+  when the field is 0; the IP layer clamps it to `[min_pmtu, cached PMTU]`, so it may equal or exceed the
+  connection's PMTU: the engine acts only if it is below `Tcb::pmtu` (Linux `tcp_v4_mtu_reduced`) and never raises
+  it (RFC 1191 §6.1). Update the cache and `mss_cache`, split queued segments,
   mark in-flight segments larger than the new MSS lost and, unless already in Loss, enter Loss with `recover =
   SND.NXT` and ssthresh = max(ssthresh, ¾·cwnd) but no cwnd cut; `transmit` resends them under cwnd (Linux
   `tcp_simple_retransmit`; traced as `TxKind::pmtu_rexmit`).
