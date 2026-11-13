@@ -140,7 +140,7 @@ TEST(StackIp, MalformedDatagramsAreDroppedAndCounted) {
   s.receive(t0, t::raw_datagram(peer, us, utcp::ip_proto_tcp, t::pattern(19)));
   EXPECT_EQ(st.TcpInSegs, 4u);
   EXPECT_EQ(st.TcpInErrs, 4u);
-  // A valid segment reaches the engine (the link stub drops it).
+  // A valid segment reaches the engine (no listener: it answers with an RST).
   seg.corrupt_checksum = false;
   s.receive(t0, t::tcp_datagram(seg));
   EXPECT_EQ(st.TcpInSegs, 5u);

@@ -340,6 +340,23 @@ void SendQueue::split_to_mss(std::uint16_t mss) {
   head_ = 0;
 }
 
+void SendQueue::split(std::uint64_t off, std::uint32_t len) {
+  const std::size_t i = index_of(off);
+  UTCP_CHECK(i < segs_.size() && segs_[i].off == off);
+  UTCP_CHECK(len > 0 && len < segs_[i].len);
+  TxSeg tail = segs_[i];
+  tail.id = next_id_++;
+  tail.off = off + len;
+  tail.len = segs_[i].len - len;
+  segs_[i].len = len;
+  segs_[i].fin = false;
+  ++ctr_.packets_out;
+  ctr_.sacked_out += tail.sacked ? 1u : 0u;
+  ctr_.lost_out += tail.lost ? 1u : 0u;
+  ctr_.retrans_out += tail.retrans_inflight ? 1u : 0u;
+  segs_.insert(segs_.begin() + static_cast<std::ptrdiff_t>(i + 1), tail);
+}
+
 const Counters& SendQueue::counters() const { return ctr_; }
 std::uint64_t SendQueue::lost_total() const { return lost_total_; }
 bool SendQueue::sack_ok() const { return sack_ok_; }

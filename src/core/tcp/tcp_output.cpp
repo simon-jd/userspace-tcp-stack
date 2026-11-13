@@ -287,7 +287,16 @@ void TcpEngine::send_tw_ack(TimeWaitEntry& e, Time now) {
   core_.send_ipv4(e.tuple.remote.addr, ip_proto_tcp, 0, std::move(*buf));
 }
 
-bool TcpEngine::retransmit_seg(Tcb& t, Time now, const TxSeg& seg, TxKind kind) {
+bool TcpEngine::retransmit_seg(Tcb& t, Time now, const TxSeg& whole, TxKind kind) {
+  // Linux tcp_retransmit_skb: a segment sent before the SACK blocks we now
+  // carry (or a PMTU drop) took more room is cut to the current MSS; the
+  // tail stays lost and goes next.
+  TxSeg seg = whole;
+  const std::uint32_t mss = mss_now(t);
+  if (seg.len > mss) {
+    t.sndq.split(seg.off, mss);
+    seg = *t.sndq.find(seg.off);
+  }
   SegOut o;
   o.seq = seq_at(t.snd_base(), seg.off);
   o.flags = tcp_ack;
@@ -362,8 +371,10 @@ void TcpEngine::transmit(Tcb& t, Time now) {
       if (i != 0 && seg.off >= t.sndq.una() + t.snd_wnd) {
         break;
       }
-      if (!core_.can_transmit() ||
-          !retransmit_seg(t, now, seg, fast ? TxKind::fast_rexmit : TxKind::rexmit)) {
+      const TxKind kind = fast ? TxKind::fast_rexmit
+                          : t.pmtu_rexmit_end && seg.off < *t.pmtu_rexmit_end ? TxKind::pmtu_rexmit
+                                                                              : TxKind::rexmit;
+      if (!core_.can_transmit() || !retransmit_seg(t, now, seg, kind)) {
         blocked = true;
         break;
       }

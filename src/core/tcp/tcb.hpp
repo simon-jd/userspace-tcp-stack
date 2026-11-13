@@ -117,6 +117,10 @@ struct Tcb {
   std::optional<Time> retrans_stamp;   // first retransmission since the last full recovery
   Time syn_first_tx, syn_last_tx;
   XmitTimer xmit_kind = XmitTimer::none;  // what the xmit timer is armed for
+  // SND.NXT (offset) at the last PMTU drop that marked segments lost: lost
+  // segments below it are resent as TxKind::pmtu_rexmit (§4.13) until
+  // SND.UNA passes it or an RTO fires.
+  std::optional<std::uint64_t> pmtu_rexmit_end;
 
   // Send side.
   SendQueue sndq;

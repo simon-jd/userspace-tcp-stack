@@ -6,8 +6,10 @@
 # node sends and every datagram delivered to one (after the link
 # impairments), so a link pipeline that differs between the compilers shows
 # too. Synthetic-node runs are cheap, so they cover more seeds (0:500 holds
-# about 25 seeds with garbage corruption). ci/run.sh calls it after the
-# gcc-release and clang-release presets pass.
+# about 25 seeds with garbage corruption). It then compares the TCP harness
+# digests that the unit test TcpDeterminism prints (m1-tcp-core acceptance
+# test 7). ci/run.sh calls it after the gcc-release and clang-release presets
+# pass.
 #
 # Usage: ci/check-digests.sh [--seeds A:B] [--synthetic-seeds A:B] [TREE_A TREE_B]
 #   default seeds 0:20 (stack nodes) and 0:500 (synthetic nodes; --seeds
@@ -45,9 +47,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # "seed digest" per RunResult line, sorted by seed, for utcp-sim $1 with
-# --nodes $2 over seeds $3. utcp-sim exits 1 when a run fails (with the
-# link-stub Stack every stack-node workload fails); only exit statuses above 1
-# (usage error, crash) make the comparison fail.
+# --nodes $2 over seeds $3. utcp-sim exits 1 when a run fails (a checker
+# violation is a finding for the sweep, not a compiler difference); only exit
+# statuses above 1 (usage error, crash) make the comparison fail.
 digests() {
   local rc=0
   "$1" --seed-range "$3" --nodes "$2" >"$work/raw" || rc=$?
@@ -74,4 +76,31 @@ for nodes in stack synthetic; do
   fi
   total=$((total + $(wc -l <"$work/a")))
 done
-echo "check-digests: ok ($total runs: seeds $seeds with stack nodes, $syn_seeds with synthetic nodes)"
+
+# The TCP harness runs of tests/unit/tcp_determinism_test.cpp print
+# "TcpDeterminism digest <scenario> <hex>"; both builds must agree.
+harness=0
+unit_a=$tree_a/tests/unit/utcp_unit_tests
+unit_b=$tree_b/tests/unit/utcp_unit_tests
+if [[ -x $unit_a && -x $unit_b ]]; then
+  for side in a b; do
+    unit=$unit_a
+    [[ $side == b ]] && unit=$unit_b
+    if ! "$unit" --gtest_filter='TcpDeterminism.*' >"$work/unit-raw"; then
+      echo "check-digests: FAILED ($unit --gtest_filter=TcpDeterminism.* failed)" >&2
+      exit 1
+    fi
+    grep '^TcpDeterminism digest ' "$work/unit-raw" >"$work/unit-$side" || true
+  done
+  if [[ ! -s $work/unit-a ]]; then
+    echo "check-digests: FAILED (no TcpDeterminism digest lines from $unit_a)"
+    exit 1
+  fi
+  if ! diff -u "$work/unit-a" "$work/unit-b"; then
+    echo "check-digests: FAILED (TcpDeterminism digests differ between $tree_a and $tree_b)"
+    exit 1
+  fi
+  harness=$(wc -l <"$work/unit-a")
+fi
+echo "check-digests: ok ($total runs: seeds $seeds with stack nodes, $syn_seeds with synthetic nodes;" \
+  "$harness TCP harness digests)"

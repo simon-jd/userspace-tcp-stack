@@ -24,8 +24,16 @@ void TcpEngine::on_icmp_error(Time now, const TcpIcmpError& err) {
     core_.trace(e);
   }
   if (err.type == wire::icmp_dest_unreach && err.code == wire::icmp_frag_needed) {
-    // §4.13 (Linux tcp_v4_mtu_reduced): only a reduction acts.
-    if (err.new_pmtu == 0 || err.new_pmtu >= t.pmtu) {
+    if (err.new_pmtu == 0) {
+      return;
+    }
+    // §4.13 (Linux tcp_v4_mtu_reduced, inet_csk_update_pmtu): the cache
+    // takes the value after the sequence check (it only ever lowers); the
+    // connection acts only on a reduction of its own PMTU and never raises
+    // it (RFC 1191 §6.1).
+    core_.pmtu_lower(t.tuple.remote.addr, err.new_pmtu);
+    if (err.new_pmtu >= t.pmtu) {
+      ++core_.stats().icmp_pmtu_not_reduced;
       return;
     }
     t.pmtu = err.new_pmtu;
@@ -33,6 +41,9 @@ void TcpEngine::on_icmp_error(Time now, const TcpIcmpError& err) {
     if (t.syn_acked && t.synchronized()) {
       RecoveryCtx c = rctx(t, now);
       t.recovery.on_pmtu_drop(c);
+      if (t.sndq.counters().lost_out > 0) {
+        t.pmtu_rexmit_end = t.sndq.nxt();
+      }
       transmit(t, now);
     }
     return;

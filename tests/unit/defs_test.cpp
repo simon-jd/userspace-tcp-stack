@@ -115,7 +115,7 @@ bool is_nstat_name(std::string_view s) {
   X(TcpExtTCPACKSkippedTimeWait) X(TcpExtPAWSEstab) X(TcpExtListenOverflows)          \
   X(TcpExtListenDrops) X(TcpExtTW) X(TcpExtTCPAbortOnData) X(TcpExtTCPAbortOnClose)   \
   X(TcpExtTCPAbortOnTimeout) X(TcpExtTCPSynRetrans) X(TcpExtTCPWinProbe)              \
-  X(icmp_seq_invalid)
+  X(icmp_seq_invalid) X(icmp_pmtu_not_reduced)
 
 // Per-connection counters (TcpInfo, §10.1).
 #define DESIGN_CONN_COUNTERS(X)                                                         \

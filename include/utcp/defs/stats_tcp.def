@@ -38,6 +38,8 @@ UTCP_STACK_STAT(TcpExtTCPSynRetrans, "SYN and SYN-ACK retransmissions")
 UTCP_STACK_STAT(TcpExtTCPWinProbe, "zero-window probes sent")
 UTCP_STACK_STAT(icmp_seq_invalid,
                 "ICMP errors whose quoted sequence is outside [SND.UNA, SND.NXT) (RFC 5927 4.1)")
+UTCP_STACK_STAT(icmp_pmtu_not_reduced,
+                "frag-needed errors whose MTU is not below the connection's PMTU: ignored (DESIGN 4.13)")
 
 UTCP_CONN_STAT(segs_in, "segments received (tcpi_segs_in)")
 UTCP_CONN_STAT(segs_out, "segments sent, retransmissions included (tcpi_segs_out)")

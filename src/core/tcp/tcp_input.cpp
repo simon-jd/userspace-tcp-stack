@@ -471,6 +471,19 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
       trace_drop(&t, s);
       return;
     }
+    // Linux tcp_v4_syn_recv_sock / tcp_check_req (tcp_abort_on_overflow =
+    // 0): with the accept queue full (more than backlog) the completing ACK
+    // is dropped; the child stays in SYN-RECEIVED and its SYN-ACK schedule
+    // runs on, so a later ACK completes it once the application accepts.
+    if (t.passive && t.listener) {
+      const ListenState& ls = *at(*t.listener).listen;
+      if (ls.accept_q.size() > ls.backlog) {
+        ++st.TcpExtListenOverflows;
+        ++st.TcpExtListenDrops;
+        trace_drop(&t, s);
+        return;
+      }
+    }
     handshake_done(t, s);
     // The window of the completing ACK is scaled; that of a crossing
     // SYN-ACK is not (RFC 7323 §2.2).
@@ -515,13 +528,19 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   }
   t.last_ack_recv = now;
   t.probes_out = 0;
-  // MUST-20 (RFC 9293 §3.10.7.4): window update.
+  // MUST-20 (RFC 9293 §3.10.7.4): window update. As Linux
+  // tcp_may_update_window, an ACK that advances SND.UNA always takes the
+  // window: the usable window is computed from SND.UNA (SND.UNA + SND.WND,
+  // Linux tcp_wnd_end), so a window kept from an older ACK would move the
+  // right edge past the one the peer offered (e.g. a retransmitted peer
+  // segment with a lower SEQ than SND.WL1 that acknowledges new data).
   const std::uint32_t nwin = cfg_.test_fault == TestFault::unscaled_peer_window
                                  ? s.v->h.window
                                  : static_cast<std::uint32_t>(s.v->h.window) << t.snd_wscale;
   bool window_update = false;
   if (before_eq(una, s.ack) &&
-      (before(t.snd_wl1, s.seq) || (t.snd_wl1 == s.seq && before_eq(t.snd_wl2, s.ack)))) {
+      (after(s.ack, una) || before(t.snd_wl1, s.seq) ||
+       (t.snd_wl1 == s.seq && before_eq(t.snd_wl2, s.ack)))) {
     window_update = nwin != t.snd_wnd;
     t.snd_wnd = nwin;
     t.snd_wl1 = s.seq;
@@ -593,6 +612,9 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
     t.rto_count = 0;
     if (t.sndq.counters().retrans_out == 0) {
       t.retrans_stamp.reset();
+    }
+    if (t.pmtu_rexmit_end && t.sndq.una() >= *t.pmtu_rexmit_end) {
+      t.pmtu_rexmit_end.reset();
     }
   }
   t.ackp.set_srtt(t.rtt.srtt());
@@ -688,8 +710,11 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
   const auto uoff = static_cast<std::uint64_t>(off);
   const std::uint64_t old_nxt = t.rcvq.contiguous_end();
   // Linux tcp_rcv_state_process: new data after the application closed (or
-  // shut down reading) in FIN-WAIT-1/2 aborts.
-  if ((t.orphan || t.app_read_shut) && uoff + payload.size() > old_nxt && !payload.empty()) {
+  // shut down reading) in FIN-WAIT-1/2 aborts (RFC 1122 §4.2.2.13). In
+  // ESTABLISHED, shutdown(read) alone acknowledges and discards it (§3.5).
+  const bool fin_wait = t.state == TcpState::fin_wait_1 || t.state == TcpState::fin_wait_2;
+  if (fin_wait && (t.orphan || t.app_read_shut) && uoff + payload.size() > old_nxt &&
+      !payload.empty()) {
     ++st.TcpExtTCPAbortOnData;
     send_rst(t, now);
     close_conn(t, CloseCause::aborted, Error::connection_reset);

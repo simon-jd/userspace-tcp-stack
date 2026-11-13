@@ -360,7 +360,8 @@ TEST(Icmp, TcpErrorFromQuote) {
 }
 
 // Received errors: counted by type; malformed ones dropped; TCP quotes go to
-// the engine (the link stub ignores them), and nothing is sent back.
+// the engine (which finds no connection for them here), and nothing is sent
+// back.
 TEST(Icmp, ReceivedErrorsAreCountedAndDispatched) {
   StackImpl s(config());
   s.advance(t0);

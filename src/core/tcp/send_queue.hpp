@@ -154,6 +154,12 @@ public:
   // several, keeping ids of the first parts. The parts inherit the flags,
   // times and rate snapshot (Linux tcp_fragment); new parts get new ids.
   void split_to_mss(std::uint16_t mss);
+  // Splits the TxSeg starting at `off` after its first `len` bytes (Linux
+  // tcp_fragment before a retransmission that would not fit the current
+  // MSS, tcp_retransmit_skb). The tail gets a new id and inherits flags,
+  // times and the rate snapshot; a FIN moves to the tail. Precondition
+  // (checked): a TxSeg starts at off and 0 < len < its length.
+  void split(std::uint64_t off, std::uint32_t len);
 
   [[nodiscard]] const Counters& counters() const;
   // Packets marked lost so far (Linux tp->lost): mark_lost calls that set a

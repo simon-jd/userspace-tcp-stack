@@ -265,6 +265,38 @@ TEST(SendQueue, IdsStayStableAcrossPopsAndSplit) {
   q.check_invariants();
 }
 
+// split (m1-tcp-core): one TxSeg cut before a retransmission (Linux
+// tcp_fragment); the tail keeps the flags and takes the FIN.
+TEST(SendQueue, SplitCutsOneSegment) {
+  ChunkPool pool(16);
+  SendQueue q(pool, 64 * 1024);
+  q.write(pattern(3000, 0));
+  q.on_transmit(0, 1448, false, at(0), {});     // id 0
+  q.on_transmit(1448, 1448, false, at(0), {});  // id 1
+  q.on_transmit(2896, 104, true, at(0), {});    // id 2, with FIN
+  q.mark_lost(0);
+  q.split(0, 1436);
+  ASSERT_EQ(q.segs().size(), 4u);
+  EXPECT_EQ(q.segs()[0].id, 0u);
+  EXPECT_EQ(q.segs()[0].len, 1436u);
+  EXPECT_EQ(q.segs()[1].id, 3u);
+  EXPECT_EQ(q.segs()[1].off, 1436u);
+  EXPECT_EQ(q.segs()[1].len, 12u);
+  EXPECT_TRUE(q.segs()[1].lost);
+  EXPECT_EQ(q.counters().packets_out, 4u);
+  EXPECT_EQ(q.counters().lost_out, 2u);
+  EXPECT_EQ(q.counters(), recount(q));
+  q.split(2896, 100);
+  ASSERT_EQ(q.segs().size(), 5u);
+  EXPECT_FALSE(q.segs()[3].fin);
+  EXPECT_TRUE(q.segs()[4].fin);
+  EXPECT_EQ(q.segs()[4].len, 4u);
+  EXPECT_EQ(q.counters(), recount(q));
+  q.on_transmit(0, 1436, false, at(1), {});
+  EXPECT_EQ(q.counters().retrans_out, 1u);
+  q.check_invariants();
+}
+
 TEST(SendQueue, FinRidesOnTheLastSegmentUntilAcked) {
   ChunkPool pool(16);
   SendQueue q(pool, 64 * 1024);
@@ -459,6 +491,11 @@ void random_ops(bool sack_ok, std::uint64_t seed) {
           delivered_ids.erase(s.id);
         }
         q.clear_all_sacked();
+      } else if (rng.below(100) == 0 && !segs.empty()) {
+        const TxSeg& s = segs[rng.below(static_cast<std::uint32_t>(segs.size()))];
+        if (s.len > 1) {
+          q.split(s.off, rng.below(s.len - 1) + 1);
+        }
       } else if (rng.below(200) == 0) {
         q.split_to_mss(static_cast<std::uint16_t>(rng.below(1400) + 100));
       } else {

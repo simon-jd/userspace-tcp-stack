@@ -192,13 +192,13 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
   }
   RecoveryCtx c = rctx(t, now);
   t.recovery.on_rto(c);
+  t.pmtu_rexmit_end.reset();
   if (t.backoff < 31) {
     ++t.backoff;
   }
   if (t.rto_count < 0xff) {
     ++t.rto_count;
   }
-  ++core_.stats().TcpExtTCPTimeouts;
   const TxSeg head = t.sndq.segs().front();
   if (!core_.can_transmit() || !retransmit_seg(t, now, head, TxKind::rto_rexmit)) {
     core_.block_tx(t.self.slot);

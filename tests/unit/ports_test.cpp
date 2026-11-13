@@ -169,8 +169,9 @@ TEST(Ports, DifferentRemotesStartAtDifferentOffsets) {
   EXPECT_EQ(firsts.size(), 16u);
 }
 
-// The stack's allocators: TCP over TcpConfig::ephemeral_ports (the stub
-// engine rejects nothing), UDP over the UDP range with remote 0:0.
+// The stack's allocators: TCP over TcpConfig::ephemeral_ports (no connection,
+// TIME_WAIT entry or listener exists, so the engine rejects nothing), UDP
+// over the UDP range with remote 0:0.
 TEST(Ports, StackAllocatorsUseTheProfileRanges) {
   for (const auto profile : {utcp::ProfileId::linux_compat, utcp::ProfileId::rfc}) {
     utcp::StackConfig cfg;

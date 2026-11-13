@@ -269,7 +269,7 @@ std::optional<Error> take_error(Handle);                                        
 | `tcp_send` | copies up to the free send-buffer space; `would_block` if none; `shut_down` after `shutdown(write)`; the pending connection error otherwise. Allowed in SYN-SENT (data is queued). |
 | `tcp_recv` | returns in-order data; then 0 after the peer's FIN; then the connection error if any. Buffered data is returned before an error (after RST, data already received is still readable). |
 | `tcp_shutdown(write)` | queues FIN after buffered data (half-close, RFC 9293 §3.6). `shutdown(read)`: `tcp_recv` returns 0; later data is acknowledged and discarded. |
-| `tcp_close` | if unread data remains, sends RST (RFC 1122 §4.2.2.13) and frees; otherwise behaves as shutdown(both) and the connection lives on as an orphan until CLOSED/TIME_WAIT. Data arriving after close also triggers RST. On a listener: closes it and RSTs non-accepted children. |
+| `tcp_close` | if unread data remains, sends RST (RFC 1122 §4.2.2.13) and frees; otherwise behaves as shutdown(both) and the connection lives on as an orphan until CLOSED/TIME_WAIT. Data arriving after close also triggers RST. On a listener: closes it and RSTs non-accepted children. (As built: data after close resets in FIN-WAIT-1/2, as Linux `tcp_rcv_state_process`; after `shutdown(read)` alone, ESTABLISHED acknowledges and discards it.) |
 | `tcp_abort` | sends RST `<SEQ=SND.NXT>` if synchronized, frees immediately. |
 
 Events are edge-triggered and coalesced. Each socket has a pending bitmask and sits at most once in a FIFO of
@@ -524,7 +524,11 @@ else `<SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>`.
 **LISTEN** (§3.10.7.2): RST: drop. ACK: send `<SEQ=SEG.ACK><CTL=RST>`. SYN: if backlog is exhausted drop;
 else create a child in SYN-RECEIVED, choose ISS (§4.6), record peer options, reply SYN-ACK with only the options
 the peer offered (WS only if the SYN had WS, RFC 7323 §2.2; TS only if the SYN had TS, §3.2; SACK-permitted only
-if offered). SYN data is not acknowledged (no TFO). Anything else: drop.
+if offered). SYN data is not acknowledged (no TFO). Anything else: drop. As built, "backlog exhausted" is Linux's
+test: more than `backlog` children wait for `tcp_accept` (`sk_acceptq_is_full`, so backlog + 1 fit), or `backlog`
+children are in SYN-RECEIVED (no SYN cookies). An ACK completing a child while more than `backlog` wait is dropped
+and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its SYN-ACK schedule runs on (Linux
+`tcp_check_req` with `tcp_abort_on_overflow = 0`).
 
 **SYN-SENT** (§3.10.7.3):
 1. ACK check: if `SEG.ACK ≤ ISS` or `SEG.ACK > SND.NXT`, send RST unless RST is set, drop.
@@ -567,7 +571,9 @@ if offered). SYN data is not acknowledged (no TFO). Anything else: drop.
    - Otherwise the ACK pipeline of §5.1 runs in Linux order: SACK blocks (validated; D-SACK detected per RFC 2883
      §4: first block below SEG.ACK or contained in the second block), then the cumulative ACK, RTT samples (§4.8),
      loss recovery, rate sample, CC. Window update if `SND.WL1 < SEG.SEQ` or
-     (`SND.WL1 == SEG.SEQ` and `SND.WL2 ≤ SEG.ACK`) (MUST-20). Duplicate ACK as RFC 5681 §2 (same ACK, no data,
+     (`SND.WL1 == SEG.SEQ` and `SND.WL2 ≤ SEG.ACK`) (MUST-20), or (as built, Linux `tcp_may_update_window`) if
+     the ACK advances SND.UNA: the usable window is measured from SND.UNA, so a window kept from an older ACK
+     would let the sender pass the peer's right edge. Duplicate ACK as RFC 5681 §2 (same ACK, no data,
      no SYN/FIN, same window, data outstanding) or, with SACK, an ACK whose SACK blocks cover new data
      (RFC 6675 §2).
    - FIN-WAIT-1: our FIN acked → FIN-WAIT-2 (orphans arm `fin_wait2`). CLOSING: FIN acked → TIME-WAIT.
@@ -684,7 +690,8 @@ Duration retry_abort_time(std::uint8_t retries, Duration rto_base, Duration rto_
    RFC 6675 NextSeg rules 1-4) while `packets_in_flight < cwnd`. Only three transmissions skip the cwnd gate: the
    `fast_rexmit` on entering recovery when cwnd is set to ssthresh (M1, `rfc6675`; RFC 6675 §5 (4.3)), the head
    `rto_rexmit` (Linux `tcp_retransmit_timer`) and `tlp` (RFC 8985 §7.3). PMTU retransmissions are ordinary lost
-   segments.
+   segments. A segment longer than the current MSS (`mss_now`: `mss_cache` less the SACK blocks our segments now
+   carry) is split before it is resent and the tail stays lost (Linux `tcp_retransmit_skb`, `tcp_fragment`).
 2. New data while all gates pass:
    - congestion: `packets_in_flight < cwnd`, the only congestion gate (PRR writes cwnd, §5.1);
    - receive window: segment end ≤ SND.UNA + SND.WND;
@@ -828,10 +835,13 @@ sees EOF and may keep sending (half-close).
   `icmp_seq_invalid`. New PMTU = the next-hop MTU field, or the RFC 1191 §7 plateau below the quoted total length
   when the field is 0; the IP layer clamps it to `[min_pmtu, cached PMTU]`, so it may equal or exceed the
   connection's PMTU: the engine acts only if it is below `Tcb::pmtu` (Linux `tcp_v4_mtu_reduced`) and never raises
-  it (RFC 1191 §6.1). Update the cache and `mss_cache`, split queued segments,
+  it (RFC 1191 §6.1); a frag-needed that does not lower it changes nothing but is counted in
+  `icmp_pmtu_not_reduced`. The cache takes the value after the sequence check in either case (it only lowers,
+  Linux `inet_csk_update_pmtu`). On a reduction: update `mss_cache`, split queued segments,
   mark in-flight segments larger than the new MSS lost and, unless already in Loss, enter Loss with `recover =
   SND.NXT` and ssthresh = max(ssthresh, ¾·cwnd) but no cwnd cut; `transmit` resends them under cwnd (Linux
-  `tcp_simple_retransmit`; traced as `TxKind::pmtu_rexmit`).
+  `tcp_simple_retransmit`; traced as `TxKind::pmtu_rexmit`: lost segments below SND.NXT of the drop, until SND.UNA
+  passes it or an RTO fires).
 - The same sequence check applies to other ICMP errors quoted for TCP.
 
 ## 5. Extension points for M2
@@ -1313,7 +1323,9 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
   expression, no side effects in function arguments.
 - Ties are broken explicitly: timers by `(deadline, arm_seq)`, simulator events by `(time, seq)`, event FIFO by
   first-pending order, slots by lowest free index.
-- CI checks: the same seed twice gives the same digest; the g++ and clang builds give the same digest.
+- CI checks: the same seed twice gives the same digest; the g++ and clang builds give the same digest. The same
+  holds for the two-stack harness: `TcpDeterminism` (unit tests) hashes a lossy multi-connection run twice and
+  prints the digest, which `ci/check-digests.sh` compares between the g++ and clang release builds.
 
 ### 13.2 Error handling
 
