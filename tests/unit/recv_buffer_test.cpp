@@ -10,6 +10,7 @@
 #include <optional>
 #include <random>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "core/buffer/chunk_pool.hpp"
@@ -638,21 +639,29 @@ TEST(RecvBuffer, PrunedDataIsDroppedWhenTheSegmentStillDoesNotFit) {
   EXPECT_EQ(read_all(rb), bytes(0, 100));
 }
 
-// Differential test (m1-rx acceptance 2): 1e6 random insert, read, FIN,
-// reneging and grow operations from fixed seeds (five tests of 200'000, so
-// each ctest entry stays well inside the timeout under ASan), compared with
-// the naive reference after every step. A FIN is rare; once the stream has
-// reached it and been read, a fresh buffer starts (another connection). A
-// third of the segments start at or below contiguous_end; the small-segment
-// seeds keep the range limit busy.
+// Differential test (m1-rx acceptance 2): 1e6 random insert, read and FIN
+// operations from fixed seeds (five tests of 200'000, so each ctest entry
+// stays well inside the timeout under ASan), compared with the naive
+// reference after every step. Reneging and grow operations and empty steps
+// are mixed in but not counted: a seed runs until it has done its 200'000
+// insert, read and FIN operations (about 227'000 steps). A FIN is rare; once
+// the stream has reached it and been read, a fresh buffer starts (another
+// connection). A third of the segments start at or below contiguous_end; the
+// small-segment seeds keep the range limit busy.
 struct DiffParams {
   std::uint64_t seed;
   std::uint32_t capacity;
-  int steps;
+  std::uint64_t operations;  // insert, read and FIN operations to run
   bool small_segments;
 };
 
 struct DiffCounts {
+  std::uint64_t steps = 0;
+  std::uint64_t inserts = 0;
+  std::uint64_t reads = 0;
+  std::uint64_t fins = 0;   // set_fin calls, including ignored later FINs
+  std::uint64_t drops = 0;  // drop_out_of_order calls
+  std::uint64_t grows = 0;  // grow calls (none once at the size cap)
   std::uint64_t advances = 0;
   std::uint64_t filled_holes = 0;
   std::uint64_t range_limits = 0;
@@ -679,7 +688,8 @@ void run_differential(const DiffParams& p, DiffCounts& n) {
   std::vector<std::byte> a;
   std::vector<std::byte> b;
   const std::uint64_t max_len = p.small_segments ? 24 : 3000;
-  for (int step = 0; step < p.steps; ++step) {
+  for (std::uint64_t step = 0; n.inserts + n.reads + n.fins < p.operations; ++step) {
+    n.steps = step + 1;
     const std::uint64_t cap = rb->capacity();
     const std::uint64_t ce = rb->contiguous_end();
     const std::uint64_t ro = rb->read_offset();
@@ -702,6 +712,7 @@ void run_differential(const DiffParams& p, DiffCounts& n) {
       const auto data = bytes(off, len, static_cast<unsigned>(gen() % 3));
       const InsertResult x = rb->insert(off, data, limit);
       const InsertResult y = ref->insert(off, data, limit);
+      ++n.inserts;
       ASSERT_EQ(x.contiguous_end, y.contiguous_end) << step;
       ASSERT_EQ(x.advanced, y.advanced) << step;
       ASSERT_EQ(x.out_of_order, y.out_of_order) << step;
@@ -721,6 +732,7 @@ void run_differential(const DiffParams& p, DiffCounts& n) {
       a.assign(len, std::byte{0});
       b.assign(len, std::byte{0});
       const std::size_t got = rb->read(a);
+      ++n.reads;
       ASSERT_EQ(got, ref->read(b)) << step;
       ASSERT_EQ(a, b) << step;
       n.stream_bytes += got;
@@ -738,20 +750,24 @@ void run_differential(const DiffParams& p, DiffCounts& n) {
       const bool first = !rb->fin_offset();
       rb->set_fin(at);
       ref->set_fin(at);
+      ++n.fins;
       if (first && kind == 1 && !ooo.empty() && rb->fin_offset() == at) {
         ++n.fins_at_top;
       }
     } else if (op < 88'500) {
       rb->drop_out_of_order();
       ref->drop_out_of_order();
+      ++n.drops;
     } else if (op < 89'000) {
       if (cap < 4 * p.capacity) {
         const auto grown = static_cast<std::uint32_t>(cap + gen() % (cap / 2 + 1));
         rb->grow(grown);
         ref->grow(grown);
+        ++n.grows;
       }
     }
-    // else: nothing this step (the other operations keep their shares)
+    // else: nothing this step (the other operations keep their shares; the
+    // loop runs until the insert, read and FIN count reaches p.operations)
     rb->check_invariants();
     ASSERT_EQ(rb->contiguous_end(), ref->contiguous_end()) << step;
     ASSERT_EQ(rb->read_offset(), ref->read_offset()) << step;
@@ -781,6 +797,19 @@ void differential(const DiffParams& p) {
   if (testing::Test::HasFatalFailure()) {
     return;
   }
+  // The operation counts go into the gtest XML output (--gtest_output=xml).
+  const auto record = [](const char* key, std::uint64_t value) {
+    testing::Test::RecordProperty(key, std::to_string(value));
+  };
+  record("steps", n.steps);
+  record("inserts", n.inserts);
+  record("reads", n.reads);
+  record("fins", n.fins);
+  record("drops", n.drops);
+  record("grows", n.grows);
+  EXPECT_EQ(n.inserts + n.reads + n.fins, p.operations);
+  EXPECT_GT(n.inserts, p.operations / 2);
+  EXPECT_GT(n.reads, p.operations / 10);
   // The run exercised what it compares: the stream moved, holes were
   // filled, FINs were reached and read, and the small-segment seeds sat at
   // the range limit (their stream moves a few bytes per segment).
@@ -805,7 +834,7 @@ void differential(const DiffParams& p) {
   EXPECT_GE(n.fins_at_top, 1u);
 }
 
-// 5 x 200'000 = 1e6 operations.
+// 5 x 200'000 = 1e6 insert, read and FIN operations.
 TEST(RecvBuffer, DifferentialSeed1) { differential({1, 3000, 200'000, false}); }
 TEST(RecvBuffer, DifferentialSeed2) { differential({2, 3 * 4096 + 17, 200'000, false}); }
 TEST(RecvBuffer, DifferentialSeed3SmallSegments) { differential({3, 16 * 1024, 200'000, true}); }
