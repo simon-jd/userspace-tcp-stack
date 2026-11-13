@@ -366,7 +366,69 @@ TEST(EventLoopLateness, PendingWorkDoesNotSpin) {
   EXPECT_EQ(st.pending_polls, 1u);
   // The deadline has passed by the handler call only if this thread was
   // descheduled for 5 ms.
-  EXPECT_EQ(st.pending_calls + st.deadline_calls, 1u);
+  EXPECT_EQ(st.pending_calls + st.deadline_calls + st.deadline_calls_after_wake, 1u);
+}
+
+// Lateness is taken at the wake-up (§8.3), not after the fd callbacks: a
+// ready fd wakes the loop 5 ms before its deadline and its callback runs for
+// 8 ms. The deadline has passed by the end of the iteration, so the handler
+// runs (with the later time), but the loop was not late: no sample.
+TEST(EventLoopLateness, DeadlinePassedInACallbackAddsNoSample) {
+  EventLoop loop(spin_options(0));
+  Pipe p;
+  const char c = 'x';
+  ASSERT_EQ(write(p.w, &c, 1), 1);
+  const Time deadline = mono_now() + 5ms;
+  int io = 0, calls = 0;
+  Time fired;
+  loop.watch(p.r, EPOLLIN, [&](std::uint32_t) {
+    char b = 0;
+    EXPECT_EQ(read(p.r, &b, 1), 1);
+    ++io;
+    std::this_thread::sleep_for(8ms);
+  });
+  loop.set_deadline_source([&] { return deadline; });
+  loop.set_deadline_handler([&](Time now) {
+    fired = now;
+    ++calls;
+  });
+  loop.run_once();
+  const auto& st = loop.stats();
+  ASSERT_EQ(io, 1);
+  EXPECT_EQ(calls, 1);
+  EXPECT_GE(fired, deadline);
+  EXPECT_EQ(st.io_wakeups, 1u);
+  EXPECT_EQ(st.deadline_calls_after_wake, 1u);
+  EXPECT_EQ(st.deadline_calls, 0u);
+  EXPECT_EQ(st.lateness.count, 0u) << "max " << st.lateness.max.count() << " ns";
+}
+
+// A deadline that had passed at the wake-up: the sample is woke - deadline,
+// without the time the fd callback took afterwards.
+TEST(EventLoopLateness, LatenessExcludesCallbackTime) {
+  EventLoop loop(spin_options(0));
+  Pipe p;
+  const char c = 'x';
+  ASSERT_EQ(write(p.w, &c, 1), 1);
+  const Time deadline = mono_now() - 1ms;
+  Time callback_start;
+  int calls = 0;
+  loop.watch(p.r, EPOLLIN, [&](std::uint32_t) {
+    callback_start = mono_now();
+    char b = 0;
+    EXPECT_EQ(read(p.r, &b, 1), 1);
+    std::this_thread::sleep_for(20ms);
+  });
+  loop.set_deadline_source([&] { return deadline; });
+  loop.set_deadline_handler([&](Time) { ++calls; });
+  loop.run_once();
+  const auto& st = loop.stats();
+  EXPECT_EQ(calls, 1);
+  EXPECT_EQ(st.deadline_calls, 1u);
+  EXPECT_EQ(st.deadline_calls_after_wake, 0u);
+  ASSERT_EQ(st.lateness.count, 1u);
+  EXPECT_GE(st.lateness.max, 1ms);
+  EXPECT_LE(st.lateness.max, callback_start - deadline);  // taken before the callback ran
 }
 
 }  // namespace

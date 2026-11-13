@@ -3,7 +3,7 @@
 # of net.ipv4.tcp_{sack,timestamps,window_scaling} and net.ipv4.tcp_ecn 1 and
 # 3, each set with `docker run --sysctl` (per network namespace), on top of
 # net.ipv4.tcp_no_metrics_save=1. `check` exits 1 if a value was rejected or
-# reads back changed (the table says which).
+# reads back changed, or the peer's tso/gso are not off (the table says which).
 #
 # Usage: testbed/m1/combo.sh list
 #        testbed/m1/combo.sh start NAME   replace utcp-m1-peer with a peer for NAME
@@ -11,8 +11,9 @@
 #                                         values read back inside it, then restore the
 #                                         default peer
 # NAME: sack{0,1}-ts{0,1}-ws{0,1} (e.g. sack1-ts0-ws1), ecn1, ecn3, or default.
-# The new peer is on utcp-m1-net only (rerun pmtu.sh for the PMTU chain). A
-# value the kernel rejects makes `start` fail and is reported by `check`.
+# The new peer is on utcp-m1-net only (rerun pmtu.sh for the PMTU chain),
+# with tso/gso off and the DUT's cpuset unless UTCP_CPUS is set (common.sh).
+# A value the kernel rejects makes `start` fail and is reported by `check`.
 # Environment: UTCP_IMAGE, UTCP_CPUS (common.sh).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
@@ -80,8 +81,9 @@ case $cmd in
     name=${2:?usage: combo.sh start NAME}
     sysctls_of "$name" >/dev/null
     start_peer_for "$name" || tb_die "the peer for $name did not start"
-    echo "started $tb_peer for $name: $(sysctls_of "$name" | paste -sd' ')"
+    echo "started $tb_peer for $name (cpus $tb_cpus): $(sysctls_of "$name" | paste -sd' ')"
     echo "read back (${readback_keys[*]#net.ipv4.}): $(readback)"
+    tb_show_offloads "$tb_peer" "$tb_peer_ip"
     ;;
   check)
     tb_net_exists "$tb_net" || tb_die "network $tb_net does not exist (testbed/m1/up.sh)"
@@ -102,6 +104,8 @@ case $cmd in
         have=$(tb_exec "$tb_peer" sysctl -n "$key")
         [[ $have == "$val" ]] || verdict="DIFFERS ($key=$have)"
       done < <(sysctls_of "$n"; printf '%s\n' "${tb_peer_sysctls[@]}")
+      offl=$(tb_show_offloads "$tb_peer" "$tb_peer_ip")
+      [[ $offl == *"tso off gso off"* ]] || verdict="OFFLOADS (${offl#*: })"
       [[ $verdict == ok ]] || status=1
       printf '%-14s %-70s %s  %s\n' "$n" "$req" "$got" "$verdict"
     done < <(all_names)

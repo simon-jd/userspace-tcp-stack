@@ -19,9 +19,12 @@
 //    and the device is watched for EPOLLOUT until it has been written.
 // 4. The --pcap buffer is written to the file.
 // Host contract (§3.4): drained before every wait, advance when the deadline
-// has passed, now non-decreasing (CLOCK_MONOTONIC). Calls made outside run()
-// (setup before the first run, or after it returned) first advance the stack
-// to mono_now() and drain its output, so their packets leave at once.
+// has passed, now non-decreasing (CLOCK_MONOTONIC). connect, listen, send,
+// recv, shutdown_write, close, udp_open and send_to, called outside run()
+// (setup before the first run, or after it returned), first advance the
+// stack to mono_now() and drain its output (and the pcap buffer) when they
+// return, also when they fail, so packets of timers that fired in that
+// advance leave at once as well as their own.
 //
 // Events, per Stack event mask, in this order (the id is re-checked after
 // each callback, as a callback may close it): ev_connected -> on_connected;
@@ -147,9 +150,10 @@ private:
 
   UtcpTransport(int fd, const UtcpTransportOptions& opts);
 
-  // A call from outside run(): advance to mono_now() first.
+  // Scope of a Transport call (utcp_transport.cpp): outside run(), advances
+  // the stack to mono_now() on entry and drains its output on every return.
+  class OutsideRun;
   void outside_run_enter();
-  // A call from outside run() that may have produced output: drain it.
   void outside_run_leave();
   void on_device(std::uint32_t events);
   void read_batch();

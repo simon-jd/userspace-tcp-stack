@@ -5,6 +5,11 @@
 #   3  up.sh; from the peer `ping -c 3 198.18.0.2` gets 3 replies from M0's
 #      tun_probe --reply on utcp0; utcp0 has txqueuelen 10000 and a pfifo root;
 #      the peer reads back tcp_no_metrics_save = 1
+#   offloads  the peer's interface has tso and gso off, the DUT's eth0 gro
+#      off, and a TCP flow from the peer (iperf3 -n 8M to the DUT) reaches the
+#      DUT's eth0 as single segments (tcpdump: no payload above 1460 bytes;
+#      with TSO on they arrive as GSO packets of up to 64 KB, which netem on
+#      utcp0 would drop or duplicate whole)
 #   4  pmtu.sh; backend_tun_tool writes a 1500-byte DF datagram toward the peer
 #      and `tcpdump -i utcp0` in the DUT shows the ICMP 3/4 with MTU 1400 coming
 #      back; a 1500-byte DF ping from the peer toward the stack gets ICMP 3/4
@@ -13,7 +18,10 @@
 #      checks over a socketpair, open() refuses a wrong MTU and accepts 1500);
 #      with utcp0 down, open() fails with "not running"
 #   nat  nat.sh; a DNS query from 198.18.0.2 through utcp0 to the host's
-#      upstream resolver gets an answer (needs Internet access)
+#      upstream resolver gets an answer (needs Internet access); a datagram
+#      from 198.18.0.2 to the peer arrives with that source (not
+#      masqueraded); `on` and `off` flush the DUT's conntrack entries of
+#      198.18.0.2 (needs an image with nftables and conntrack)
 #   5  netem.sh N1..N4 (and N0) shows the qdiscs on both interfaces; combo.sh
 #      check starts peers with the 8 SACK/TS/WS settings and tcp_ecn 1 and 3
 #   6  down.sh leaves no testbed container or network
@@ -78,6 +86,25 @@ replies=$(grep -c 'wrote 84 bytes: ICMP echo reply' "$tmp/probe.log")
   has "$tmp/up.log" "limit 10000p" && has "$tmp/up.log" "net.ipv4.tcp_no_metrics_save = 1" && ok=0
 verdict "test 3" "$ok" "ping 3/3 answered by tun_probe ($replies replies written), utcp0 qlen 10000 + pfifo limit 10000p, peer tcp_no_metrics_save = 1"
 
+# --- Offloads
+step "offloads: the peer's TCP segments reach the DUT one packet at a time"
+eth=$(docker exec "$dut" ip -o -4 addr show | awk '$4 ~ /^198\.19\.1\.2\// {print $2}')
+docker exec -d "$dut" iperf3 -s -1 -p 5201
+docker exec "$dut" timeout 20 tcpdump -i "$eth" -n -q -l -c 1000 \
+  'tcp and src host 198.19.1.3 and dst port 5201 and greater 100' >"$tmp/seg.log" 2>&1 &
+td=$!
+sleep 1.5
+docker exec "$peer" iperf3 -c 198.19.1.2 -p 5201 -n 8M | tail -4
+wait "$td"
+segs=$(grep -c ' tcp [0-9]*$' "$tmp/seg.log")
+max_seg=$(awk '$NF ~ /^[0-9]+$/ && $(NF-1) == "tcp" && $NF > m {m = $NF} END {print m + 0}' "$tmp/seg.log")
+echo "-- tcpdump -i $eth in $dut: $segs data packets from the peer, largest TCP payload $max_seg bytes"
+ok=1
+grep -q "^$peer [^ ]* 198.19.1.3: tso off gso off" "$tmp/up.log" &&
+  grep -q "^$dut [^ ]* 198.19.1.2: .* gro off" "$tmp/up.log" &&
+  ((segs > 100 && max_seg > 0 && max_seg <= 1460)) && ok=0
+verdict "offloads" "$ok" "peer tso/gso off, DUT eth0 gro off; $segs data packets from the peer, largest payload $max_seg bytes (want <= 1460)"
+
 # --- UtcpTransport on utcp0
 step "transport: backend_transport_check --tun utcp0; open() with utcp0 down"
 docker exec "$dut" "$bin/tests/interop/backend_transport_check" --tun utcp0 | tee "$tmp/tc.log"
@@ -118,9 +145,31 @@ nat_rc=${PIPESTATUS[0]}
 dns=$(docker exec "$dut" cat /run/utcp-m1-dns 2>/dev/null)
 docker exec "$dut" "$bin/tests/interop/backend_tun_tool" dns --server "$dns" --name example.com | tee "$tmp/dns.log"
 dns_rc=${PIPESTATUS[0]}
+# A datagram from the stack's address to the peer, with NAT on: not masqueraded.
+to_peer() {  # writes 198.18.0.2:40001 -> 198.19.1.3:9 into utcp0, prints what the peer saw
+  docker exec "$peer" timeout 5 tcpdump -i eth0 -n -l -c 1 'udp and dst port 9' 2>/dev/null &
+  local td=$!
+  sleep 1
+  docker exec "$dut" "$bin/tests/interop/backend_tun_tool" df --dst 198.19.1.3 --size 200 \
+    --timeout-ms 300 >/dev/null 2>&1
+  wait "$td"
+}
+to_peer | tee "$tmp/topeer.log"
+# conntrack entries of the stack's address: there are some now, and nat.sh off
+# flushes them (as nat.sh on did with the ones made before it).
+ct_count() { docker exec "$dut" conntrack -L -s 198.18.0.2 2>/dev/null | grep -c . || true; }
+ct_on=$(ct_count)
+"$tb/nat.sh" off | tee "$tmp/natoff.log"
+ct_off=$(ct_count)
+to_peer >/dev/null
+ct_before_on=$(ct_count)
+"$tb/nat.sh" | tee -a "$tmp/natoff.log" >/dev/null
+ct_after_on=$(ct_count)
+echo "-- conntrack entries of 198.18.0.2: $ct_on with NAT on, $ct_off after nat.sh off; $ct_before_on before nat.sh on, $ct_after_on after"
 ok=1
-((nat_rc == 0 && dns_rc == 0)) && ok=0
-verdict "nat" "$ok" "masquerade + route to resolver $dns; $(grep -c '^  A ' "$tmp/dns.log") A records for example.com"
+((nat_rc == 0 && dns_rc == 0)) && has "$tmp/topeer.log" "IP 198.18.0.2.40001 > 198.19.1.3.9:" &&
+  ((ct_on > 0 && ct_off == 0 && ct_before_on > 0 && ct_after_on == 0)) && ok=0
+verdict "nat" "$ok" "masquerade + route to resolver $dns; $(grep -c '^  A ' "$tmp/dns.log") A records for example.com; to the peer from $(grep -o 'IP [0-9.]* >' "$tmp/topeer.log" | head -1 | cut -d' ' -f2) (want 198.18.0.2.40001); conntrack flushed by off ($ct_on -> $ct_off) and on ($ct_before_on -> $ct_after_on)"
 "$tb/nat.sh" off
 
 # --- 5

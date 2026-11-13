@@ -253,6 +253,9 @@ void EventLoop::run_once() {
       }
     }
   }
+  // §8.3: lateness is now - deadline at the wake-up, before the callbacks
+  // run; time spent in them is processing, not lateness.
+  const Time woke = deadline.is_never() ? Time::never() : mono_now();
   if (n > 0) {
     ++stats_.io_wakeups;
   }
@@ -278,9 +281,14 @@ void EventLoop::run_once() {
 
   if ((pending || !deadline.is_never()) && deadline_handler_) {
     const Time now = mono_now();
-    if (!deadline.is_never() && now >= deadline) {
+    if (!deadline.is_never() && woke >= deadline) {
       ++stats_.deadline_calls;
-      stats_.lateness.record(now - deadline);
+      stats_.lateness.record(woke - deadline);
+      deadline_handler_(now);
+    } else if (!deadline.is_never() && now >= deadline) {
+      // The loop woke before the deadline (a ready fd) and it passed while
+      // the callbacks ran: due now, but the wake-up was not late.
+      ++stats_.deadline_calls_after_wake;
       deadline_handler_(now);
     } else if (pending) {
       ++stats_.pending_calls;  // not a wake-up for a deadline: no lateness sample (§8.3)

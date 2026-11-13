@@ -14,7 +14,19 @@
 #
 # Environment:
 #   UTCP_IMAGE  image for every container (default utcp-testbed:dev)
-#   UTCP_CPUS   --cpuset-cpus of every container (default 16-31; 8-15 for timing runs)
+#   UTCP_CPUS   --cpuset-cpus of every container started (8-15 for timing
+#               runs). Unset: the running DUT's cpuset (so pmtu.sh's router and
+#               combo.sh's peers follow `up.sh --cpus`), else 16-31.
+#
+# Segmentation offloads (DESIGN §11; PLAN 2d turns them off on the sender):
+# Linux TCP always builds GSO super-packets (up to 64 KB). A veth with TSO
+# passes them on whole, the forwarding DUT keeps them whole, and TUN without
+# IFF_VNET_HDR splits them only after utcp0's qdisc, so netem would drop,
+# duplicate and reorder bursts of about 24 segments in the Linux -> stack
+# direction while the stack -> Linux direction is per packet. So every Linux
+# sender interface gets tso and gso off (the kernel splits before the veth)
+# and every forwarding interface gro off (nothing merges them again); a
+# qdisc then counts packets (pfifo limit 10000, netem limit 20000).
 # The repository is mounted read-only at /utcp in the DUT and the peer, so
 # programs built with testbed/m1/build.sh are at /utcp/build/tb-<preset>/.
 
@@ -22,7 +34,6 @@ set -euo pipefail
 
 tb_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tb_image=${UTCP_IMAGE:-utcp-testbed:dev}
-tb_cpus=${UTCP_CPUS:-16-31}
 
 tb_dut=utcp-m1-dut
 tb_peer=utcp-m1-peer
@@ -59,6 +70,17 @@ tb_tun_txqueuelen=10000
 # Every peer starts with these (DESIGN §11: cached RTT and reordering would
 # seed later runs).
 tb_peer_sysctls=(net.ipv4.tcp_no_metrics_save=1)
+
+# ethtool -K settings (see the offload note above).
+tb_sender_offloads=(tso off gso off)
+tb_forward_offloads=(gro off)
+
+if [[ -n ${UTCP_CPUS:-} ]]; then
+  tb_cpus=$UTCP_CPUS
+else
+  tb_cpus=$(docker container inspect -f '{{.HostConfig.CpusetCpus}}' "$tb_dut" 2>/dev/null || true)
+  tb_cpus=${tb_cpus:-16-31}
+fi
 
 tb_die() {
   echo "$(basename "$0"): $*" >&2
@@ -103,9 +125,35 @@ tb_ifname() {
   docker exec "$1" ip -o -4 addr show | awk -v a="$2" '{split($4, p, "/"); if (p[1] == a) print $2}'
 }
 
+# tb_offloads CONTAINER ADDRESS SETTING...: ethtool -K on the interface of
+# CONTAINER that holds ADDRESS (tb_sender_offloads or tb_forward_offloads).
+tb_offloads() {
+  local c=$1 addr=$2
+  shift 2
+  local dev
+  dev=$(tb_ifname "$c" "$addr")
+  [[ -n $dev ]] || { echo "no interface with $addr in $c" >&2; return 1; }
+  docker exec "$c" ethtool -K "$dev" "$@" >/dev/null
+}
+
+# tb_show_offloads CONTAINER ADDRESS: one line, e.g. "utcp-m1-peer eth0
+# 198.19.1.3: tso off gso off gro off".
+tb_show_offloads() {
+  local c=$1 addr=$2
+  local dev
+  dev=$(tb_ifname "$c" "$addr")
+  [[ -n $dev ]] || { echo "$c: no interface with $addr"; return 1; }
+  echo "$c $dev $addr: $(docker exec "$c" ethtool -k "$dev" | awk -F': ' '
+    $1 == "tcp-segmentation-offload" {t = $2}
+    $1 == "generic-segmentation-offload" {g = $2}
+    $1 == "generic-receive-offload" {r = $2}
+    END {print "tso " t " gso " g " gro " r}')"
+}
+
 # tb_start_peer [SYSCTL=VALUE...]: starts utcp-m1-peer on utcp-m1-net with
-# tb_peer_sysctls plus the given sysctls and a route to the stack's subnet
-# via the DUT. Fails if docker (the kernel) rejects a sysctl.
+# tb_peer_sysctls plus the given sysctls, tso/gso/gro off on its interface
+# and a route to the stack's subnet via the DUT. Fails if docker (the
+# kernel) rejects a sysctl.
 tb_start_peer() {
   local args=()
   local s
@@ -118,5 +166,6 @@ tb_start_peer() {
     "${args[@]}" \
     -v "$tb_repo:/utcp:ro" \
     "$tb_image" sleep infinity >/dev/null || return 1
+  tb_offloads "$tb_peer" "$tb_peer_ip" "${tb_sender_offloads[@]}" || return 1
   tb_exec "$tb_peer" ip route add "$tb_tun_subnet" via "$tb_dut_ip" || return 1
 }

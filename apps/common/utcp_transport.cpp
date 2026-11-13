@@ -394,6 +394,21 @@ void UtcpTransport::outside_run_leave() {
   }
 }
 
+// A Transport call made outside run() advances the stack first; whatever it
+// or the timers of that advance queued is written out when the call returns,
+// on every path (an early error return included). Inside run() it does
+// nothing: the iteration advances and drains.
+class UtcpTransport::OutsideRun {
+public:
+  explicit OutsideRun(UtcpTransport& t) : t_(t) { t_.outside_run_enter(); }
+  ~OutsideRun() { t_.outside_run_leave(); }
+  OutsideRun(const OutsideRun&) = delete;
+  OutsideRun& operator=(const OutsideRun&) = delete;
+
+private:
+  UtcpTransport& t_;
+};
+
 void UtcpTransport::deliver_events() {
   while (!stop_requested_) {
     const auto e = stack_.poll_event();
@@ -516,19 +531,17 @@ UtcpTransport::Sock* UtcpTransport::find(ConnId id, Kind kind) {
 
 std::expected<ConnId, Error> UtcpTransport::connect(Endpoint remote,
                                                     const TcpSocketOptions& opts) {
-  outside_run_enter();
+  const OutsideRun scope(*this);
   const auto h = stack_.tcp_connect(remote, opts);
   if (!h) {
     return std::unexpected(h.error());
   }
-  const ConnId id = add_sock(Kind::tcp, *h);
-  outside_run_leave();
-  return id;
+  return add_sock(Kind::tcp, *h);
 }
 
 std::expected<ConnId, Error> UtcpTransport::listen(Endpoint local, std::uint32_t backlog,
                                                    const TcpSocketOptions& opts) {
-  outside_run_enter();
+  const OutsideRun scope(*this);
   const auto h = stack_.tcp_listen(local, backlog, opts);
   if (!h) {
     return std::unexpected(h.error());
@@ -541,10 +554,8 @@ std::expected<std::size_t, Error> UtcpTransport::send(ConnId id, std::span<const
   if (s == nullptr) {
     return std::unexpected(Error::bad_handle);
   }
-  outside_run_enter();
-  const auto r = stack_.tcp_send(s->h, data);
-  outside_run_leave();
-  return r;
+  const OutsideRun scope(*this);
+  return stack_.tcp_send(s->h, data);
 }
 
 std::expected<std::size_t, Error> UtcpTransport::recv(ConnId id, std::span<std::byte> out) {
@@ -552,10 +563,8 @@ std::expected<std::size_t, Error> UtcpTransport::recv(ConnId id, std::span<std::
   if (s == nullptr) {
     return std::unexpected(Error::bad_handle);
   }
-  outside_run_enter();
-  const auto r = stack_.tcp_recv(s->h, out);  // may open the window: a window update
-  outside_run_leave();
-  return r;
+  const OutsideRun scope(*this);
+  return stack_.tcp_recv(s->h, out);  // may open the window: a window update
 }
 
 void UtcpTransport::shutdown_write(ConnId id) {
@@ -563,9 +572,8 @@ void UtcpTransport::shutdown_write(ConnId id) {
   if (s == nullptr) {
     return;
   }
-  outside_run_enter();
+  const OutsideRun scope(*this);
   (void)stack_.tcp_shutdown(s->h, Shutdown::write);
-  outside_run_leave();
 }
 
 void UtcpTransport::close(ConnId id) {
@@ -576,13 +584,12 @@ void UtcpTransport::close(ConnId id) {
   const Sock s = it->second;
   socks_.erase(it);
   by_handle_.erase(s.h);
-  outside_run_enter();
+  const OutsideRun scope(*this);
   if (s.kind == Kind::udp) {
     (void)stack_.udp_close(s.h);
   } else {
     (void)stack_.tcp_close(s.h);  // FIN, or RST with unread data (§3.5)
   }
-  outside_run_leave();
 }
 
 ConnSample UtcpTransport::sample(ConnId id) {
@@ -596,7 +603,7 @@ ConnSample UtcpTransport::sample(ConnId id) {
 // --- UDP.
 
 std::expected<ConnId, Error> UtcpTransport::udp_open(Endpoint local) {
-  outside_run_enter();
+  const OutsideRun scope(*this);
   const auto h = stack_.udp_open(local);
   if (!h) {
     return std::unexpected(h.error());
@@ -610,14 +617,13 @@ std::expected<void, Error> UtcpTransport::send_to(ConnId id, Endpoint remote,
   if (s == nullptr) {
     return std::unexpected(Error::bad_handle);
   }
-  outside_run_enter();
+  const OutsideRun scope(*this);
   auto r = stack_.udp_send_to(s->h, remote, data);
   if (!r && r.error() == Error::no_buffers) {
     // The transmit queue or pool is full (§3.6): write it out and retry once.
     drain_tx();
     r = stack_.udp_send_to(s->h, remote, data);
   }
-  outside_run_leave();
   return r;
 }
 

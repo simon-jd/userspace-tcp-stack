@@ -7,6 +7,7 @@
 //   attach_errors   attach(-1) fails; a missing local address fails
 //   timers          one-shot and periodic timers fire in deadline order, a
 //                   callback may cancel another timer, stop() ends run()
+//   timer_ties      timers with equal deadlines fire in creation order
 //   rerun           run() works again after stop()
 //   device_rx_pcap  datagrams read from the device are counted and recorded
 //                   in the --pcap file byte for byte (LINKTYPE_RAW,
@@ -27,6 +28,12 @@
 //   tx_eagain       64 datagrams sent while the device's peer does not read:
 //                   writes hit EAGAIN, the packet is kept, EPOLLOUT resumes
 //                   the drain, and all 64 arrive in order
+//   rx_clock        §8.2 for a batch of two echo replies read after a stack
+//                   timer (PMTU expiry) fell due: the timer fires before the
+//                   batch is received (advance(clock()) first), and each
+//                   datagram gets its own receive time (strictly increasing)
+//   outside_run_drain  udp_open, listen and a failing connect called outside
+//                   run() leave nothing in the transmit queue when they return
 // With --tun IFNAME (an existing, running TUN interface, MTU 1500):
 //   open_tun        open() refuses a stack MTU that differs from the
 //                   interface's and accepts the right one
@@ -68,6 +75,7 @@
 #include "utcp/checksum.hpp"
 #include "utcp/event_loop.hpp"
 #include "utcp/pcap.hpp"
+#include "utcp/trace.hpp"
 
 namespace {
 
@@ -255,6 +263,38 @@ void check_timers_and_rerun() {
   });
   t->run(h);
   expect(ran, "rerun", "run() after stop() fires a new timer and returns on stop()");
+}
+
+// Equal deadlines fire in creation order (fire_timers). Two periodic timers
+// of 10 ms that fell behind by more than a period before run() are both
+// rescheduled to now + 10 ms in the same handler call, so their next firing
+// is a tie: A was created first and must fire first again.
+void check_timer_ties() {
+  Pair p;
+  auto t = attach(p, options());
+  std::string log;
+  int fired = 0;
+  const auto tick = [&](char name) {
+    log += name;
+    if (++fired == 4) {
+      t->stop();
+    }
+  };
+  t->add_timer(10ms, [&] { tick('A'); });
+  t->add_timer(10ms, [&] { tick('B'); });
+  bool timed_out = false;
+  t->add_oneshot(2s, [&] {
+    timed_out = true;
+    t->stop();
+  });
+  std::this_thread::sleep_for(35ms);
+  Recorder h;
+  h.t = t.get();
+  t->run(h);
+  expect(!timed_out && log == "ABAB", "timer_ties",
+         std::format("order {} (want ABAB: A, B fell behind and were both rescheduled to "
+                     "now + 10 ms, then the tie fires in creation order)",
+                     log));
 }
 
 // What is wrong with the pcap file at `path`, empty if nothing: it must hold
@@ -558,6 +598,159 @@ void check_tx_eagain() {
                      got.size(), n, send_errors, d.tx_eagain, d.tx_errors));
 }
 
+// The stack's PMTU-expiry timer events (TraceKind::timer).
+struct PmtuTimerTrace final : utcp::TraceSink {
+  std::vector<Time> armed, fired;
+  void on_event(const utcp::TraceEvent& e) override {
+    if (e.kind != utcp::TraceKind::timer || e.timer != utcp::TraceTimer::pmtu_expiry) {
+      return;
+    }
+    if (e.timer_op == utcp::TimerOp::armed) {
+      armed.push_back(e.t);
+    } else if (e.timer_op == utcp::TimerOp::fired) {
+      fired.push_back(e.t);
+    }
+  }
+};
+
+// ICMP 3/4 (next-hop MTU `mtu`) from the kernel side, quoting a 1500-byte DF
+// UDP datagram stack:sport -> dst:dport.
+std::vector<std::byte> frag_needed_from_kernel(Ipv4Addr dst, std::uint16_t sport,
+                                               std::uint16_t dport, std::uint16_t mtu) {
+  std::vector<std::byte> icmp(wire::icmp_header_len + wire::ipv4_header_len + wire::udp_header_len);
+  const std::span<std::byte> quote = std::span(icmp).subspan(wire::icmp_header_len);
+  wire::write_ipv4(quote, wire::Ipv4Header{.ttl = 64,
+                                           .proto = utcp::ip_proto_udp,
+                                           .total_len = 1500,
+                                           .id = 0,
+                                           .df = true,
+                                           .src = stack_addr,
+                                           .dst = dst});
+  wire::write_udp_header(quote.subspan(wire::ipv4_header_len),
+                         wire::UdpHeader{.sport = sport, .dport = dport, .len = 1480});
+  wire::write_icmp(icmp, wire::icmp_unreach_header(wire::icmp_frag_needed, mtu));
+  return ipv4_datagram(kernel_addr, stack_addr, utcp::ip_proto_icmp, icmp);
+}
+
+std::vector<std::byte> echo_reply_from_kernel(std::uint16_t id, std::uint16_t seq) {
+  std::vector<std::byte> icmp(wire::icmp_header_len + 16);
+  wire::write_icmp(icmp, wire::icmp_echo_header(wire::icmp_echo_reply, id, seq));
+  return ipv4_datagram(kernel_addr, stack_addr, utcp::ip_proto_icmp, icmp);
+}
+
+// §8.2, with the m1-ip Stack: an ICMP frag-needed creates a PMTU cache entry
+// that expires 20 ms later (tcp.pmtu_expiry), i.e. a stack timer. An app
+// timer 5 ms into the run writes two echo replies to the device and then
+// keeps the loop busy until 5 ms past the expiry, so the next wake-up finds
+// both the passed timer and a readable batch. The timer must fire before the
+// batch is received (the readable callback starts with advance(mono_now())),
+// and the two replies must get different receive times (EchoReply::t; one
+// mono_now() per datagram).
+void check_rx_clock() {
+  Pair p;
+  PmtuTimerTrace trace;  // outlives the transport
+  UtcpTransportOptions o = options();
+  o.stack.tcp.pmtu_expiry = 20ms;
+  o.stack.trace_mask = utcp::trace_bit(utcp::TraceKind::timer);
+  auto t = attach(p, o);
+  t->stack().set_trace_sink(&trace);
+  const Ipv4Addr far_host = Ipv4Addr::from_octets(198, 19, 3, 4);
+  if (const auto sock = t->udp_open(utcp::Endpoint{stack_addr, 9200}); !sock) {
+    expect(false, "rx_clock", std::format("udp_open: {}", utcp::to_string(sock.error())));
+    return;
+  }
+  if (!p.write_theirs(frag_needed_from_kernel(far_host, 9200, 9201, 1400))) {
+    expect(false, "rx_clock", "write to the socketpair failed");
+    return;
+  }
+  bool wrote = false, timed_out = false;
+  t->add_oneshot(5ms, [&] {
+    if (trace.armed.empty()) {
+      t->stop();  // the frag-needed created no PMTU entry: reported below
+      return;
+    }
+    wrote = p.write_theirs(echo_reply_from_kernel(0x5151, 1)) &&
+            p.write_theirs(echo_reply_from_kernel(0x5151, 2));
+    const Time until = trace.armed.front() + 20ms + 5ms;
+    for (Time now = utcp::mono_now(); now < until; now = utcp::mono_now()) {
+      std::this_thread::sleep_for(until - now);
+    }
+    t->add_oneshot(5ms, [&] { t->stop(); });
+  });
+  t->add_oneshot(2s, [&] {
+    timed_out = true;
+    t->stop();
+  });
+  Recorder h;
+  h.t = t.get();
+  t->run(h);
+  t->stack().set_trace_sink(nullptr);
+  std::vector<utcp::EchoReply> replies;
+  while (const auto r = t->stack().poll_echo_reply()) {
+    replies.push_back(*r);
+  }
+  if (trace.armed.empty() || timed_out || !wrote || replies.size() != 2) {
+    expect(false, "rx_clock",
+           std::format("setup: PMTU timer armed {} times, replies written {}, {} echo replies "
+                       "received (want 2), timed out {}",
+                       trace.armed.size(), wrote, replies.size(), timed_out));
+    return;
+  }
+  const Time expiry = trace.armed.front() + 20ms;
+  const Time r1 = replies[0].t, r2 = replies[1].t;
+  expect(r1 < r2, "rx_clock",
+         std::format("receive times of the two datagrams of one batch: +{} ns apart (want > 0)",
+                     (r2 - r1).count()));
+  const bool fired_first = !trace.fired.empty() && trace.fired.front() >= expiry &&
+                           trace.fired.front() <= r1;
+  expect(fired_first, "rx_clock",
+         trace.fired.empty()
+             ? std::string("the PMTU-expiry timer never fired")
+             : std::format("the PMTU-expiry timer, due {} us before the batch was received, "
+                           "fired {} ns before its first datagram (want >= 0)",
+                           (r1 - expiry).count() / 1000, (r1 - trace.fired.front()).count()));
+}
+
+// Transport calls made outside run() drain the transmit queue on every
+// return path (utcp_transport.hpp). An echo request queued with
+// Stack::icmp_echo (not a Transport call, so nothing drains it) must be on
+// the device as soon as udp_open, listen and a connect that fails return.
+void check_outside_run_drain() {
+  Pair p;
+  auto t = attach(p, options());
+  std::uint16_t seq = 0;
+  const auto drained_by = [&](std::string_view call, const std::function<std::string()>& f) {
+    ++seq;
+    const auto payload = bytes_of("queued before the call");
+    if (!t->stack().icmp_echo(kernel_addr, 0x6262, seq, payload)) {
+      expect(false, "outside_run_drain", "icmp_echo failed");
+      return;
+    }
+    const std::string result = f();
+    bool found = false;
+    while (const auto d = p.read_theirs()) {
+      const auto ip = wire::parse_ipv4(*d);
+      if (!ip || ip->h.proto != utcp::ip_proto_icmp) {
+        continue;
+      }
+      const auto m = wire::parse_icmp(ip->payload, true);
+      found = found || (m && m->h.type == wire::icmp_echo_request &&
+                        m->h.echo_id() == 0x6262 && m->h.echo_seq() == seq);
+    }
+    expect(found, "outside_run_drain",
+           std::format("{} ({}): the queued echo request {} on the device when it returned", call,
+                       result, found ? "is" : "is NOT"));
+  };
+  const auto outcome = [](const auto& r) {
+    return r ? std::string("succeeded") : std::format("failed: {}", utcp::to_string(r.error()));
+  };
+  drained_by("udp_open", [&] { return outcome(t->udp_open(utcp::Endpoint{stack_addr, 9300})); });
+  drained_by("listen",
+             [&] { return outcome(t->listen(utcp::Endpoint{stack_addr, 9301}, 8, {})); });
+  drained_by("connect to 0.0.0.0:0",
+             [&] { return outcome(t->connect(utcp::Endpoint{Ipv4Addr{}, 0}, {})); });
+}
+
 // open() on an interface that does not exist fails at once: TUNSETIFF would
 // create a new interface that never comes up, and open() would wait 1 s for it.
 void check_open_missing() {
@@ -606,6 +799,7 @@ int main(int argc, char** argv) {
   }
   check_attach_errors();
   check_timers_and_rerun();
+  check_timer_ties();
   check_device_rx_pcap(*args->get("tmp"));
   check_signal();
   check_device_hup();
@@ -614,6 +808,8 @@ int main(int argc, char** argv) {
     check_icmp_echo();
     check_udp_echo();
     check_tx_eagain();
+    check_rx_clock();
+    check_outside_run_drain();
   }
   if (const auto tun = args->get("tun")) {
     check_open_tun(*tun);

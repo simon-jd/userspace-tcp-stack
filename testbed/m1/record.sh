@@ -3,6 +3,7 @@
 #   DUT:  ip -s link show utcp0 (TUN drops), tc -s qdisc (every interface)
 #   peer: nstat -asz (all absolute counters, zeros included; the history file
 #         is not updated, so deltas come from two records), ip tcp_metrics show
+#   both: tso/gso/gro of the testbed interfaces (ethtool -k; common.sh)
 # Each section starts with a "== <container> <command>" line; the first line
 # has the label and the UTC time.
 #
@@ -26,3 +27,6 @@ echo "== $tb_peer nstat -asz"
 tb_exec "$tb_peer" nstat -asz
 echo "== $tb_peer ip tcp_metrics show"
 tb_exec "$tb_peer" ip tcp_metrics show
+echo "== offloads (ethtool -k)"
+tb_show_offloads "$tb_peer" "$tb_peer_ip"
+tb_show_offloads "$tb_dut" "$tb_dut_ip"

@@ -8,7 +8,10 @@
 #
 # The stack's 1500-byte DF datagrams toward the peer's 198.19.3.4 get ICMP
 # 3/4 (MTU 1400) from the DUT kernel, back into the TUN; Linux's 1500-byte DF
-# datagrams toward the stack get ICMP 3/4 from the router.
+# datagrams toward the stack get ICMP 3/4 from the router. The router runs on
+# the DUT's cpuset unless UTCP_CPUS is set (common.sh). The peer's new
+# interface gets tso/gso off, the router's and the DUT's new ones gro off
+# (common.sh), as on utcp-m1-net.
 #
 # Usage: testbed/m1/pmtu.sh [up]   build the chain (up.sh must have run)
 #        testbed/m1/pmtu.sh down   remove the router and both networks, and point
@@ -34,15 +37,25 @@ case $cmd in
     docker network connect --ip "$tb_dut_ip1400" "$tb_net1400" "$tb_dut"
     docker network connect --ip "$tb_peer_ipb" "$tb_netb" "$tb_peer"
 
+    tb_offloads "$tb_peer" "$tb_peer_ipb" "${tb_sender_offloads[@]}"
+    tb_offloads "$tb_router" "$tb_router_ip1400" "${tb_forward_offloads[@]}"
+    tb_offloads "$tb_router" "$tb_router_ipb" "${tb_forward_offloads[@]}"
+    tb_offloads "$tb_dut" "$tb_dut_ip1400" "${tb_forward_offloads[@]}"
+
     tb_exec "$tb_dut" ip route replace "$tb_netb_subnet" via "$tb_router_ip1400"
     tb_exec "$tb_router" ip route replace "$tb_tun_subnet" via "$tb_dut_ip1400"
     tb_exec "$tb_peer" ip route replace "$tb_tun_subnet" via "$tb_router_ipb"
-    echo "chain up: $tb_dut $tb_dut_ip1400 -- $tb_net1400 (MTU 1400) -- $tb_router -- $tb_netb -- $tb_peer $tb_peer_ipb"
+    echo "chain up: $tb_dut $tb_dut_ip1400 -- $tb_net1400 (MTU 1400) -- $tb_router -- $tb_netb -- $tb_peer $tb_peer_ipb (router cpus $tb_cpus)"
     for c in "$tb_dut" "$tb_router" "$tb_peer"; do
       echo "== $c: links with their MTU; ip route"
       tb_exec "$c" ip -o link show | awk '$2 != "lo:" {print $2, $4, $5}'
       tb_exec "$c" ip route
     done
+    echo "== offloads (ethtool -k)"
+    tb_show_offloads "$tb_peer" "$tb_peer_ipb"
+    tb_show_offloads "$tb_router" "$tb_router_ip1400"
+    tb_show_offloads "$tb_router" "$tb_router_ipb"
+    tb_show_offloads "$tb_dut" "$tb_dut_ip1400"
     ;;
   down)
     if tb_exists "$tb_router"; then

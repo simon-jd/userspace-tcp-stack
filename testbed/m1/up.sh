@@ -9,11 +9,14 @@
 # stack, or M0's tun_probe, attaches to it with TUNSETIFF (IFF_TUN|IFF_NO_PI)
 # and uses 198.18.0.2. IPv6 is off in the DUT, so utcp0 carries only IPv4
 # (the stack's protocol, DESIGN §1.2). The peer runs with
-# net.ipv4.tcp_no_metrics_save=1.
+# net.ipv4.tcp_no_metrics_save=1 and tso/gso off on its interface; the DUT's
+# eth0 has gro off (common.sh: netem then acts on single packets in both
+# directions).
 #
 # Usage: testbed/m1/up.sh [--cpus LIST] [--peer-sysctl KEY=VALUE]...
 #   --cpus LIST          --cpuset-cpus of both containers (default $UTCP_CPUS or 16-31;
-#                        8-15 for timing runs)
+#                        8-15 for timing runs). Later pmtu.sh and combo.sh
+#                        containers take the DUT's cpuset unless UTCP_CPUS is set.
 #   --peer-sysctl K=V    an extra sysctl for the peer (repeatable; combo.sh uses this)
 # Environment: UTCP_IMAGE (default utcp-testbed:dev).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -51,6 +54,7 @@ tb_sh "$tb_dut" "
   ip link set dev $tb_tun mtu $tb_tun_mtu txqueuelen $tb_tun_txqueuelen up
   tc qdisc replace dev $tb_tun root pfifo limit $tb_tun_txqueuelen
 "
+tb_offloads "$tb_dut" "$tb_dut_ip" "${tb_forward_offloads[@]}"
 echo "started $tb_dut ($tb_dut_ip, $tb_tun $tb_tun_kernel/24, stack $tb_tun_stack)"
 
 tb_start_peer "${peer_extra[@]}"
@@ -72,3 +76,6 @@ done
 tb_exec "$tb_peer" sysctl "${peer_keys[@]}"
 tb_exec "$tb_peer" ip route
 echo "tcp_metrics entries: $(tb_exec "$tb_peer" ip tcp_metrics show | wc -l)"
+echo "== offloads (ethtool -k)"
+tb_show_offloads "$tb_peer" "$tb_peer_ip"
+tb_show_offloads "$tb_dut" "$tb_dut_ip"

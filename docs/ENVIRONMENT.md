@@ -197,16 +197,17 @@ unmeasured pings first; the tolerance was not changed.
 
 DESIGN §11. Scripts run on the host; the settings are in
 `testbed/m1/common.sh`. Containers run from `$UTCP_IMAGE` (default
-`utcp-testbed:dev`; nat.sh needs an image with nftables) on `$UTCP_CPUS`
-(default 16-31; 8-15 for timing runs), with the checkout mounted read-only at
-`/utcp`. `testbed/m1/build.sh [preset] [target...]` builds the programs inside
+`utcp-testbed:dev`; nat.sh needs an image with nftables and conntrack) on
+`$UTCP_CPUS` (8-15 for timing runs; unset: the running DUT's cpuset, so the
+router of pmtu.sh and the peers of combo.sh follow `up.sh --cpus`, else
+16-31), with the checkout mounted read-only at `/utcp`. `testbed/m1/build.sh [preset] [target...]` builds the programs inside
 the image as the calling user into `build/tb-<preset>` (`/utcp/build/tb-<preset>`
 in the containers).
 
 ```
 utcp-m1-peer 198.19.1.3 -- utcp-m1-net 198.19.1.0/24 -- 198.19.1.2 eth0 utcp-m1-dut
   DUT: TUN utcp0, kernel side 198.18.0.1/24, stack 198.18.0.2; IP forwarding; IPv6 off
-  peer: route 198.18.0.0/24 via 198.19.1.2; net.ipv4.tcp_no_metrics_save=1
+  peer: route 198.18.0.0/24 via 198.19.1.2; net.ipv4.tcp_no_metrics_save=1; tso, gso off
 PMTU chain (pmtu.sh):
 utcp-m1-dut 198.19.2.2 -- utcp-m1-net1400 (MTU 1400) -- 198.19.2.3 utcp-m1-r 198.19.3.3 -- utcp-m1-netb -- 198.19.3.4 utcp-m1-peer
 ```
@@ -218,8 +219,8 @@ utcp-m1-dut 198.19.2.2 -- utcp-m1-net1400 (MTU 1400) -- 198.19.2.3 utcp-m1-r 198
 | `netem.sh N0..N4` | netem (`limit 20000`) on the DUT's eth0 egress (stack to Linux) and utcp0 egress (Linux to stack): N1 `delay 1ms loss 1%`, N2 `delay 5ms reorder 10% 50%`, N3 `delay 1ms duplicate 2%`, N4 `delay 2ms loss 1% duplicate 1% reorder 5% 50%`; N0 restores noqueue and pfifo. Deletes and re-adds the qdiscs: `tc qdisc replace` on an existing netem keeps the parameters the new profile does not name. |
 | `combo.sh list \| start NAME \| check` | peers with `--sysctl net.ipv4.tcp_{sack,timestamps,window_scaling}` in all 8 combinations and `tcp_ecn` 1 and 3; `check` starts each and prints the values read back |
 | `pmtu.sh [up\|down]` | the PMTU chain above |
-| `nat.sh [on] [--dns IP] \| off` | nftables masquerade for 198.18.0.0/24 out of the DUT's eth0, and a /32 route to the host's upstream DNS resolver (first IPv4 `nameserver` of `/run/systemd/resolve/resolv.conf`; 75.75.75.75 on this host), written to `/run/utcp-m1-dns` in the DUT |
-| `record.sh [LABEL]` | DUT `ip -s link show utcp0` and `tc -s qdisc`, peer `nstat -asz` and `ip tcp_metrics show` |
+| `nat.sh [on] [--dns IP] \| off` | nftables masquerade for 198.18.0.0/24 out of the DUT's eth0 to destinations outside 198.18.0.0/15 (so stack-peer traffic keeps 198.18.0.2), packets to those destinations that conntrack marks invalid dropped and counted, and a /32 route to the host's upstream DNS resolver (first IPv4 `nameserver` of `/run/systemd/resolve/resolv.conf`; 75.75.75.75 on this host), written to `/run/utcp-m1-dns` in the DUT. `on` and `off` flush the DUT's conntrack table (see below). |
+| `record.sh [LABEL]` | DUT `ip -s link show utcp0` and `tc -s qdisc`, peer `nstat -asz` and `ip tcp_metrics show`, tso/gso/gro of the peer's and the DUT's interfaces |
 
 Attaching to utcp0 turns its carrier on, but the kernel drops the packets it
 sends to the interface (utcp0 TX dropped) until its link watcher has
@@ -232,14 +233,37 @@ there; sysctls are set with `docker run --sysctl`. `UtcpTransport::open`
 refuses an interface that `/sys/class/net` does not list: TUNSETIFF would
 create a new one, down, that disappears with the fd.
 
+Offloads. Linux TCP always builds GSO packets of up to 64 KB, and a veth
+with TSO (Docker's default) passes them on whole; the forwarding DUT keeps
+them whole, and utcp0 (TUN without `IFF_VNET_HDR`) splits them only after its
+qdisc. With the peer's defaults, netem on utcp0 dropped, duplicated and
+reordered whole bursts of about 24 segments in the Linux-to-stack direction,
+while the stack writes single packets in the other direction, and the pfifo
+and netem limits counted bursts. So the peer's interfaces get `ethtool -K
+tso off gso off` (its kernel splits before the veth; PLAN 2d does the same for
+its sender) and the forwarding interfaces of the DUT and the router `gro off`
+(Docker's default; set so nothing merges segments again). `tc -s` counts
+`gso_segs`, so its packet counts do not show the difference; the offloads
+step of `backend_testbed.sh` checks the segment sizes that reach the DUT.
+
+NAT and conntrack. Conntrack runs in the DUT with or without NAT (Docker's
+embedded-DNS rules put a nat table in every container on a user-defined
+network), and a connection keeps the NAT binding its first packet got. So
+`nat.sh on` and `off` run `conntrack -F` in the DUT (its network namespace
+only): otherwise a flow live before `on` would stay un-NATed and one started
+under NAT would stay NATed after `off`. The flush breaks NATed flows live at
+`off`. With an image without the conntrack tool nat.sh prints a warning and
+the change applies only to flows started after it.
+
 Checks: `tests/interop/backend_testbed.sh` (m1-backend tests 3-6, the
-UtcpTransport self-check on utcp0 and a DNS query through the NAT),
+offloads, the UtcpTransport self-check on utcp0, and through the NAT a DNS
+query, an un-masqueraded datagram to the peer and the conntrack flushes),
 `tests/interop/backend_lateness.sh` (test 2, timing),
 `tests/interop/backend_udp_echo.sh` (test 7, needs the m1-ip Stack).
 
-`nft` is in the image only once it is rebuilt from `testbed/Dockerfile`; with
-the older `utcp-testbed:dev` the nat step of `backend_testbed.sh` fails
-(`nft: command not found`).
+`nft` and `conntrack` are in the image only once it is rebuilt from
+`testbed/Dockerfile`; with the older `utcp-testbed:dev` the nat step of
+`backend_testbed.sh` fails (`nft: command not found`).
 
 ### Last results (2026-11-12, image `utcp-m1-backend-testbed:dev`)
 
