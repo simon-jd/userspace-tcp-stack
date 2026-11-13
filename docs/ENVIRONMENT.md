@@ -137,11 +137,12 @@ three are reported.
   preset. GitHub-hosted runners do not have g++ 15 or clang 21, hence the
   container. Not run yet: the repository has not been pushed to GitHub.
 
-Last result (2026-11-12, `ci/docker-ci.sh` on commit e40c467 of the
-m1-backend branch): all eight presets ok, 234-237 tests passed in each, no
-compiler warnings; the digest step was skipped (no `utcp-sim` yet). On
-commit e4361b0 the same also with `UTCP_IMAGE=utcp-m1-backend-testbed:dev`,
-the image built from the Dockerfile with nftables.
+Last result (2026-11-13, `ci/docker-ci.sh` on commit bc86f27 of the
+m1-backend branch, image `utcp-testbed:dev`): all eight presets ok, 236-239
+tests passed in each, no compiler warnings; the digest step was skipped (no
+`utcp-sim` yet). On commit e4361b0 the same also with
+`UTCP_IMAGE=utcp-m1-backend-testbed:dev`, the image built from the Dockerfile
+with nftables.
 
 ## verify-env
 
@@ -267,27 +268,37 @@ query, an un-masqueraded datagram to the peer and the conntrack flushes),
 `testbed/Dockerfile`; with the older `utcp-testbed:dev` the nat step of
 `backend_testbed.sh` fails (`nft: command not found`).
 
-### Last results (2026-11-12, image `utcp-m1-backend-testbed:dev`)
+### Last results (2026-11-13, image `utcp-m1-backend-testbed:dev`)
 
 - `backend_testbed.sh`: all PASS. Peer ping 3/3 answered by `tun_probe
   --reply` on utcp0 (`qdisc pfifo ... qlen 10000`, `limit 10000p`, peer
-  `tcp_no_metrics_save = 1`); `backend_transport_check --tun utcp0` 17/17 and
-  open() on a down utcp0 refused; a 1500-byte DF datagram from 198.18.0.2 to
-  198.19.3.4 got `198.18.0.1 > 198.18.0.2: ICMP 198.19.3.4 unreachable - need
-  to frag (mtu 1400)` on utcp0, and the peer's `ping -M do -s 1472` got `From
-  198.19.3.3 ... Frag needed and DF set (mtu = 1400)`; a DNS query through the
-  NAT got 2 A records; N1-N4 and N0 installed on eth0 and utcp0; all 10
-  combo.sh peers read back the requested values (tcp_ecn=3 accepted); down.sh
-  left nothing.
-- `backend_lateness.sh` (container on CPUs 8-15, which were 0-4.5 % busy with
-  other tenants' processes before and after): 10 000 waits of 1 ms, lateness
-  p50 2.44 us, p90 8.65 us, p99 11.9 us, p99.9 47.8 us, max 247 us, process
-  CPU 0.25 %. With `--spin-us 50`: p50 95 ns, p99 1.11 us, p99.9 4.05 us, max
-  491 us, CPU 4.9 % (spinning 458 ms of 10.0 s).
+  `tcp_no_metrics_save = 1`); offloads: peer tso/gso off, DUT eth0 gro off,
+  1000 captured data packets of an iperf3 flow from the peer, the largest with
+  1448 payload bytes (with tso/gso turned back on: up to 65160);
+  `backend_transport_check --tun utcp0` 18/18 and open() on a down utcp0
+  refused; a 1500-byte DF datagram from 198.18.0.2 to 198.19.3.4 got
+  `198.18.0.1 > 198.18.0.2: ICMP 198.19.3.4 unreachable - need to frag (mtu
+  1400)` on utcp0, and the peer's `ping -M do -s 1472` got `From 198.19.3.3
+  ... Frag needed and DF set (mtu = 1400)`; through the NAT a DNS query got 2
+  A records and a datagram to the peer arrived as `198.18.0.2.40001 >
+  198.19.1.3.9` (198.18.0.7 also kept its address and port), and `off`/`on`
+  flushed the conntrack entries of 198.18.0.2 (2 to 0, 1 to 0); N1-N4 and N0
+  installed on eth0 and utcp0; all 10 combo.sh peers read back the requested
+  values with tso/gso off (tcp_ecn=3 accepted); down.sh left nothing.
+- `up.sh --cpus 20-23`, then `pmtu.sh up` and `combo.sh start` without
+  `UTCP_CPUS`: router and new peer on 20-23; with `UTCP_CPUS=16-31` the peer
+  on 16-31.
+- `backend_lateness.sh` (2026-11-12, container on CPUs 8-15, which were 0-4.5
+  % busy with other tenants' processes before and after): 10 000 waits of 1
+  ms, lateness p50 2.44 us, p90 8.65 us, p99 11.9 us, p99.9 47.8 us, max 247
+  us, process CPU 0.25 %. With `--spin-us 50`: p50 95 ns, p99 1.11 us, p99.9
+  4.05 us, max 491 us, CPU 4.9 % (spinning 458 ms of 10.0 s). Not rerun after
+  the loop began sampling at the wake-up: the program has no fd callbacks and
+  computes its samples from the handler's time.
 - `backend_udp_echo.sh`: not run on this branch (the Stack is the link stub).
-  On a local merge with the m1-ip branch (image `utcp-testbed:dev`): ping 3/3
-  answered by the stack, 100/100 datagrams echoed unchanged. With `--pcap`,
-  the file held 624 bytes (header and 6 records) while the program was still
-  running after 3 pings, and the same 624 bytes after `pkill -KILL`.
-- `backend_transport_check --expect-stack` on that merge: 18/18 (gcc-release,
+  On a local merge with the m1-ip branch: ping 3/3 answered by the stack,
+  100/100 datagrams echoed unchanged. With `--pcap` (2026-11-12), the file
+  held 624 bytes (header and 6 records) while the program was still running
+  after 3 pings, and the same 624 bytes after `pkill -KILL`.
+- `backend_transport_check --expect-stack` on that merge: 24/24 (gcc-release,
   gcc-asan), 20 of 20 repeated runs under gcc-asan.
