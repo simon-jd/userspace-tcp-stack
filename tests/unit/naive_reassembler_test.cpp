@@ -279,5 +279,23 @@ TEST(NaiveReassembler, RangeLimitAndDropOutOfOrder) {
   EXPECT_EQ(n.right_edge(), 20'000u);
 }
 
+TEST(NaiveReassembler, DropFromForgetsTheHeldBytesAboveAnOffset) {
+  NaiveReassembler n(10'000);
+  put(n, 0, 100, 10'000);
+  put(n, 200, 100, 10'000);
+  put(n, 400, 100, 10'000);
+  put(n, 600, 100, 10'000);
+  n.drop_from(450);  // inside a range: its upper part goes too
+  EXPECT_EQ(n.ooo_ranges(), (std::vector<Range>{{200, 300}, {400, 450}}));
+  n.drop_from(400);
+  EXPECT_EQ(n.ooo_ranges(), (std::vector<Range>{{200, 300}}));
+  n.drop_from(5000);  // nothing held there
+  EXPECT_EQ(n.ooo_ranges(), (std::vector<Range>{{200, 300}}));
+  n.drop_from(100);  // the in-order end: like drop_out_of_order
+  EXPECT_TRUE(n.ooo_ranges().empty());
+  EXPECT_EQ(n.contiguous_end(), 100u);
+  EXPECT_EQ(n.readable(), 100u);
+}
+
 }  // namespace
 }  // namespace utcp::test

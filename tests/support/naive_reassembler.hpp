@@ -87,10 +87,15 @@ public:
     return r;
   }
 
-  void drop_out_of_order() {
-    const std::uint64_t end = contiguous_end();
-    if (end < stored_end()) {
-      std::fill(held_.begin() + static_cast<std::ptrdiff_t>(index(end)), held_.end(), std::uint8_t{0});
+  void drop_out_of_order() { drop_from(contiguous_end()); }
+
+  // Forgets every held byte at or above `off` (off >= contiguous_end()): the
+  // reference side of RecvBuffer pruning its highest out-of-order ranges
+  // (InsertResult::pruned), which a pool-less model cannot decide itself.
+  void drop_from(std::uint64_t off) {
+    UTCP_CHECK(off >= contiguous_end());
+    if (off < stored_end()) {
+      std::fill(held_.begin() + static_cast<std::ptrdiff_t>(index(off)), held_.end(), std::uint8_t{0});
     }
   }
 

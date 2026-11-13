@@ -7,9 +7,9 @@
 // where Linux counts skb->truesize against soft limits, so Linux's
 // space/window conversions (tcp_win_from_space, scaling_ratio) are the
 // identity. Not modelled: memory pressure (tcp_adjust_rcv_ssthresh,
-// tcp_clamp_window), the tcp_app_win one-segment reservation of the window
-// clamp, and the quick-ack reset of __tcp_select_window when less than half
-// the buffer is free.
+// tcp_clamp_window) and the tcp_app_win one-segment reservation of the
+// window clamp. The ACK-side effects of __tcp_select_window go to AckPolicy
+// through ack_view.
 #include "core/tcp/rcv_window.hpp"
 
 #include <algorithm>
@@ -51,12 +51,16 @@ std::uint16_t RcvWindow::syn_window(std::uint16_t adv_mss) const {
 void RcvWindow::on_established(std::uint8_t rcv_wscale, std::uint16_t adv_mss,
                                std::uint64_t syn_edge) {
   wscale_ = std::min(rcv_wscale, max_wscale);
+  // Windows round down to 2^wscale and the edge never moves past the buffer:
+  // a smaller buffer could never advertise a window again (see the header).
+  UTCP_CHECK(rcv_buf_ >= min_rcv_buf(wscale_));
   adv_mss_ = adv_mss;
   rcv_adv_ = syn_edge;
   const auto init_wnd =
       static_cast<std::uint32_t>(std::min<std::uint64_t>(syn_edge - std::min(syn_edge, rcv_nxt_),
                                                          max_unscaled_window));
   last_window_ = init_wnd;
+  wup_ = rcv_nxt_;
   if (linux_growth_) {
     // tcp_connect_init / tcp_openreq_init_rwin: rcv_ssthresh = rcv_wnd;
     // tcp_init_buffer_space: at most the window clamp.
@@ -108,11 +112,19 @@ std::uint32_t RcvWindow::compute(const RecvBuffer& rb, std::uint16_t rcv_mss) co
   // rcv_adv, which rounding down may pull back by less than 2^rcv_wscale
   // (RFC 7323 §2.4).
   const std::uint64_t sws = std::min<std::uint64_t>(rb.capacity() / 2, rcv_mss);
-  std::uint64_t win = 0;
+  // The window that keeps the edge at rcv_adv.
+  const std::uint64_t kept =
+      rcv_adv_ > rcv_nxt ? std::min(round_down(rcv_adv_ - rcv_nxt, wscale_), max_win) : 0;
+  std::uint64_t win = kept;
   if (edge_new > rcv_adv_ && edge_new - rcv_adv_ >= sws) {
     win = win_new;
-  } else if (rcv_adv_ > rcv_nxt) {
-    win = std::min(round_down(rcv_adv_ - rcv_nxt, wscale_), max_win);
+  } else if (kept == 0 && win_new > 0 && (win_new >= sws || rb.readable() == 0)) {
+    // Keeping the edge would advertise a zero window (less than 2^wscale
+    // left below rcv_adv). The edge then moves if the new window is not
+    // small (>= the SWS step), or if everything was read: no read can free
+    // more space, so waiting for a larger step would keep the window closed
+    // for good.
+    win = win_new;
   }
   return static_cast<std::uint32_t>(win);
 }
@@ -122,6 +134,7 @@ SelectedWindow RcvWindow::select(const RecvBuffer& rb, std::uint16_t rcv_mss) {
   UTCP_DCHECK(rcv_adv_ <= rb.right_edge());
   const std::uint32_t win = compute(rb, rcv_mss);
   rcv_adv_ = std::max(rcv_adv_, rcv_nxt_ + win);
+  wup_ = rcv_nxt_;
   to_zero_ = last_window_ != 0 && win == 0;
   from_zero_ = last_window_ == 0 && win != 0;
   last_window_ = win;
@@ -161,12 +174,28 @@ bool RcvWindow::update_after_read(const RecvBuffer& rb, std::uint16_t rcv_mss) c
     // MSS), which is when compute() advances it.
     return rcv_nxt + win > rcv_adv_;
   }
-  // tcp_cleanup_rbuf: ACK if the window can at least double.
-  const std::uint64_t cur = rcv_adv_ > rcv_nxt ? rcv_adv_ - rcv_nxt : 0;
+  // tcp_cleanup_rbuf: ACK if the window can at least double. The current
+  // window is the one the peer was last told, less the data received since
+  // (tcp_receive_window: rcv_wup + rcv_wnd - rcv_nxt).
+  const std::uint64_t told = wup_ + last_window_;
+  const std::uint64_t cur = told > rcv_nxt ? told - rcv_nxt : 0;
   if (2 * cur > rb.capacity()) {
     return false;
   }
   return win != 0 && win >= 2 * cur;
+}
+
+RcvWindowView RcvWindow::ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss) const {
+  const std::uint64_t max_win = max_unscaled_window << wscale_;
+  const std::uint64_t free = rb.right_edge() - rb.contiguous_end();
+  RcvWindowView v;
+  v.unread = rb.readable() > 0;
+  // __tcp_select_window(sk) >= tp->rcv_wnd, both rounded down here (the
+  // unscaled SYN window too).
+  v.not_shrinking = std::min(round_down(target(rb, rcv_mss), wscale_), max_win) >=
+                    round_down(last_window_, wscale_);
+  v.low_space = free < std::uint64_t{rb.capacity()} / 2;
+  return v;
 }
 
 void RcvWindow::rtt_update(Duration sample, bool win_dep, bool queue_empty) {

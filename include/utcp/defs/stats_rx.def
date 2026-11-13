@@ -13,6 +13,7 @@
 UTCP_STACK_STAT(TcpExtTCPOFOQueue, "out-of-order segments stored")
 UTCP_STACK_STAT(TcpExtTCPOFODrop, "out-of-order data dropped: 65th range or no chunk (DESIGN 4.10)")
 UTCP_STACK_STAT(TcpExtTCPRcvQDrop, "in-order data dropped: no chunk available")
+UTCP_STACK_STAT(TcpExtOfoPruned, "inserts that pruned out-of-order ranges to find chunks (tcp_prune_ofo_queue)")
 UTCP_STACK_STAT(TcpExtTCPZeroWindowDrop, "payload dropped at zero window (DESIGN 4.4 step 2)")
 UTCP_STACK_STAT(TcpExtTCPDSACKOldSent, "D-SACKs sent for data below RCV.NXT")
 UTCP_STACK_STAT(TcpExtTCPDSACKOfoSent, "D-SACKs sent for duplicate out-of-order data")

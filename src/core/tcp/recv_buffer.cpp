@@ -68,6 +68,19 @@ std::uint32_t RecvBuffer::chunks_needed(std::uint64_t lo, std::uint64_t hi) cons
   return n;
 }
 
+bool RecvBuffer::chunks_fit(std::uint64_t lo, std::uint64_t hi) const {
+  return chunks_needed(lo, hi) <= pool_->limit() - pool_->in_use();
+}
+
+std::uint64_t RecvBuffer::prune_last_range() {
+  const Range g = ooo_.back();
+  ooo_.pop_back();
+  // Nothing is held between the next lower range (or the in-order data) and
+  // g, so every chunk wholly above that point goes back to the pool.
+  ring_.release_from(ooo_.empty() ? rcv_end_ : ooo_.back().end);
+  return g.end - g.begin;
+}
+
 InsertResult RecvBuffer::insert(std::uint64_t off, std::span<const std::byte> data,
                                 std::uint64_t limit) {
   UTCP_CHECK(limit <= right_edge());
@@ -98,10 +111,19 @@ InsertResult RecvBuffer::insert(std::uint64_t off, std::span<const std::byte> da
   const std::uint64_t lo = std::max(off, read_offset());
   bool absorbed = false;
   if (lo < hi) {
+    if (range_count_with(lo, hi) <= max_ooo_ranges) {
+      // Short of chunks: Linux tcp_try_rmem_schedule prunes the out-of-order
+      // queue from the top (tcp_prune_ofo_queue) before it drops the segment,
+      // but stops where the incoming segment would land last. Pruning only
+      // lowers the range count.
+      while (!chunks_fit(lo, hi) && !ooo_.empty() && ooo_.back().begin >= off) {
+        r.pruned += prune_last_range();
+      }
+    }
     if (range_count_with(lo, hi) > max_ooo_ranges) {
       r.range_limit = true;
       r.dropped = unheld_bytes(lo, hi);
-    } else if (chunks_needed(lo, hi) > pool_->limit() - pool_->in_use()) {
+    } else if (!chunks_fit(lo, hi)) {
       r.dropped = unheld_bytes(lo, hi);
     } else {
       // Write the gaps only: bytes already held keep their first copy.

@@ -3,10 +3,15 @@
 // to a RecvBuffer and to the naive reference
 // (tests/support/naive_reassembler.hpp); every InsertResult, the bytes read
 // and the state after each step must match, and check_invariants must hold.
-// The first byte picks the capacity and whether the chunk pool is short of
-// chunks; with a short pool, an insert the RecvBuffer drops for lack of
-// chunks is checked to change nothing and is not applied to the reference.
-// A mismatch aborts through UTCP_CHECK.
+// A burst operation inserts up to 121 short segments with gaps, so inputs
+// reach the 64-range limit in a few bytes. The first byte picks the capacity
+// and whether the chunk pool is short of chunks. With a short pool the
+// RecvBuffer may prune its highest out-of-order ranges or drop a segment for
+// lack of chunks, which the pool-less reference cannot decide: the harness
+// checks that only whole ranges at or above the segment's offset were
+// pruned, from the top, and applies the same pruning to the reference; a
+// dropped segment must change nothing else. A mismatch aborts through
+// UTCP_CHECK.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -73,20 +78,47 @@ void check_same(const RecvBuffer& rb, const NaiveReassembler& ref) {
 
 void insert(RecvBuffer& rb, NaiveReassembler& ref, std::uint64_t off,
             std::span<const std::byte> data, std::uint64_t limit, bool short_pool) {
+  const std::vector<Range> before(rb.ooo_ranges().begin(), rb.ooo_ranges().end());
   const InsertResult x = rb.insert(off, data, limit);
-  if (x.dropped > 0 && !x.range_limit) {
-    // Dropped for lack of chunks: only with a short pool, the whole segment,
-    // nothing changed. The reference (no pool) would have stored it.
+  if (x.pruned > 0 || (x.dropped > 0 && !x.range_limit)) {
+    // Short of chunks: only with a short pool, and never at the range limit.
     UTCP_CHECK(short_pool);
+    UTCP_CHECK(!x.range_limit);
+    // What insert decides before pruning, against the unpruned reference.
     NaiveReassembler probe = ref;
     const InsertResult y = probe.insert(off, data, limit);
     UTCP_CHECK(!y.range_limit);
-    UTCP_CHECK(x.stored == Range{});
-    UTCP_CHECK(!x.advanced && !x.filled_hole);
-    UTCP_CHECK(x.contiguous_end == ref.contiguous_end());
     UTCP_CHECK(x.out_of_order == y.out_of_order);
     UTCP_CHECK(x.duplicate == y.duplicate);
-    UTCP_CHECK(x.dropped <= y.stored.end - y.stored.begin);
+    if (x.pruned > 0) {
+      // Whole ranges from the top, each beginning at or above `off`.
+      std::uint64_t sum = 0;
+      std::size_t k = before.size();
+      while (sum < x.pruned) {
+        UTCP_CHECK(k > 0);
+        --k;
+        UTCP_CHECK(before[k].begin >= off);
+        sum += before[k].end - before[k].begin;
+      }
+      UTCP_CHECK(sum == x.pruned);
+      ref.drop_from(before[k].begin);
+    }
+    if (x.dropped > 0) {
+      // The whole segment, nothing else changed.
+      UTCP_CHECK(x.stored == Range{});
+      UTCP_CHECK(!x.advanced && !x.filled_hole);
+      UTCP_CHECK(x.contiguous_end == ref.contiguous_end());
+      UTCP_CHECK(x.dropped <= y.stored.end - y.stored.begin);
+      return;
+    }
+    // Stored after pruning: the reference, pruned the same way, agrees.
+    const InsertResult z = ref.insert(off, data, limit);
+    UTCP_CHECK(x.contiguous_end == z.contiguous_end);
+    UTCP_CHECK(x.advanced == z.advanced);
+    UTCP_CHECK(x.filled_hole == z.filled_hole);
+    UTCP_CHECK(x.ooo_held == z.ooo_held);
+    UTCP_CHECK(x.stored == z.stored);
+    UTCP_CHECK(z.dropped == 0 && !z.range_limit);
     return;
   }
   const InsertResult y = ref.insert(off, data, limit);
@@ -168,7 +200,23 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         }
         break;
       default:
-        if (cap < max_cap) {
+        if ((op & 8) != 0) {
+          // A burst of 1 + 8 * (op >> 4) short segments, 1 to 8 bytes long
+          // with gaps of 1 to 8 bytes, from just above contiguous_end or the
+          // read offset.
+          const std::uint64_t base =
+              ((op & 16) != 0 ? rb.read_offset() : rb.contiguous_end() + 1) + in.u16() % (cap + 1);
+          const std::uint8_t shape = in.u8();
+          const std::uint64_t len = 1 + shape % 8;
+          const std::uint64_t stride = len + 1 + (shape >> 3) % 8;
+          const auto copy = static_cast<std::uint8_t>(shape >> 6);
+          const unsigned count = 1 + 8 * (op >> 4);
+          for (unsigned k = 0; k < count; ++k) {
+            const std::uint64_t off = base + k * stride;
+            insert(rb, ref, off, payload(off, static_cast<std::size_t>(len), copy), limit,
+                   short_pool);
+          }
+        } else if (cap < max_cap) {
           const auto grown = static_cast<std::uint32_t>(
               std::min<std::uint64_t>(cap + in.u16() % (cap / 2 + 2), max_cap));
           rb.grow(grown);

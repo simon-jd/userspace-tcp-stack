@@ -12,11 +12,24 @@
 #include <cstdint>
 #include <optional>
 
+#include "core/tcp/ack_policy.hpp"
 #include "core/tcp/recv_buffer.hpp"
 #include "utcp/config.hpp"
 #include "utcp/time.hpp"
 
 namespace utcp {
+
+// The smallest receive buffer RcvWindow accepts with window scale
+// `rcv_wscale`: 2^(rcv_wscale + 1) bytes (1 without scaling). Windows round
+// down to 2^rcv_wscale and never reach past the buffer, so with less than
+// 2^rcv_wscale of buffer the window is 0 for good; from 2^(rcv_wscale + 1)
+// on, the rcv_ssthresh clamp and a drained buffer still leave at least
+// 2^rcv_wscale. A socket's own rcv_buf (TcpSocketOptions) therefore needs a
+// shift that fits it, e.g. default_rcv_wscale(rcv_buf); Linux instead
+// rounds the window up past its soft buffer limit (__tcp_select_window).
+[[nodiscard]] constexpr std::uint32_t min_rcv_buf(std::uint8_t rcv_wscale) noexcept {
+  return rcv_wscale == 0 ? 1u : std::uint32_t{2} << rcv_wscale;
+}
 
 struct SelectedWindow {
   std::uint32_t window = 0;  // bytes advertised (a multiple of 2^rcv_wscale)
@@ -39,6 +52,7 @@ public:
   // The handshake completed. rcv_wscale: our shift (0 without window
   // scaling); `syn_edge`: RCV.NXT + the SYN window, as an offset (the first
   // rcv_adv). Starts rcv_ssthresh (linux) from the initial window.
+  // Precondition (checked): rcv_buf >= min_rcv_buf(rcv_wscale).
   void on_established(std::uint8_t rcv_wscale, std::uint16_t adv_mss, std::uint64_t syn_edge);
 
   // The window for an outgoing segment: right_edge - RCV.NXT subject to the
@@ -49,7 +63,10 @@ public:
   //
   // The SWS rule is applied to the rounded edge: a new edge is advertised
   // only if it lies at least min(rcv_buf / 2, rcv_mss) above rcv_adv();
-  // otherwise the window is rcv_adv() - RCV.NXT rounded down. The linux
+  // otherwise the window is rcv_adv() - RCV.NXT rounded down. When that
+  // rounds to 0, the new edge is advertised anyway if its window is at least
+  // min(rcv_buf / 2, rcv_mss) or nothing is left to read (no read can free
+  // more space), so a window closed by rounding always reopens. The linux
   // target is __tcp_select_window's: below half the buffer free, a free
   // space under rcv_buf / 16 or rcv_mss gives 0; then min(free, rcv_ssthresh);
   // without window scaling the MSS-multiple rule. Linux rounds the scaled
@@ -76,10 +93,17 @@ public:
   // through rcv_ssthresh() (AckPolicy::on_rcv_ssthresh_grew). rcv_mss is
   // unused (kept for the interface).
   void on_in_order_data(std::uint32_t len, std::uint16_t rcv_mss, const RecvBuffer& rb);
+  // The window state AckPolicy::on_window and on_read take (Linux
+  // __tcp_select_window as __tcp_ack_snd_check and tcp_select_window see
+  // it): data unread, the window before the SWS rule (rounded down) at least
+  // last_window(), and less than half the buffer free.
+  [[nodiscard]] RcvWindowView ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss) const;
+
   // After the application read: whether a window update should be sent now
   // (window_update_after_read: rfc when the edge can move by >= min(rcv_buf /
-  // 2, MSS); linux when the new window is >= 2 * the current one,
-  // tcp_cleanup_rbuf).
+  // 2, MSS); linux when the new window is >= 2 * the current one, which is
+  // the window last advertised less the data received since,
+  // tcp_cleanup_rbuf and tcp_receive_window).
   [[nodiscard]] bool update_after_read(const RecvBuffer& rb, std::uint16_t rcv_mss) const;
 
   // Receiver RTT estimate (Linux tcp_rcv_rtt_measure, tcp_rcv_rtt_measure_ts),
@@ -126,6 +150,7 @@ private:
   std::uint16_t adv_mss_ = 536;
   std::uint64_t rcv_adv_ = 0;        // offset
   std::uint32_t last_window_ = 0;    // bytes
+  std::uint64_t wup_ = 0;            // RCV.NXT when last_window_ was chosen (rcv_wup)
   bool to_zero_ = false;
   bool from_zero_ = false;
   std::uint32_t rcv_ssthresh_;

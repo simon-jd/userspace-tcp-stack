@@ -3,8 +3,10 @@
 // tcp_dec_quickack_mode, tcp_delack_timer_handler; DESIGN §4.10).
 //
 // Not modelled: pingpong (interactive) mode, the PSH-based ICSK_ACK_PUSHED
-// flags, SACK compression (tcp_comp_sack_*), and the "right edge advances far
-// enough" condition of __tcp_ack_snd_check.
+// flags, SACK compression (tcp_comp_sack_*), and the quick-ack reset of the
+// __tcp_select_window call in tcp_cleanup_rbuf. The window conditions of
+// __tcp_ack_snd_check and tcp_cleanup_rbuf come from RcvWindowView
+// (on_window, on_read).
 #include "core/tcp/ack_policy.hpp"
 
 #include <algorithm>
@@ -25,8 +27,7 @@ AckPolicy::AckPolicy(const TcpConfig& cfg)
       ack_every_(cfg.ack_every_full_segments),
       quickack_max_(cfg.quickack_max),
       adaptive_ato_(cfg.delack_ato == DelackAto::adaptive),
-      linux_quickack_(cfg.quickack == Quickack::linux),
-      dsack_(cfg.dsack) {
+      linux_quickack_(cfg.quickack == Quickack::linux) {
   if (!adaptive_ato_) {
     ato_ = delack_max_;
   }
@@ -112,13 +113,14 @@ void AckPolicy::on_data(Time now, std::uint32_t len, std::uint16_t gso_size,
     if (r.filled_hole || r.ooo_held) {
       now_ = true;
     }
+  } else if (r.dropped > 0) {
+    // In-order data dropped for lack of chunks: Linux tcp_data_queue sets
+    // ICSK_ACK_NOMEM | ICSK_ACK_NOW, without quick-ack mode.
+    now_ = true;
   } else {
     // Nothing new (data below RCV.NXT, or dropped at a zero window): Linux
     // tcp_data_queue enters quick-ack mode and ACKs.
     enter_quickack(rcv_wnd);
-  }
-  if (r.duplicate && dsack_) {
-    now_ = true;  // the D-SACK goes out in the next ACK (RFC 2883 §4)
   }
   if (need() == AckNeed::delayed) {
     schedule_delayed(now);
@@ -170,6 +172,33 @@ void AckPolicy::on_rcv_ssthresh_grew() {
 
 void AckPolicy::set_srtt(Duration srtt) { srtt_ = srtt; }
 
+bool AckPolicy::full_segments_owed() const {
+  // "More than one full frame received" for ack_every_full_segments = 2.
+  const std::uint64_t full = ack_every_ > 1 ? std::uint64_t{ack_every_ - 1} * rcv_mss_ : 0;
+  return rcv_nxt_ - rcv_wup_ > full;
+}
+
+void AckPolicy::on_window(Time now, const RcvWindowView& v) {
+  view_ = v;
+  // __tcp_ack_snd_check evaluates __tcp_select_window only for more than one
+  // full frame with data unread; below half the buffer free that clears
+  // icsk_ack.quick before tcp_in_quickack_mode is tested.
+  if (linux_quickack_ && pending_ && v.unread && v.low_space && full_segments_owed()) {
+    quick_ = 0;
+  }
+  if (!timer_ && need() == AckNeed::delayed) {
+    schedule_delayed(now);
+  }
+}
+
+void AckPolicy::on_read(const RcvWindowView& v) {
+  view_ = v;
+  // tcp_cleanup_rbuf: inet_csk_ack_scheduled and rcv_nxt - rcv_wup > rcv_mss.
+  if (linux_quickack_ && pending_ && rcv_nxt_ - rcv_wup_ > rcv_mss_) {
+    now_ = true;
+  }
+}
+
 AckNeed AckPolicy::need() const {
   if (now_) {
     return AckNeed::now;
@@ -177,13 +206,13 @@ AckNeed AckPolicy::need() const {
   if (!pending_) {
     return AckNeed::none;
   }
-  if (in_quickack_mode()) {
+  // __tcp_ack_snd_check: full segments owed and, in the Linux model, the
+  // right edge advances far enough (or nothing is unread); then quick-ack
+  // mode.
+  if (full_segments_owed() && (!linux_quickack_ || !view_.unread || view_.not_shrinking)) {
     return AckNeed::now;
   }
-  // __tcp_ack_snd_check: more than (ack_every_full_segments - 1) full
-  // segments unacknowledged ("more than one full frame" for 2).
-  const std::uint64_t full = ack_every_ > 1 ? std::uint64_t{ack_every_ - 1} * rcv_mss_ : 0;
-  if (rcv_nxt_ - rcv_wup_ > full) {
+  if (in_quickack_mode()) {
     return AckNeed::now;
   }
   return AckNeed::delayed;
@@ -192,7 +221,12 @@ AckNeed AckPolicy::need() const {
 Time AckPolicy::delack_deadline() const { return deadline_; }
 
 void AckPolicy::on_ack_sent(Time /*now*/) {
-  // tcp_event_ack_sent: tcp_dec_quickack_mode, then the delack timer stops.
+  // tcp_transmit_skb -> tcp_select_window -> __tcp_select_window: below half
+  // the buffer free, quick-ack mode ends. Then tcp_event_ack_sent:
+  // tcp_dec_quickack_mode, and the delack timer stops.
+  if (linux_quickack_ && view_.low_space) {
+    quick_ = 0;
+  }
   if (linux_quickack_ && quick_ > 0) {
     const std::uint32_t pkts = pending_ ? 1 : 0;
     if (pkts >= quick_) {

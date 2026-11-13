@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <random>
 #include <span>
 #include <vector>
@@ -424,42 +425,204 @@ TEST(RecvBuffer, MovedBufferKeepsItsData) {
   EXPECT_EQ(read_all(b), bytes(0, 5000));
 }
 
+TEST(RecvBuffer, RangeLimitAllowsSegmentsTouchingARange) {
+  // 64 ranges [200 i + 100, 200 i + 200); a segment that only touches a range
+  // (ends at its begin or begins at its end) merges with it: no new range.
+  ChunkPool pool(64);
+  RecvBuffer rb(64 * 1024, pool);
+  for (std::uint64_t i = 0; i < max_ooo_ranges; ++i) {
+    ASSERT_FALSE(put(rb, 100 + 200 * i, 100).range_limit) << i;
+  }
+  ASSERT_EQ(rb.ooo_ranges().size(), max_ooo_ranges);
+
+  InsertResult r = put(rb, 400, 50);  // begins at the end of [300, 400)
+  EXPECT_FALSE(r.range_limit);
+  EXPECT_EQ(r.stored, (Range{400, 450}));
+  EXPECT_EQ(rb.ooo_ranges()[1], (Range{300, 450}));
+  r = put(rb, 650, 50);  // ends at the begin of [700, 800)
+  EXPECT_FALSE(r.range_limit);
+  EXPECT_EQ(rb.ooo_ranges()[3], (Range{650, 800}));
+  r = put(rb, 12'800, 200);  // begins at the end of the highest range
+  EXPECT_FALSE(r.range_limit);
+  EXPECT_EQ(rb.ooo_ranges().back(), (Range{12'700, 13'000}));
+  r = put(rb, 50, 50);  // ends at the begin of the lowest range
+  EXPECT_FALSE(r.range_limit);
+  EXPECT_EQ(rb.ooo_ranges().front(), (Range{50, 200}));
+  EXPECT_EQ(rb.ooo_ranges().size(), max_ooo_ranges);
+
+  r = put(rb, 13'001, 10);  // a one-byte gap above the highest range: a 65th
+  EXPECT_TRUE(r.range_limit);
+  r = put(rb, 49, 1);  // ends at the begin of the lowest range: merges
+  EXPECT_FALSE(r.range_limit);
+  r = put(rb, 47, 1);  // one-byte gaps on both sides: a 65th
+  EXPECT_TRUE(r.range_limit);
+  r = put(rb, 200, 100);  // touches two ranges: they merge, 63 left
+  EXPECT_FALSE(r.range_limit);
+  EXPECT_EQ(rb.ooo_ranges().size(), max_ooo_ranges - 1);
+  EXPECT_EQ(rb.ooo_ranges().front(), (Range{49, 450}));
+}
+
+TEST(RecvBuffer, InOrderSegmentPrunesOutOfOrderDataForChunks) {
+  // The connection's own out-of-order data holds every chunk. The segment at
+  // RCV.NXT prunes the highest range (Linux tcp_prune_ofo_queue) instead of
+  // being dropped on every retransmission.
+  ChunkPool pool(4);
+  RecvBuffer rb(64 * 1024, pool);
+  put(rb, 0, cs);
+  read_all(rb);
+  for (std::uint64_t c = 2; c <= 5; ++c) {
+    put(rb, c * cs, 100);
+  }
+  ASSERT_EQ(pool.in_use(), 4u);
+  ASSERT_EQ(rb.ooo_ranges().size(), 4u);
+
+  InsertResult r = put(rb, cs, 1000);
+  EXPECT_EQ(r.pruned, 100u);  // [5 cs, 5 cs + 100) only: one chunk was enough
+  EXPECT_EQ(r.dropped, 0u);
+  EXPECT_TRUE(r.advanced);
+  EXPECT_EQ(r.stored, (Range{cs, cs + 1000}));
+  EXPECT_EQ(rb.contiguous_end(), cs + 1000);
+  EXPECT_EQ(ranges(rb), (std::vector<Range>{{2 * cs, 2 * cs + 100}, {3 * cs, 3 * cs + 100},
+                                            {4 * cs, 4 * cs + 100}}));
+  EXPECT_EQ(pool.in_use(), 4u);
+
+  // The rest of the hole: the data in chunk 2 joins, nothing more is pruned.
+  r = put(rb, cs + 1000, cs - 1000);
+  EXPECT_EQ(r.pruned, 0u);
+  EXPECT_TRUE(r.filled_hole);
+  EXPECT_EQ(rb.contiguous_end(), 2 * cs + 100);
+}
+
+TEST(RecvBuffer, PruningStopsBelowTheIncomingSegment) {
+  ChunkPool pool(4);
+  RecvBuffer rb(64 * 1024, pool);
+  put(rb, 0, 100);  // chunk 0, unread
+  put(rb, 2 * cs, 100);
+  put(rb, 4 * cs, 100);
+  put(rb, 6 * cs, 100);
+  ASSERT_EQ(pool.in_use(), 4u);
+
+  // Out of order above every range: it would land last, nothing is pruned
+  // (Linux: "If incoming skb would land last in ofo queue, stop pruning").
+  InsertResult r = put(rb, 8 * cs, 100);
+  EXPECT_EQ(r.pruned, 0u);
+  EXPECT_EQ(r.dropped, 100u);
+  EXPECT_EQ(rb.ooo_ranges().size(), 3u);
+
+  // Out of order between ranges: only the ranges above it go.
+  r = put(rb, 3 * cs, 100);
+  EXPECT_EQ(r.pruned, 100u);
+  EXPECT_EQ(r.dropped, 0u);
+  EXPECT_EQ(ranges(rb), (std::vector<Range>{{2 * cs, 2 * cs + 100}, {3 * cs, 3 * cs + 100},
+                                            {4 * cs, 4 * cs + 100}}));
+  // A range that begins at the segment's offset may go; pruning does not
+  // reach below it, and the segment is dropped when that is not enough.
+  r = put(rb, 4 * cs, cs + 100);  // needs chunk 5
+  EXPECT_EQ(r.pruned, 100u);      // [4 cs, 4 cs + 100) went; chunk 4 is free now
+  EXPECT_EQ(r.dropped, cs + 100);  // chunks 4 and 5 needed, one free
+  EXPECT_EQ(ranges(rb), (std::vector<Range>{{2 * cs, 2 * cs + 100}, {3 * cs, 3 * cs + 100}}));
+  EXPECT_EQ(pool.in_use(), 3u);
+}
+
+TEST(RecvBuffer, PruningGoesOnUntilAChunkComesBack) {
+  // The two highest ranges share chunk 2: pruning the top one frees nothing,
+  // the next one frees the chunk.
+  ChunkPool pool(2);
+  RecvBuffer rb(64 * 1024, pool);
+  put(rb, cs + 100, 100);      // chunk 1
+  put(rb, 2 * cs + 100, 100);  // chunk 2
+  put(rb, 2 * cs + 300, 100);  // chunk 2
+  ASSERT_EQ(pool.in_use(), 2u);
+  const InsertResult r = put(rb, 0, 100);  // needs chunk 0
+  EXPECT_EQ(r.pruned, 200u);
+  EXPECT_EQ(r.dropped, 0u);
+  EXPECT_EQ(r.contiguous_end, 100u);
+  EXPECT_EQ(ranges(rb), (std::vector<Range>{{cs + 100, cs + 200}}));
+  EXPECT_EQ(pool.in_use(), 2u);
+  EXPECT_EQ(read_all(rb), bytes(0, 100));
+}
+
+TEST(RecvBuffer, PrunedDataIsDroppedWhenTheSegmentStillDoesNotFit) {
+  // Linux prunes the whole out-of-order queue before it gives up; so does
+  // this. The segment needs chunks 1, 2 and 3 once the ranges in chunks 1
+  // and 2 are gone, and only 2 are free.
+  ChunkPool pool(3);
+  RecvBuffer rb(64 * 1024, pool);
+  put(rb, 0, 100);             // chunk 0, unread
+  put(rb, cs + 100, 100);      // chunk 1
+  put(rb, 2 * cs + 100, 100);  // chunk 2
+  const InsertResult r = put(rb, 100, 3 * cs);
+  EXPECT_EQ(r.pruned, 200u);
+  EXPECT_EQ(r.dropped, 3 * cs);
+  EXPECT_FALSE(r.advanced);
+  EXPECT_EQ(r.stored, Range{});
+  EXPECT_TRUE(rb.ooo_ranges().empty());
+  EXPECT_EQ(pool.in_use(), 1u);
+  EXPECT_EQ(read_all(rb), bytes(0, 100));
+}
+
 // Differential test (m1-rx acceptance 2): 1e6 random insert, read, FIN,
 // reneging and grow operations from fixed seeds, compared with the naive
-// reference after every step.
+// reference after every step. A FIN is rare; once the stream has reached it
+// and been read, a fresh buffer starts (another connection). A third of the
+// segments start at or below contiguous_end; the small-segment seeds keep
+// the range limit busy.
 struct DiffParams {
   std::uint64_t seed;
   std::uint32_t capacity;
   int steps;
+  bool small_segments;
 };
 
-void run_differential(const DiffParams& p) {
+struct DiffCounts {
+  std::uint64_t advances = 0;
+  std::uint64_t filled_holes = 0;
+  std::uint64_t range_limits = 0;
+  std::uint64_t duplicates = 0;
+  std::uint64_t stream_bytes = 0;  // bytes read
+  std::uint64_t connections = 0;   // streams read up to their FIN
+  std::size_t max_ranges = 0;
+};
+
+void run_differential(const DiffParams& p, DiffCounts& n) {
   std::mt19937_64 gen(p.seed);
   ChunkPool pool(1u << 14);  // never short of chunks here
-  RecvBuffer rb(p.capacity, pool);
-  utcp::test::NaiveReassembler ref(p.capacity);
+  std::optional<RecvBuffer> rb;
+  std::optional<utcp::test::NaiveReassembler> ref;
   std::uint64_t limit = 0;  // like rcv_adv: never decreases
+  const auto start = [&] {
+    rb.reset();
+    rb.emplace(p.capacity, pool);
+    ref.emplace(p.capacity);
+    limit = 0;
+  };
+  start();
   std::vector<std::byte> a;
   std::vector<std::byte> b;
+  const std::uint64_t max_len = p.small_segments ? 24 : 3000;
   for (int step = 0; step < p.steps; ++step) {
-    const std::uint64_t cap = rb.capacity();
-    limit = std::max(limit, rb.right_edge() - gen() % (cap / 4 + 1));
-    const auto op = gen() % 1000;
-    if (op < 640) {
-      // Offsets from somewhat below the read offset to past the right edge;
-      // many segments near contiguous_end, like a real sender.
-      const std::uint64_t back = std::min<std::uint64_t>(rb.read_offset(), 300);
+    const std::uint64_t cap = rb->capacity();
+    const std::uint64_t ce = rb->contiguous_end();
+    const std::uint64_t ro = rb->read_offset();
+    limit = std::max(limit, rb->right_edge() - gen() % (cap / 4 + 1));
+    const auto op = gen() % 100'000;
+    if (op < 70'000) {
       std::uint64_t off = 0;
-      if (gen() % 2 == 0) {
-        off = rb.contiguous_end() + gen() % (cap / 8 + 1);
-        off = off > back ? off - gen() % (back + 1) : off;
-      } else {
-        off = rb.read_offset() - back + gen() % (cap + back + 200);
+      switch (gen() % 3) {
+        case 0:  // at or below contiguous_end, often reaching past it
+          off = ce - std::min<std::uint64_t>(ce, gen() % (p.small_segments ? 32 : 2000));
+          break;
+        case 1:  // just above it
+          off = ce + 1 + gen() % (p.small_segments ? 4096 : cap / 8 + 1);
+          break;
+        default:  // anywhere from below the read offset to past the right edge
+          off = ro - std::min<std::uint64_t>(ro, 300) + gen() % (cap + 500);
+          break;
       }
-      const std::size_t len = gen() % 8 == 0 ? gen() % 3 : 1 + gen() % std::min<std::uint64_t>(cap / 3 + 1, 3000);
+      const std::size_t len = gen() % 16 == 0 ? gen() % 3 : 1 + gen() % std::min<std::uint64_t>(cap / 3 + 1, max_len);
       const auto data = bytes(off, len, static_cast<unsigned>(gen() % 3));
-      const InsertResult x = rb.insert(off, data, limit);
-      const InsertResult y = ref.insert(off, data, limit);
+      const InsertResult x = rb->insert(off, data, limit);
+      const InsertResult y = ref->insert(off, data, limit);
       ASSERT_EQ(x.contiguous_end, y.contiguous_end) << step;
       ASSERT_EQ(x.advanced, y.advanced) << step;
       ASSERT_EQ(x.out_of_order, y.out_of_order) << step;
@@ -469,52 +632,94 @@ void run_differential(const DiffParams& p) {
       ASSERT_EQ(x.stored, y.stored) << step;
       ASSERT_EQ(x.dropped, y.dropped) << step;
       ASSERT_EQ(x.range_limit, y.range_limit) << step;
-    } else if (op < 900) {
-      const std::size_t n = gen() % (cap / 2 + 2);
-      a.assign(n, std::byte{0});
-      b.assign(n, std::byte{0});
-      const std::size_t got = rb.read(a);
-      ASSERT_EQ(got, ref.read(b)) << step;
+      ASSERT_EQ(x.pruned, 0u) << step;
+      n.advances += x.advanced ? 1 : 0;
+      n.filled_holes += x.filled_hole ? 1 : 0;
+      n.range_limits += x.range_limit ? 1 : 0;
+      n.duplicates += x.duplicate ? 1 : 0;
+    } else if (op < 88'000) {
+      const std::size_t len = gen() % (cap / 2 + 2);
+      a.assign(len, std::byte{0});
+      b.assign(len, std::byte{0});
+      const std::size_t got = rb->read(a);
+      ASSERT_EQ(got, ref->read(b)) << step;
       ASSERT_EQ(a, b) << step;
-    } else if (op < 980) {
-      const std::uint64_t off = rb.contiguous_end() + gen() % (cap + 1);
-      const std::uint64_t at = gen() % 4 == 0 ? rb.read_offset() + gen() % (cap + 1) : off;
-      rb.set_fin(at);
-      ref.set_fin(at);
-    } else if (op < 990) {
-      rb.drop_out_of_order();
-      ref.drop_out_of_order();
-    } else if (cap < 4 * p.capacity) {
-      const auto grown = static_cast<std::uint32_t>(cap + gen() % (cap / 2 + 1));
-      rb.grow(grown);
-      ref.grow(grown);
+      n.stream_bytes += got;
+    } else if (op < 88'005) {
+      // About 1 in 20'000 steps; the first FIN wins. Mostly at or above the
+      // highest byte held (accepted), else anywhere (often contradicted by
+      // held data and ignored).
+      const auto ooo = rb->ooo_ranges();
+      const std::uint64_t top = ooo.empty() ? ce : ooo.back().end;
+      const std::uint64_t at = gen() % 4 == 0 ? ro + gen() % (cap + 1)
+                                              : top + gen() % (p.small_segments ? 2048 : cap + 1);
+      rb->set_fin(at);
+      ref->set_fin(at);
+    } else if (op < 88'500) {
+      rb->drop_out_of_order();
+      ref->drop_out_of_order();
+    } else if (op < 89'000) {
+      if (cap < 4 * p.capacity) {
+        const auto grown = static_cast<std::uint32_t>(cap + gen() % (cap / 2 + 1));
+        rb->grow(grown);
+        ref->grow(grown);
+      }
     }
-    rb.check_invariants();
-    ASSERT_EQ(rb.contiguous_end(), ref.contiguous_end()) << step;
-    ASSERT_EQ(rb.read_offset(), ref.read_offset()) << step;
-    ASSERT_EQ(rb.readable(), ref.readable()) << step;
-    ASSERT_EQ(rb.right_edge(), ref.right_edge()) << step;
-    ASSERT_EQ(rb.fin_offset(), ref.fin_offset()) << step;
-    ASSERT_EQ(rb.fin_reached(), ref.fin_reached()) << step;
-    ASSERT_EQ(ranges(rb), ref.ooo_ranges()) << step;
+    // else: nothing this step (the other operations keep their shares)
+    rb->check_invariants();
+    ASSERT_EQ(rb->contiguous_end(), ref->contiguous_end()) << step;
+    ASSERT_EQ(rb->read_offset(), ref->read_offset()) << step;
+    ASSERT_EQ(rb->readable(), ref->readable()) << step;
+    ASSERT_EQ(rb->right_edge(), ref->right_edge()) << step;
+    ASSERT_EQ(rb->fin_offset(), ref->fin_offset()) << step;
+    ASSERT_EQ(rb->fin_reached(), ref->fin_reached()) << step;
+    ASSERT_EQ(ranges(*rb), ref->ooo_ranges()) << step;
     // Memory: chunks for the held window only.
-    ASSERT_LE(rb.chunks_held(), rb.capacity() / cs + 2) << step;
+    ASSERT_LE(rb->chunks_held(), rb->capacity() / cs + 2) << step;
+    n.max_ranges = std::max(n.max_ranges, rb->ooo_ranges().size());
+    if (rb->fin_reached() && rb->readable() == 0) {
+      ++n.connections;
+      start();
+    }
   }
   // The rest of the stream reads back the same.
-  a.assign(static_cast<std::size_t>(rb.readable()), std::byte{0});
+  a.assign(static_cast<std::size_t>(rb->readable()), std::byte{0});
   b.assign(a.size(), std::byte{0});
-  ASSERT_EQ(rb.read(a), ref.read(b));
+  ASSERT_EQ(rb->read(a), ref->read(b));
   ASSERT_EQ(a, b);
 }
 
 TEST(RecvBuffer, DifferentialAgainstNaiveReassembler) {
-  // 4 x 250'000 = 1e6 operations.
-  for (const DiffParams& p : {DiffParams{1, 3000, 250'000}, DiffParams{2, 3 * 4096 + 17, 250'000},
-                              DiffParams{3, 16 * 1024, 250'000}, DiffParams{4, 64 * 1024, 250'000}}) {
+  // 5 x 200'000 = 1e6 operations.
+  for (const DiffParams& p : {DiffParams{1, 3000, 200'000, false},
+                              DiffParams{2, 3 * 4096 + 17, 200'000, false},
+                              DiffParams{3, 16 * 1024, 200'000, true},
+                              DiffParams{4, 64 * 1024, 200'000, false},
+                              DiffParams{5, 3 * 4096 + 17, 200'000, true}}) {
     SCOPED_TRACE(p.seed);
-    run_differential(p);
+    DiffCounts n;
+    run_differential(p, n);
     if (HasFatalFailure()) {
       return;
+    }
+    // The run exercised what it compares: the stream moved, holes were
+    // filled, FINs were reached and read, and the small-segment seeds sat at
+    // the range limit (their stream moves a few bytes per segment).
+    if (p.small_segments) {
+      EXPECT_GT(n.advances, 10'000u);
+      EXPECT_GT(n.filled_holes, 500u);
+      EXPECT_GT(n.duplicates, 20'000u);
+      EXPECT_GT(n.stream_bytes, 5u * p.capacity);
+      EXPECT_GE(n.connections, 1u);
+      EXPECT_EQ(n.max_ranges, utcp::max_ooo_ranges);
+      EXPECT_GT(n.range_limits, 10'000u);
+    } else {
+      EXPECT_GT(n.advances, 20'000u);
+      EXPECT_GT(n.filled_holes, 5'000u);
+      EXPECT_GT(n.duplicates, 50'000u);
+      EXPECT_GT(n.stream_bytes, 100u * p.capacity);
+      EXPECT_GE(n.connections, 3u);
+      EXPECT_GE(n.max_ranges, 8u);
     }
   }
 }

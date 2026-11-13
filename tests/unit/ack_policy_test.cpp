@@ -328,22 +328,133 @@ TEST(AckPolicy, RcvMssTakesGsoSize) {
   EXPECT_EQ(z.ap.rcv_mss(), 1448);
 }
 
-TEST(AckPolicy, DuplicateWithDsackIsAckedAtOnce) {
-  Rx x(ato_only_cfg());
-  x.next(0ms, 1000);
-  x.ap.on_ack_sent(at(0ms));
-  const InsertResult r = x.data(5ms, 500, 1000);  // [500, 1000) duplicate
-  ASSERT_TRUE(r.duplicate);
-  ASSERT_TRUE(r.advanced);
-  EXPECT_EQ(x.ap.need(), AckNeed::now);
+TEST(AckPolicy, DuplicateAloneDoesNotForceAnAck) {
+  // A partly duplicate in-order segment goes the normal way (Linux
+  // tcp_data_queue: queue_and_out). Only a D-SACK the engine actually
+  // records makes it call ack_now(); without SACK there is none.
+  for (const bool dsack : {true, false}) {
+    TcpConfig c = ato_only_cfg();
+    c.dsack = dsack;
+    Rx x(c);
+    x.next(0ms, 1000);
+    x.ap.on_ack_sent(at(0ms));
+    const InsertResult r = x.data(5ms, 500, 1000);  // [500, 1000) duplicate
+    ASSERT_TRUE(r.duplicate);
+    ASSERT_TRUE(r.advanced);
+    EXPECT_EQ(x.ap.need(), AckNeed::delayed) << dsack;
+    x.ap.ack_now();  // the engine recorded a D-SACK (SACK negotiated)
+    EXPECT_EQ(x.ap.need(), AckNeed::now);
+  }
+}
 
-  TcpConfig no_dsack = ato_only_cfg();
-  no_dsack.dsack = false;
-  Rx y(no_dsack);
-  y.next(0ms, 1000);
-  y.ap.on_ack_sent(at(0ms));
-  y.data(5ms, 500, 1000);
+TEST(AckPolicy, InOrderDataDroppedForMemoryIsAckedAtOnceWithoutQuickAck) {
+  // Linux tcp_data_queue: tcp_try_rmem_schedule failed for in-order data:
+  // ICSK_ACK_NOMEM | ICSK_ACK_NOW, no tcp_enter_quickack_mode.
+  Rx x(linux_cfg(), 1u << 20);
+  for (int i = 0; i < 20; ++i) {
+    x.next(Duration{i * 1ms}, 1448);
+    x.ack_if_now(Duration{i * 1ms});
+  }
+  x.ap.on_ack_sent(at(20ms));
+  ASSERT_FALSE(x.ap.in_quickack_mode());
+  const Duration ato = x.ap.ato();
+  InsertResult r;
+  r.contiguous_end = x.rb.contiguous_end();
+  r.dropped = 1448;
+  x.ap.on_data(at(21ms), 1448, 0, r, x.rcv_wnd, x.rto);
+  EXPECT_EQ(x.ap.need(), AckNeed::now);
+  EXPECT_FALSE(x.ap.in_quickack_mode());
+  EXPECT_EQ(x.ap.ato(), ato);
+}
+
+// Linux __tcp_ack_snd_check: more than one full frame is ACKed at once only
+// if the right edge advances far enough or nothing is unread; otherwise
+// tcp_cleanup_rbuf sends it when the application reads.
+TEST(AckPolicy, LinuxFullSegmentsWaitWhileTheWindowShrinks) {
+  Rx x(linux_cfg(), 1u << 20);
+  for (int i = 0; i < 20; ++i) {
+    x.next(Duration{i * 1ms}, 1448);
+    x.ack_if_now(Duration{i * 1ms});
+  }
+  x.ap.on_ack_sent(at(20ms));
+  ASSERT_FALSE(x.ap.in_quickack_mode());
+  const utcp::RcvWindowView shrinking{.unread = true, .not_shrinking = false, .low_space = false};
+
+  x.next(30ms, 1448);
+  x.ap.on_window(at(30ms), shrinking);
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+  EXPECT_EQ(x.ap.delack_deadline(), at(70ms));
+  x.next(31ms, 1448);  // more than one full segment unacknowledged
+  x.ap.on_window(at(31ms), shrinking);
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+  EXPECT_EQ(x.ap.delack_deadline(), at(70ms));
+  // The application reads part of the data: tcp_cleanup_rbuf ACKs.
+  x.ap.on_read(shrinking);
+  EXPECT_EQ(x.ap.need(), AckNeed::now);
+  x.ap.on_ack_sent(at(32ms));
+
+  // Not shrinking, or nothing unread: at once, as without a view.
+  x.next(40ms, 1448);
+  x.ap.on_window(at(40ms), shrinking);
+  x.next(41ms, 1448);
+  x.ap.on_window(at(41ms), {.unread = true, .not_shrinking = true, .low_space = false});
+  EXPECT_EQ(x.ap.need(), AckNeed::now);
+  x.ap.on_ack_sent(at(41ms));
+  x.next(50ms, 1448);
+  x.ap.on_window(at(50ms), shrinking);
+  x.next(51ms, 1448);
+  x.ap.on_window(at(51ms), {.unread = false, .not_shrinking = false, .low_space = false});
+  EXPECT_EQ(x.ap.need(), AckNeed::now);
+  x.ap.on_ack_sent(at(51ms));
+
+  // One segment and a read: nothing more than one full segment, no ACK.
+  x.next(60ms, 1448);
+  x.ap.on_window(at(60ms), shrinking);
+  x.ap.on_read(shrinking);
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+
+  // The rfc model ACKs every second full segment whatever the window.
+  Rx y(rfc_cfg(), 65535);
+  y.next(0ms, 1460);
+  y.ap.on_window(at(0ms), shrinking);
+  y.next(1ms, 1460);
+  y.ap.on_window(at(1ms), shrinking);
+  EXPECT_EQ(y.ap.need(), AckNeed::now);
+}
+
+// Linux __tcp_select_window clears icsk_ack.quick below half the buffer
+// free, when an ACK is sent and when __tcp_ack_snd_check evaluates it.
+TEST(AckPolicy, LinuxLowSpaceEndsQuickAckMode) {
+  const utcp::RcvWindowView low{.unread = true, .not_shrinking = false, .low_space = true};
+  Rx x(linux_cfg(), 1u << 20);
+  x.next(0ms, 1448);
+  x.ap.on_window(at(0ms), low);  // one segment: __tcp_select_window not evaluated
+  ASSERT_TRUE(x.ap.in_quickack_mode());
+  EXPECT_EQ(x.ap.need(), AckNeed::now);
+  x.ap.on_ack_sent(at(0ms));  // tcp_select_window while low: quick = 0
+  EXPECT_FALSE(x.ap.in_quickack_mode());
+  x.next(1ms, 1448);
+  x.ap.on_window(at(1ms), low);
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+
+  // Two segments before an ACK went out: the check itself clears quick.
+  Rx y(linux_cfg(), 1u << 20);
+  y.next(0ms, 1448);
+  ASSERT_TRUE(y.ap.in_quickack_mode());
+  y.next(1ms, 1448);
+  y.ap.on_window(at(1ms), low);
+  EXPECT_FALSE(y.ap.in_quickack_mode());
   EXPECT_EQ(y.ap.need(), AckNeed::delayed);
+
+  // With room in the buffer quick-ack mode goes on.
+  Rx z(linux_cfg(), 1u << 20);
+  z.next(0ms, 1448);
+  z.next(1ms, 1448);
+  z.ap.on_window(at(1ms), {.unread = true, .not_shrinking = false, .low_space = false});
+  EXPECT_TRUE(z.ap.in_quickack_mode());
+  EXPECT_EQ(z.ap.need(), AckNeed::now);
+  z.ap.on_ack_sent(at(1ms));
+  EXPECT_TRUE(z.ap.in_quickack_mode());
 }
 
 TEST(AckPolicy, NothingNewEntersQuickAck) {

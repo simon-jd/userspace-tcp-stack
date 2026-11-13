@@ -154,12 +154,9 @@ TEST(SackGen, Rfc2883Example5DuplicatesBelowTheCumulativeAck) {
   expect_ack(r.arrive(1000, 2500), 2500, {{1000, 1500}, {3000, 3500}});
 }
 
-// The RFC's table lists 1500-2000 and 2000-2500 as separate blocks and
-// reports only 1500-2000 as the duplicate, although the bytes 1500-2500 are
-// one contiguous block (RFC 2018 §3) and one duplicate run (RFC 2883 §4 rule
-// 3). The byte-range model gives Linux 7.0's result: tcp_data_queue_ofo
-// coalesces the two skbs, tcp_sack_new_ofo_skb extends the block, and the
-// covering 1500-2999 sets the D-SACK to the replaced skb, 1500-2500.
+// The table as corrected by RFC 2883 errata 365 (verified): the second
+// received part of the 1500-2999 retransmission is 2500-2999 (the original
+// table lists 2000-2499, a segment it marks as dropped).
 TEST(SackGen, Rfc2883Example6DuplicatesAboveTheCumulativeAck) {
   Receiver r(500);
   expect_ack(r.arrive(500, 1000), 1000, {});
@@ -168,9 +165,8 @@ TEST(SackGen, Rfc2883Example6DuplicatesAboveTheCumulativeAck) {
   expect_ack(r.arrive(3500, 4000), 1000, {{3500, 4000}});
   // 1000-1499 dropped again; 1500-2999 arrives in parts.
   expect_ack(r.arrive(1500, 2000), 1000, {{1500, 2000}, {3500, 4000}});
-  expect_ack(r.arrive(2000, 2500), 1000, {{1500, 2500}, {3500, 4000}});  // RFC: 2000-2500, 1500-2000, 3500-4000
-  expect_ack(r.arrive(1500, 3000), 1000,
-             {{1500, 2500}, {1500, 3000}, {3500, 4000}});  // RFC: 1500-2000, 1500-3000, 3500-4000
+  expect_ack(r.arrive(2500, 3000), 1000, {{2500, 3000}, {1500, 2000}, {3500, 4000}});
+  expect_ack(r.arrive(1500, 3000), 1000, {{1500, 2000}, {1500, 3000}, {3500, 4000}});
 }
 
 TEST(SackGen, AtMostThreeBlocksWithTimestampsAndFourWithout) {
@@ -243,6 +239,32 @@ TEST(SackGen, RenegedDataIsNotReported) {
   r.rb.drop_out_of_order();
   EXPECT_TRUE(r.blocks().empty());
   expect_ack(r.arrive(5000, 5100), 1000, {{5000, 5100}});
+}
+
+TEST(SackGen, PrunedDataIsNotReported) {
+  // RecvBuffer pruned the highest range to find a chunk for in-order data
+  // (InsertResult::pruned, Linux tcp_prune_ofo_queue): its block goes, like
+  // reneged data.
+  ChunkPool pool(3);
+  RecvBuffer rb(1u << 20, pool);
+  SackGenerator sg;
+  const auto arrive = [&](std::uint64_t b, std::uint64_t e) {
+    const std::vector<std::byte> data(static_cast<std::size_t>(e - b));
+    const InsertResult r = rb.insert(b, data, rb.right_edge());
+    sg.on_arrival(Range{b, e}, rb);
+    return r;
+  };
+  arrive(4096, 4196);    // chunk 1
+  arrive(8192, 8292);    // chunk 2
+  arrive(12288, 12388);  // chunk 3
+  std::array<Range, 4> out{};
+  ASSERT_EQ(sg.fill(rb, out, 4), 3u);
+  EXPECT_EQ(out[0], (Range{12288, 12388}));
+  const InsertResult r = arrive(0, 100);  // needs chunk 0
+  ASSERT_EQ(r.pruned, 100u);
+  ASSERT_EQ(sg.fill(rb, out, 4), 2u);
+  EXPECT_EQ(out[0], (Range{8192, 8292}));
+  EXPECT_EQ(out[1], (Range{4096, 4196}));
 }
 
 TEST(SackGen, BlocksNeverReportedAreAppendedLowestFirst) {

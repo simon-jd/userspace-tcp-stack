@@ -48,6 +48,14 @@ struct InsertResult {
   // dropped: Linux drops a whole skb when tcp_try_rmem_schedule fails.
   std::uint64_t dropped = 0;
   bool range_limit = false;          // dropped because of the range limit
+  // Out-of-order bytes discarded to find chunks for this segment (Linux
+  // tcp_prune_ofo_queue, reached from tcp_try_rmem_schedule): whole ranges
+  // that begin at or above the segment's offset, highest first, until the
+  // segment's chunks fit or no such range is left. Set even when the segment
+  // was then dropped anyway. This is reneging (RFC 2018 §8): the engine
+  // counts TcpExtOfoPruned; ooo_ranges() no longer holds the data, so
+  // SackGenerator stops reporting it.
+  std::uint64_t pruned = 0;
 };
 
 class RecvBuffer {
@@ -60,8 +68,12 @@ public:
   // `limit` (rcv_adv as an offset: the highest right edge ever advertised,
   // RFC 7323 §2.4) are clipped, as are bytes at or above a known FIN offset.
   // Bytes already held are kept (the first copy wins). A segment that would
-  // create range number max_ooo_ranges + 1 is dropped whole, and so is a
-  // segment whose new bytes need more chunks than the pool has free.
+  // create range number max_ooo_ranges + 1 is dropped whole. A segment whose
+  // new bytes need more chunks than the pool has free first prunes
+  // out-of-order ranges at or above its offset (InsertResult::pruned), so
+  // the segment that fills a hole is not dropped for memory the connection's
+  // own out-of-order data holds; if the chunks still do not fit, it is
+  // dropped whole.
   // Precondition (checked): limit <= right_edge().
   InsertResult insert(std::uint64_t off, std::span<const std::byte> data, std::uint64_t limit);
 
@@ -105,6 +117,11 @@ private:
   [[nodiscard]] std::uint64_t unheld_bytes(std::uint64_t lo, std::uint64_t hi) const;
   // Chunks the ring must take to store [lo, hi).
   [[nodiscard]] std::uint32_t chunks_needed(std::uint64_t lo, std::uint64_t hi) const;
+  // Whether the chunks for [lo, hi) are free in the pool.
+  [[nodiscard]] bool chunks_fit(std::uint64_t lo, std::uint64_t hi) const;
+  // Forgets the highest out-of-order range and returns its chunks; returns
+  // its length.
+  std::uint64_t prune_last_range();
 
   ChunkPool* pool_;
   ByteRing ring_;            // begin() is read_offset()

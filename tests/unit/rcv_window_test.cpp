@@ -159,6 +159,126 @@ TEST(RcvWindow, WindowBelowTheScaleUnitIsZero) {
   EXPECT_TRUE(x.rw.went_from_zero());
 }
 
+TEST(RcvWindow, MinimumBufferIsTwoScaleUnits) {
+  EXPECT_EQ(utcp::min_rcv_buf(0), 1u);
+  EXPECT_EQ(utcp::min_rcv_buf(7), 256u);
+  EXPECT_EQ(utcp::min_rcv_buf(10), 2048u);
+  EXPECT_EQ(utcp::min_rcv_buf(14), 32768u);
+  // The smallest buffer still opens its window after a full read: rfc the
+  // whole buffer, linux rcv_ssthresh (the SYN window 1460) rounded down.
+  struct Case {
+    TcpConfig cfg;
+    std::uint32_t window;
+  };
+  for (const Case& c : {Case{rfc_cfg(), 2048}, Case{linux_cfg(), 1024}}) {
+    Rx x(c.cfg, 2048, 10);
+    x.next(x.syn);
+    EXPECT_EQ(x.select().window, 0u);
+    x.read(x.syn);
+    EXPECT_TRUE(x.rw.update_after_read(x.rb, x.mss));
+    EXPECT_EQ(x.select().window, c.window);
+  }
+}
+
+TEST(RcvWindowDeathTest, BufferBelowTwoScaleUnitsAborts) {
+  // A 1000-byte buffer at shift 10 could only ever advertise 0.
+  RcvWindow rw(linux_cfg(), 1000, false);
+  EXPECT_DEATH(rw.on_established(10, 1460, rw.syn_window(1460)), "min_rcv_buf");
+  RcvWindow r2(rfc_cfg(), 32767, false);
+  EXPECT_DEATH(r2.on_established(14, 1460, r2.syn_window(1460)), "min_rcv_buf");
+}
+
+TEST(RcvWindow, WindowClosedByRoundingReopens) {
+  // rfc, 3000 bytes, shift 10: 2000 bytes arrive into the SYN window (edge
+  // 3000), leaving 1000 < 1024 below rcv_adv. After the read the new window
+  // 2048 moves the edge by only 1048 < 1460 above rcv_adv; keeping the edge
+  // would advertise 0 for good. The window 2048 is not small: it is used.
+  Rx r(rfc_cfg(), 3000, 10);
+  ASSERT_EQ(r.rw.rcv_adv(), 3000u);
+  r.next(2000);
+  EXPECT_EQ(r.select().window, 0u);
+  r.read(2000);
+  EXPECT_TRUE(r.rw.update_after_read(r.rb, r.mss));
+  SelectedWindow w = r.select();
+  EXPECT_EQ(w.window, 2048u);
+  EXPECT_EQ(r.rw.rcv_adv(), 4048u);
+  EXPECT_TRUE(r.rw.went_from_zero());
+
+  // linux, 2500 bytes, shift 10: rcv_ssthresh starts at the SYN window 1460
+  // and cannot grow while the window is closed. After a full read the
+  // window is 1024, below the SWS step min(1250, 1460); nothing more can be
+  // read, so it is advertised.
+  Rx l(linux_cfg(), 2500, 10);
+  ASSERT_EQ(l.syn, 1460);
+  l.next(1460);
+  EXPECT_EQ(l.select().window, 0u);
+  l.read(1000);  // 1040 still unread: wait for the reader
+  EXPECT_FALSE(l.rw.update_after_read(l.rb, l.mss));
+  EXPECT_EQ(l.select().window, 0u);
+  l.read(460);
+  EXPECT_TRUE(l.rw.update_after_read(l.rb, l.mss));
+  w = l.select();
+  EXPECT_EQ(w.window, 1024u);
+  EXPECT_EQ(l.rw.rcv_adv(), 1460u + 1024);
+}
+
+TEST(RcvWindow, LinuxUpdateAfterReadComparesWithTheWindowLastAdvertised) {
+  // tcp_cleanup_rbuf: ACK if the new window is at least twice
+  // tcp_receive_window() = rcv_wup + rcv_wnd - rcv_nxt, the window the peer
+  // was last told. Rounding down leaves that below rcv_adv - RCV.NXT.
+  Rx x(linux_cfg(), 65536, 10);
+  ASSERT_EQ(x.rw.rcv_adv(), 64240u);
+  for (int i = 0; i < 30; ++i) {  // a paused reader; an ACK every 2 segments
+    x.next(1050);
+    if (i % 2 == 1) {
+      x.select();  // keeps the edge at rcv_adv
+    }
+  }
+  ASSERT_EQ(x.rb.contiguous_end(), 31500u);
+  ASSERT_EQ(x.rw.rcv_adv(), 64240u);
+  ASSERT_EQ(x.rw.last_window(), 31744u);  // 64240 - 31500 = 32740 rounded down
+  ASSERT_EQ(x.rw.rcv_ssthresh(), 64486u);
+  x.read(31500);
+  // The new window, 64486 rounded down to 63488, is twice the 31744 last
+  // advertised, but not twice the 32740 below rcv_adv.
+  EXPECT_TRUE(x.rw.update_after_read(x.rb, x.mss));
+  EXPECT_EQ(x.select().window, 63488u);
+}
+
+TEST(RcvWindow, AckViewFollowsLinuxSelectWindow) {
+  // A paused reader on a 65536-byte buffer (shift 7, linux): the window the
+  // free space allows falls below the one last advertised.
+  Rx x(linux_cfg(), 65536, 7);
+  utcp::RcvWindowView v = x.rw.ack_view(x.rb, x.mss);
+  EXPECT_FALSE(v.unread);
+  // min(65536, 64240) rounds down to 64128, as does the unscaled SYN window.
+  EXPECT_TRUE(v.not_shrinking);
+  EXPECT_FALSE(v.low_space);
+  for (int i = 0; i < 10; ++i) {
+    x.next(1460);
+  }
+  const SelectedWindow w = x.select();  // keeps the edge: 49640 rounds to 49536
+  ASSERT_EQ(w.window, 49536u);
+  v = x.rw.ack_view(x.rb, x.mss);
+  EXPECT_TRUE(v.unread);
+  EXPECT_TRUE(v.not_shrinking);  // free 50936 rounds to 50816 >= 49536
+  EXPECT_FALSE(v.low_space);
+  x.next(1460);
+  x.next(1460);
+  v = x.rw.ack_view(x.rb, x.mss);
+  EXPECT_FALSE(v.not_shrinking);  // free 48016 rounds to 48000 < 49536
+  EXPECT_FALSE(v.low_space);
+  for (int i = 0; i < 12; ++i) {
+    x.next(1460);
+  }
+  v = x.rw.ack_view(x.rb, x.mss);  // free 30496 < 32768
+  EXPECT_TRUE(v.low_space);
+  x.read(static_cast<std::size_t>(x.rb.readable()));
+  v = x.rw.ack_view(x.rb, x.mss);
+  EXPECT_FALSE(v.unread);
+  EXPECT_FALSE(v.low_space);
+}
+
 TEST(RcvWindow, ReceiverSwsHoldsTheEdgeUntilItCanMoveByOneMss) {
   // RFC 9293 §3.8.6.2.2 with Fr = 1/2: the step is min(rcv_buf / 2, MSS).
   Rx x(rfc_cfg(), 65535, 0);
@@ -412,6 +532,8 @@ struct PropertyCounts {
   int zero = 0;           // zero windows
   int stored_checks = 0;  // segments checked against rcv_adv
   int grows = 0;          // autotuning grew the buffer
+  int drained = 0;        // windows chosen with nothing left to read
+  int reopened = 0;       // windows that reopened one closed by rounding
 };
 
 struct PropertyCase {
@@ -456,10 +578,25 @@ void property_run(const PropertyCase& pc, std::uint32_t seed, int steps, Propert
     ASSERT_LE(rw.rcv_adv(), rb.right_edge());
     count.zero += w.window == 0 ? 1 : 0;
     count.held += edge <= adv_before ? 1 : 0;
+    if (rb.readable() == 0) {
+      // A drained buffer always offers a window (2^s <= rcv_buf / 2).
+      ASSERT_GT(w.window, 0u);
+      ++count.drained;
+    }
     if (edge > adv_before) {
       ++count.advances;
-      // Receiver SWS: no update smaller than min(rcv_buf / 2, rcv_mss).
-      ASSERT_GE(edge - adv_before, std::min<std::uint64_t>(rb.capacity() / 2, mss));
+      // Receiver SWS: no update smaller than min(rcv_buf / 2, rcv_mss). When
+      // the edge kept at rcv_adv would give a zero window, the window itself
+      // must be that large, unless nothing is left to read.
+      const std::uint64_t sws = std::min<std::uint64_t>(rb.capacity() / 2, mss);
+      const std::uint64_t kept = std::min((adv_before - rcv_nxt) / unit * unit,
+                                          std::uint64_t{65535} << pc.wscale);
+      if (kept == 0 && edge - adv_before < sws) {
+        ASSERT_TRUE(w.window >= sws || rb.readable() == 0);
+        ++count.reopened;
+      } else {
+        ASSERT_GE(edge - adv_before, sws);
+      }
       if (pc.linux_profile) {
         ASSERT_LE(w.window, rw.rcv_ssthresh());
       }
@@ -527,9 +664,13 @@ void property_run(const PropertyCase& pc, std::uint32_t seed, int steps, Propert
 }
 
 TEST(RcvWindow, PropertyEveryWindowFollowsTheRules) {
+  int reopened = 0;
   for (const int s : {0, 7, 10, 14}) {
     for (const bool linux_profile : {false, true}) {
       for (const std::uint32_t rcv_buf : {3000u, 65535u, 131072u, 1u << 20}) {
+        if (rcv_buf < utcp::min_rcv_buf(static_cast<std::uint8_t>(s))) {
+          continue;  // on_established's precondition (BufferBelowTwoScaleUnitsAborts)
+        }
         for (const bool autotune : {false, true}) {
           SCOPED_TRACE(::testing::Message() << "wscale " << s << " linux " << linux_profile
                                             << " rcv_buf " << rcv_buf << " autotune " << autotune);
@@ -546,6 +687,8 @@ TEST(RcvWindow, PropertyEveryWindowFollowsTheRules) {
             EXPECT_GT(n.held, 100);
             EXPECT_GT(n.stored_checks, 1000);
           }
+          EXPECT_GT(n.drained, 10);
+          reopened += n.reopened;
           if (rcv_buf <= 131072 && !autotune) {
             EXPECT_GT(n.zero, 0);
           }
@@ -556,6 +699,9 @@ TEST(RcvWindow, PropertyEveryWindowFollowsTheRules) {
       }
     }
   }
+  // Some windows closed by rounding were reopened by the drained-buffer or
+  // large-window rule.
+  EXPECT_GT(reopened, 0);
 }
 
 }  // namespace
