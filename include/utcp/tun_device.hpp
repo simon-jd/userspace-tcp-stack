@@ -27,6 +27,9 @@ public:
   ~TunDevice();
 
   [[nodiscard]] int fd() const noexcept { return fd_; }
+  // Gives up the file descriptor: the caller closes it. The device object is
+  // left without one (fd() == -1).
+  [[nodiscard]] int release() noexcept { return std::exchange(fd_, -1); }
   // Name the kernel assigned.
   [[nodiscard]] const std::string& name() const noexcept { return name_; }
 

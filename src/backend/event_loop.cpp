@@ -33,6 +33,25 @@ std::uint64_t pack(int fd, std::uint32_t gen) {
 int fd_of(std::uint64_t data) { return static_cast<int>(static_cast<std::uint32_t>(data)); }
 std::uint32_t gen_of(std::uint64_t data) { return static_cast<std::uint32_t>(data >> 32); }
 
+timespec to_timespec(std::int64_t ns) {
+  timespec ts{};
+  ts.tv_sec = static_cast<time_t>(ns / ns_per_s);
+  ts.tv_nsec = static_cast<long>(ns % ns_per_s);
+  return ts;
+}
+
+// epoll_pwait2 into events[max_events]; EINTR counts as "nothing ready".
+int wait(int epfd, epoll_event* events, const timespec* timeout) {
+  const int n = epoll_pwait2(epfd, events, max_events, timeout, nullptr);
+  if (n < 0) {
+    if (errno != EINTR) {
+      die("epoll_pwait2");
+    }
+    return 0;
+  }
+  return n;
+}
+
 }  // namespace
 
 void LatenessHistogram::record(Duration lateness) noexcept {
@@ -49,7 +68,14 @@ Duration LatenessHistogram::percentile(double q) const noexcept {
     return Duration{0};
   }
   q = std::clamp(q, 0.0, 1.0);
-  auto rank = static_cast<std::uint64_t>(std::ceil(q * static_cast<double>(count)));
+  const double x = q * static_cast<double>(count);
+  auto rank = static_cast<std::uint64_t>(std::ceil(x));
+  // q * count can land just above an integer that the exact product equals
+  // (0.07 * 100 is 7.000000000000001 in binary floating point); take that
+  // integer, not the next rank.
+  if (rank > 1 && static_cast<double>(rank - 1) >= x - x * 1e-12) {
+    --rank;
+  }
   rank = std::clamp<std::uint64_t>(rank, 1, count);
   std::uint64_t seen = 0;
   for (std::size_t i = 0; i < bucket_count; ++i) {
@@ -71,7 +97,8 @@ Time mono_now() noexcept {
 
 EventLoop::EventLoop() : EventLoop(EventLoopOptions{}) {}
 
-EventLoop::EventLoop(const EventLoopOptions& options) {
+EventLoop::EventLoop(const EventLoopOptions& options)
+    : spin_(std::chrono::microseconds{options.spin_us}) {
   epfd_ = epoll_create1(EPOLL_CLOEXEC);
   if (epfd_ < 0) {
     die("epoll_create1");
@@ -175,31 +202,47 @@ void EventLoop::run_once() {
   const Time deadline = deadline_source_ ? deadline_source_() : Time::never();
 
   // §8.2: timeout = deadline - now as a timespec, zero if past, NULL if never.
-  timespec ts{};
-  timespec* timeout = nullptr;
+  // §8.3 --spin-us: sleep only until spin_ before the deadline, then
+  // busy-poll with zero timeouts until the deadline or a ready fd.
+  epoll_event events[max_events];
+  int n = 0;
   if (deadline.is_never()) {
     ++stats_.blocking_waits;
     stats_.last_timeout_ns = -1;
+    n = wait(epfd_, events, nullptr);
   } else {
+    const timespec zero{};
     const std::int64_t left = (deadline - mono_now()).count();
     if (left <= 0) {
       ++stats_.zero_timeouts;
       stats_.last_timeout_ns = 0;
-    } else {
-      ts.tv_sec = static_cast<time_t>(left / ns_per_s);
-      ts.tv_nsec = static_cast<long>(left % ns_per_s);
+      n = wait(epfd_, events, &zero);
+    } else if (spin_ <= Duration::zero()) {
       stats_.last_timeout_ns = left;
+      const timespec ts = to_timespec(left);
+      n = wait(epfd_, events, &ts);
+    } else {
+      const std::int64_t sleep = left - spin_.count();
+      stats_.last_timeout_ns = std::max<std::int64_t>(sleep, 0);
+      if (sleep > 0) {
+        const timespec ts = to_timespec(sleep);
+        n = wait(epfd_, events, &ts);
+      }
+      // Spin only inside the window: a wait that ended early without ready
+      // fds (EINTR) leaves this iteration without spinning.
+      const Time start = mono_now();
+      if (n == 0 && start < deadline && deadline - start <= spin_) {
+        ++stats_.spin_waits;
+        stats_.spin_lead_max = std::max(stats_.spin_lead_max, deadline - start);
+        Time t = start;
+        do {
+          ++stats_.spin_polls;
+          n = wait(epfd_, events, &zero);
+          t = mono_now();
+        } while (n == 0 && t < deadline);
+        stats_.spin_time += t - start;
+      }
     }
-    timeout = &ts;
-  }
-
-  epoll_event events[max_events];
-  int n = epoll_pwait2(epfd_, events, max_events, timeout, nullptr);
-  if (n < 0) {
-    if (errno != EINTR) {
-      die("epoll_pwait2");
-    }
-    n = 0;
   }
   if (n > 0) {
     ++stats_.io_wakeups;

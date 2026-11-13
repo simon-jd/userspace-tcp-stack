@@ -10,6 +10,11 @@
 //    readable signalfd stops the loop (stop_signal() tells which signal);
 // 4. if mono_now() >= deadline, record the lateness (now - deadline) and call
 //    the deadline handler with that time.
+// With EventLoopOptions::spin_us = N > 0 (--spin-us, §8.3), step 2 sleeps only
+// until N us before the deadline and then busy-polls (epoll_pwait2 with a
+// zero timeout) until the deadline or the first ready fd. A wait that starts
+// inside the last N us spins from its start; an earlier wake-up without ready
+// fds (EINTR) ends the iteration without spinning.
 // UtcpTransport builds the stack iteration of §8.2 on this (advance, read up
 // to 64 datagrams, deliver events, drain pop_transmit).
 #pragma once
@@ -36,6 +41,9 @@ struct EventLoopOptions {
   // ends run(). Empty: no signalfd.
   std::vector<int> stop_signals{SIGINT, SIGTERM};
   std::uint64_t timer_slack_ns = 1000;  // prctl(PR_SET_TIMERSLACK); 0 leaves it unchanged
+  // --spin-us (§8.3): busy-poll the last spin_us microseconds before a
+  // deadline instead of sleeping through them. 0 (the default): never spin.
+  std::uint32_t spin_us = 0;
 };
 
 // Wake-up lateness (§8.3) in log2 buckets: bucket 0 counts 0 ns, bucket i
@@ -60,10 +68,17 @@ struct LoopStats {
   std::uint64_t deadline_calls = 0;    // deadline handler calls
   std::uint64_t zero_timeouts = 0;     // waits whose deadline had already passed
   std::uint64_t blocking_waits = 0;    // waits without a deadline
-  std::int64_t last_timeout_ns = -1;   // timeout of the last wait; -1 = none (blocking)
-  // now - deadline at each deadline handler call (§8.3). m1-backend adds
-  // --spin-us and the lateness measurement runs.
+  // Timeout of the last iteration's first wait; -1 = none (blocking). With
+  // spin_us, the sleep before the spin (deadline - spin_us - now, or 0).
+  std::int64_t last_timeout_ns = -1;
+  // now - deadline at each deadline handler call (§8.3).
   LatenessHistogram lateness;
+  // --spin-us (§8.3). spin_time is the wall time spent busy-polling, which is
+  // also its CPU cost (less if the thread was preempted while spinning).
+  std::uint64_t spin_waits = 0;  // iterations that busy-polled
+  std::uint64_t spin_polls = 0;  // zero-timeout epoll_pwait2 calls while busy-polling
+  Duration spin_time{};          // total time spent busy-polling
+  Duration spin_lead_max{};      // largest deadline - (start of a busy-poll); <= spin_us
 };
 
 class EventLoop {
@@ -123,6 +138,7 @@ private:
   };
   std::vector<Watch> watches_;
   std::uint32_t next_gen_ = 1;  // 0 is the signalfd's
+  Duration spin_{};  // EventLoopOptions::spin_us
   DeadlineSource deadline_source_;
   DeadlineHandler deadline_handler_;
   bool stopped_ = false;
