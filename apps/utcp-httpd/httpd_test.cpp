@@ -35,9 +35,18 @@ public:
     for (char& c : big_) c = static_cast<char>(rng());
     write("big.bin", big_);
     // Outside the root: what an escaping path would reach.
-    std::ofstream(testing::TempDir() + "/httpd_test_secret.txt") << "secret";
+    const std::string secret = testing::TempDir() + "/httpd_test_secret.txt";
+    std::ofstream(secret) << "secret";
+    // Symbolic links: two leave the root (relative and absolute), one leads to
+    // its parent directory, two stay inside.
+    link("../httpd_test_secret.txt", "out_rel.txt");
+    link(secret.c_str(), "out_abs.txt");
+    link("..", "out_dir");
+    link("a.txt", "in.txt");
+    link("../a.txt", "sub/up.txt");
   }
   ~Root() {
+    for (const char* f : links_) ::unlink((dir_ + "/" + f).c_str());
     for (const char* f : {"a.txt", "empty.txt", "sub/index.html", "big.bin"}) ::unlink((dir_ + "/" + f).c_str());
     ::rmdir((dir_ + "/sub").c_str());
     ::rmdir((dir_ + "/noindex").c_str());
@@ -49,7 +58,14 @@ public:
 
 private:
   void write(const char* name, const std::string& data) { std::ofstream(dir_ + "/" + name, std::ios::binary) << data; }
+  void link(const char* to, const char* name) {
+    const std::string path = dir_ + "/" + name;
+    ::unlink(path.c_str());  // left over from an interrupted run
+    EXPECT_EQ(::symlink(to, path.c_str()), 0) << name;
+    links_.push_back(name);
+  }
   std::string dir_, big_;
+  std::vector<const char*> links_;
 };
 
 // One client connection: sends `request` (in pieces of `piece` bytes),
@@ -238,6 +254,33 @@ TEST(HttpdErrors, EscapingPathsAre400) {
     EXPECT_EQ(r.responses[0].status, 400) << p;
     EXPECT_EQ(r.responses[0].body.find("secret"), std::string::npos) << p;
   }
+}
+
+TEST(HttpdErrors, SymlinksOutOfTheRootAre404) {
+  Root root;
+  for (const char* p : {"/out_rel.txt", "/out_abs.txt", "/out_dir/httpd_test_secret.txt"}) {
+    const Outcome r = talk(root, std::string("GET ") + p + " HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    ASSERT_EQ(r.responses.size(), 1u) << p;
+    EXPECT_EQ(r.responses[0].status, 404) << p;
+    EXPECT_EQ(r.responses[0].body.find("secret"), std::string::npos) << p;
+  }
+  // Links that stay below the root are followed.
+  for (const char* p : {"/in.txt", "/sub/up.txt"}) {
+    const Outcome r = talk(root, std::string("GET ") + p + " HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    ASSERT_EQ(r.responses.size(), 1u) << p;
+    EXPECT_EQ(r.responses[0].status, 200) << p;
+    EXPECT_EQ(r.responses[0].body, "hello\n") << p;
+  }
+}
+
+TEST(HttpdErrors, MissingRootFailsTheStart) {
+  FakeTransport t;
+  Options o;
+  o.root = testing::TempDir() + "/httpd_test_no_such_root";
+  HttpServer server(t, o);
+  const auto r = server.start();
+  ASSERT_FALSE(r);
+  EXPECT_NE(r.error().find("--root"), std::string::npos) << r.error();
 }
 
 TEST(HttpdErrors, StatusCodes) {

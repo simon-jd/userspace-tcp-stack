@@ -178,6 +178,25 @@ TEST(HttpGetFetch, ContentLengthDoesNotNeedTheClose) {
   EXPECT_EQ(g.body, "hello");
 }
 
+TEST(HttpGetFetch, BytesAfterTheBodyAreNotPartOfIt) {
+  // Connection: close was requested, so whatever follows the framed body is
+  // not ours (RFC 9112 §6.3, §9.6): it must not reach the body or its hash.
+  const std::string length = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloEXTRA";
+  const std::string chunked =
+      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\nEXTRA";
+  for (const std::string* resp : {&length, &chunked}) {
+    for (const std::size_t piece : {std::size_t{1}, std::size_t{3}, std::size_t{1} << 20}) {
+      for (const bool close_after : {true, false}) {
+        const Got g = fetch(options("http://10.0.0.1/x"), *resp, piece, close_after);
+        EXPECT_TRUE(g.result.ok) << g.result.error;
+        EXPECT_EQ(g.body, "hello") << piece;
+        EXPECT_EQ(g.result.body_bytes, 5u) << piece;
+        EXPECT_EQ(g.result.sha256, sha256_hex(std::string_view("hello"))) << piece;
+      }
+    }
+  }
+}
+
 TEST(HttpGetFetch, ChunkedWithExtensionsAndTrailersOneByteAtATime) {
   const std::string resp =
       "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-A\r\n\r\n"

@@ -8,6 +8,9 @@
 #     busy, rwnd- and sndbuf-limited times.
 #  7. --recv-pause 200:1048576, 100 MB: SHA-256 equal; the sender's samples
 #     show rwnd_limited > 0.
+# Extra: for 55, 119 and 1000055 bytes (55 mod 64, the SHA-256 padding
+# boundary) both digests equal Python's hashlib.sha256 of the pattern rebuilt
+# in Python, so our SHA-256 and pattern are checked against independent code.
 # Usage: tests/interop/apps_kernel_bulk.sh   (see apps_kernel_common.sh)
 source "$(dirname "${BASH_SOURCE[0]}")/apps_kernel_common.sh"
 build_apps
@@ -45,6 +48,20 @@ print("%s %s: %d samples, median interval %.3f ms, max gap %.3f ms, last rwnd_li
          "" if not errs else " -- " + "; ".join(errs)))
 sys.exit(1 if errs else 0)
 PY
+cat > /tmp/pattern_sha.py <<"PY"
+# SHA-256 of the utcp-bulk pattern (bulk.hpp pattern_fill): byte o is byte o % 8,
+# little-endian, of splitmix64(seed + (o / 8) * golden).
+import hashlib, struct, sys
+n, seed = int(sys.argv[1]), int(sys.argv[2])
+M = (1 << 64) - 1
+def splitmix64(z):
+    z = ((z ^ (z >> 30)) * 0xbf58476d1ce4e5b9) & M
+    z = ((z ^ (z >> 27)) * 0x94d049bb133111eb) & M
+    return z ^ (z >> 31)
+data = b"".join(struct.pack("<Q", splitmix64((seed + i * 0x9e3779b97f4a7c15) & M))
+                for i in range((n + 7) // 8))[:n]
+print(hashlib.sha256(data).hexdigest())
+PY
 cd /tmp
 sha() { python3 -c "import json,sys; print(json.loads(sys.argv[1])[\"sha256\"])" "$1"; }
 field() { python3 -c "import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])" "$1" "$2"; }
@@ -81,4 +98,16 @@ echo "-- test 1: 1 GB, listener sends"
 xfer t1-down send recv 1000000000
 echo "-- test 7: 100 MB, receiver pauses 200 ms every 1 MiB"
 xfer t7-pause recv send 100000000 "--recv-pause 200:1048576"
+echo "-- SHA-256 and pattern against hashlib"
+for n in 55 119 1000055; do
+  $B/apps/utcp-bulk/utcp-bulk --backend kernel --listen 5001 --bytes $n --sample-ms 0 > h.l.out 2> h.l.err &
+  lpid=$!
+  wait_port 5001 || { fail "hashlib $n" "listener did not start"; kill $lpid; continue; }
+  $B/apps/utcp-bulk/utcp-bulk --backend kernel --connect 127.0.0.1:5001 --send --bytes $n --sample-ms 0 > h.c.out 2> h.c.err
+  crc=$?; wait $lpid; lrc=$?
+  want=$(python3 /tmp/pattern_sha.py $n 1)
+  ls=$(sha "$(cat h.l.out)"); cs=$(sha "$(cat h.c.out)")
+  if [[ $crc == 0 && $lrc == 0 && $ls == "$want" && $cs == "$want" ]]; then pass "hashlib $n bytes: $want"
+  else fail "hashlib $n" "exit $lrc/$crc, receiver $ls, sender $cs, hashlib $want: $(cat h.l.err h.c.err)"; fi
+done
 ' | summarize

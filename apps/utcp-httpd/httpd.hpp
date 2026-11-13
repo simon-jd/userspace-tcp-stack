@@ -9,7 +9,8 @@
 // Status codes: 200; 400 (malformed request, a missing Host in HTTP/1.1, a
 // path that escapes the root after decoding and dot-segment removal); 403
 // (not readable); 404 (missing, a directory without index.html, not a
-// regular file); 405 (other methods, with Allow); 414 (request line longer
+// regular file, or reached through a symbolic link that leads out of the
+// root: files are opened with openat2 RESOLVE_BENEATH below the root); 405 (other methods, with Allow); 414 (request line longer
 // than the limit); 431 (header section too large); 501 (unknown transfer
 // coding); 505 (HTTP major version other than 1). After a 400, 414, 431, 501
 // or 505 the connection is closed.
@@ -56,6 +57,7 @@ public:
   HttpServer(const HttpServer&) = delete;
   HttpServer& operator=(const HttpServer&) = delete;
 
+  // Opens --root and listens.
   [[nodiscard]] std::expected<void, std::string> start();
   [[nodiscard]] bool owns(ConnId id) const { return id == listener_ || conns_.contains(id); }
   [[nodiscard]] const Stats& stats() const { return stats_; }
@@ -100,10 +102,15 @@ private:
   void drop(ConnId id);
   void sweep_idle();
   void count_status(int status);
+  // Opens `rel` (relative to the root) read-only without leaving the root;
+  // -1 with errno set on failure (EXDEV: it would leave the root).
+  int open_beneath(const std::string& rel) const;
 
   Transport& t_;
   Options o_;
   ConnId listener_ = no_conn;
+  int root_fd_ = -1;              // O_PATH descriptor of --root
+  std::string root_real_;         // realpath of --root (the fallback without openat2)
   std::map<ConnId, Conn> conns_;
   std::vector<char> buf_;
   TimerToken idle_timer_ = 0;

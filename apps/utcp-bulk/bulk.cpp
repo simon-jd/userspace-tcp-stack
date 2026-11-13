@@ -205,7 +205,10 @@ void BulkApp::begin(ConnId /*conn*/) {
 bool BulkApp::yield(bool sending) {
   // A send or receive loop that never meets would_block (loopback) would keep
   // the event loop from running timers; after a slice it continues from a
-  // zero-delay timer instead.
+  // zero-delay timer instead. Until that timer fires, pump() or drain() called
+  // from an I/O callback returns at once, so the callbacks of the iteration
+  // in which the timer is due stay short (they delay it, and the loop's
+  // lateness figure includes them).
   if (t_.now() - slice_start_ < slice) {
     return false;
   }
@@ -226,7 +229,7 @@ bool BulkApp::yield(bool sending) {
 }
 
 void BulkApp::pump() {
-  if (done_ || !o_.sender || sending_done_ || conn_ == no_conn) {
+  if (done_ || !o_.sender || sending_done_ || conn_ == no_conn || pump_scheduled_) {
     return;
   }
   slice_start_ = t_.now();
@@ -267,7 +270,7 @@ void BulkApp::pump() {
 }
 
 void BulkApp::drain() {
-  if (done_ || conn_ == no_conn) {
+  if (done_ || conn_ == no_conn || drain_scheduled_) {
     return;
   }
   slice_start_ = t_.now();
@@ -288,11 +291,9 @@ void BulkApp::drain() {
     }
     if (*r == 0) {
       // End of stream.
+      result_.duration = t_.now() - start_;
       if (!o_.sender) {
-        result_.duration = t_.now() - start_;
         t_.shutdown_write(conn_);
-      } else {
-        result_.duration = t_.now() - start_;
       }
       finish();
       return;
@@ -364,8 +365,11 @@ void BulkApp::finish() {
   if (done_) {
     return;
   }
-  if (o_.sender && offset_ == 0 && o_.bytes && *o_.bytes > 0) {
-    fail("the receiver closed before any data was sent");
+  if (o_.sender && !sending_done_) {
+    // The receiver's FIN came before ours: the transfer is incomplete.
+    fail("the receiver closed after " + std::to_string(offset_) + " of " +
+         (o_.bytes ? std::to_string(*o_.bytes) + " bytes" : std::string("--duration")) +
+         " were sent");
     return;
   }
   take_sample();
@@ -447,7 +451,11 @@ JsonLine BulkApp::summary() const {
         .add("lateness_p50_ns", h.percentile(0.50).count())
         .add("lateness_p99_ns", h.percentile(0.99).count())
         .add("lateness_p999_ns", h.percentile(0.999).count())
-        .add("lateness_max_ns", h.max.count());
+        .add("lateness_max_ns", h.max.count())
+        .add("lateness_note",
+             "now - deadline when the loop runs its timers; includes this program's send/receive "
+             "work in the same iteration (up to a " + std::to_string(to_us(slice)) +
+                 " us slice plus one chunk)");
   }
   return line;
 }

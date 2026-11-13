@@ -2,7 +2,8 @@
 # m1-apps acceptance test 2 (utcp-httpd --backend kernel, curl as the client,
 # over loopback in one container on CPUs 16-31): a 100 MB random file, a
 # 1-byte file and an empty file downloaded with sha256sum equal; HEAD; 404;
-# paths escaping the root rejected (curl --path-as-is, also percent-encoded);
+# paths escaping the root rejected (curl --path-as-is, also percent-encoded),
+# and symbolic links out of the root answered 404 while one inside is served;
 # `curl URL1 URL2` reuses one connection; 405, 414 and 505 as extras.
 # Usage: tests/interop/apps_kernel_httpd.sh   (see apps_kernel_common.sh)
 source "$(dirname "${BASH_SOURCE[0]}")/apps_kernel_common.sh"
@@ -15,6 +16,9 @@ printf x > /tmp/www/one.txt
 : > /tmp/www/empty.txt
 echo "<p>index</p>" > /tmp/www/sub/index.html
 echo secret > /tmp/secret.txt
+ln -s ../secret.txt /tmp/www/out_rel.txt
+ln -s /tmp/secret.txt /tmp/www/out_abs.txt
+ln -s one.txt /tmp/www/in.txt
 $B/apps/utcp-httpd/utcp-httpd --backend kernel --listen 8080 --root /tmp/www --log > /tmp/httpd.out 2> /tmp/httpd.err &
 hpid=$!
 wait_port 8080 || fail start "utcp-httpd did not listen"
@@ -43,6 +47,14 @@ for p in "/../secret.txt" "/sub/../../secret.txt" "/%2e%2e/secret.txt" "/sub/%2E
   if [[ $code == 400 ]] && ! grep -q secret got; then pass "escaping path $p rejected (400)"
   else fail "escaping path $p" "status $code, body $(head -c 40 got)"; fi
 done
+for p in /out_rel.txt /out_abs.txt; do
+  rm -f got
+  code=$(curl -s -o got -w "%{http_code}" "$u$p")
+  if [[ $code == 404 ]] && ! grep -q secret got; then pass "symlink out of the root $p rejected (404)"
+  else fail "symlink $p" "status $code, body $(head -c 40 got)"; fi
+done
+code=$(curl -s -o got -w "%{http_code}" $u/in.txt)
+[[ $code == 200 && $(cat got) == x ]] && pass "symlink inside the root served" || fail "symlink inside" "status $code"
 
 out=$(curl -s -o /dev/null -o /dev/null -w "%{num_connects}\n" $u/one.txt $u/empty.txt | tr "\n" " ")
 [[ $out == "1 0 " ]] && pass "two URLs on one connection (num_connects $out)" || fail "connection reuse" "num_connects $out"

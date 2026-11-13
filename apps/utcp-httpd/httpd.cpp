@@ -1,12 +1,17 @@
 #include "utcp-httpd/httpd.hpp"
 
 #include <fcntl.h>
+#include <linux/openat2.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 
 #include "common/kernel_transport.hpp"
@@ -23,6 +28,9 @@ constexpr std::size_t read_chunk = 16 * 1024;
 HttpServer::HttpServer(Transport& t, const Options& o) : t_(t), o_(o), buf_(read_chunk) {}
 
 HttpServer::~HttpServer() {
+  if (root_fd_ >= 0) {
+    ::close(root_fd_);
+  }
   for (auto& [id, c] : conns_) {
     if (c.file_fd >= 0) {
       ::close(c.file_fd);
@@ -31,6 +39,17 @@ HttpServer::~HttpServer() {
 }
 
 std::expected<void, std::string> HttpServer::start() {
+  if (root_fd_ < 0) {
+    root_fd_ = ::open(o_.root.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
+    if (root_fd_ < 0) {
+      return std::unexpected("--root " + o_.root + ": " + std::strerror(errno));
+    }
+    char real[PATH_MAX];
+    if (::realpath(o_.root.c_str(), real) == nullptr) {
+      return std::unexpected("--root " + o_.root + ": " + std::strerror(errno));
+    }
+    root_real_ = real;
+  }
   auto l = t_.listen(o_.local, o_.backlog, o_.sock);
   if (!l) {
     return std::unexpected("listen on " + to_string(o_.local) + ": " + describe(l.error()));
@@ -317,11 +336,11 @@ void HttpServer::answer(Conn& c, const HttpRequestHead& r) {
     respond_error(c, status, r.minor, head, keep);
     return;
   }
-  std::string file = o_.root + *path;
-  if (file.ends_with('/')) {
+  std::string file = path->substr(1);  // relative to the root
+  if (file.empty() || file.ends_with('/')) {
     file += "index.html";
   }
-  const int fd = ::open(file.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
+  const int fd = open_beneath(file);
   struct stat st{};
   if (fd < 0 || ::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
     const int err = errno;
@@ -343,6 +362,35 @@ void HttpServer::answer(Conn& c, const HttpRequestHead& r) {
     c.file_off = 0;
     c.file_left = size;
   }
+}
+
+int HttpServer::open_beneath(const std::string& rel) const {
+  constexpr int flags = O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK;
+  // Symbolic links are followed only while they stay below the root
+  // (openat2(2) RESOLVE_BENEATH, Linux 5.6); request_path has already
+  // rejected ".." segments that would leave it.
+  open_how how{};
+  how.flags = flags;
+  how.resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS;
+  const long fd = ::syscall(SYS_openat2, root_fd_, rel.c_str(), &how, sizeof how);
+  if (fd >= 0 || (errno != ENOSYS && errno != EPERM)) {
+    return static_cast<int>(fd);
+  }
+  // No openat2 (an old kernel or a seccomp filter): open, then check that the
+  // resolved path lies below the root.
+  const int f = ::openat(root_fd_, rel.c_str(), flags);
+  if (f < 0) {
+    return -1;
+  }
+  char real[PATH_MAX];
+  const std::string self = "/proc/self/fd/" + std::to_string(f);
+  if (::realpath(self.c_str(), real) == nullptr ||
+      !std::string_view(real).starts_with(root_real_ == "/" ? root_real_ : root_real_ + "/")) {
+    ::close(f);
+    errno = EXDEV;
+    return -1;
+  }
+  return f;
 }
 
 void HttpServer::respond(Conn& c, int status, int minor, bool head_only, bool keep_alive,

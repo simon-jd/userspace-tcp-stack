@@ -340,10 +340,14 @@ std::expected<std::size_t, Error> KernelTransport::recv(ConnId id, std::span<std
 
 void KernelTransport::shutdown_write(ConnId id) {
   Sock* s = find(id, Kind::tcp);
-  if (s == nullptr || s->fin_sent || s->error || s->connecting) {
+  if (s == nullptr || s->fin_sent || s->error) {
     return;
   }
   s->fin_sent = true;
+  if (s->connecting) {
+    s->shutdown_pending = true;  // on_io shuts down once the connect succeeds
+    return;
+  }
   // Wakes the socket: EPOLLHUP follows if the peer's FIN is already in.
   ::shutdown(s->fd, SHUT_WR);
 }
@@ -372,9 +376,17 @@ ConnSample KernelTransport::sample(ConnId id) {
   }
   std::array<char, 16> cc{};
   socklen_t cc_len = sizeof cc;
+  std::string_view cc_name;
   if (getsockopt(s->fd, IPPROTO_TCP, TCP_CONGESTION, cc.data(), &cc_len) == 0) {
-    out.set_cc_name(std::string_view(cc.data(), strnlen(cc.data(), cc_len)));
+    cc_name = std::string_view(cc.data(), strnlen(cc.data(), cc_len));
   }
+  return sample_from_tcp_info(ti, cc_name);
+}
+
+ConnSample sample_from_tcp_info(const tcp_info& ti, std::string_view cc) {
+  ConnSample out;
+  // Linux names NewReno (RFC 6582) "reno"; TcpInfo says "newreno" (stats.hpp).
+  out.set_cc_name(cc == "reno" ? std::string_view("newreno") : cc);
   // DESIGN §10.1, field by field.
   out.state = state_of(ti.tcpi_state);
   out.ca_state = ca_state_of(ti.tcpi_ca_state);
@@ -514,29 +526,73 @@ std::expected<Endpoint, Error> KernelTransport::remote_endpoint(ConnId id) const
 // --- Events.
 
 void KernelTransport::on_listener(ConnId id) {
-  // Edge-triggered: accept until EAGAIN.
+  // Edge-triggered: accept until EAGAIN. Whenever we stop before EAGAIN, the
+  // queued connections get no new edge, so a timer comes back for them.
   while (true) {
     Sock* l = find(id, Kind::listener);
-    if (l == nullptr || stopped_) {
+    if (l == nullptr) {
+      return;
+    }
+    if (stopped_) {
+      retry_accept(id, Duration::zero());  // runs at the next run()
       return;
     }
     const int fd = ::accept4(l->fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (fd < 0) {
-      if (errno == EINTR || errno == ECONNABORTED) {
-        continue;
+      const int err = errno;
+      switch (err) {
+        case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+        case EWOULDBLOCK:
+#endif
+          l->accept_failing = false;
+          return;
+        // accept(2) "Error handling": pending network errors of the new
+        // connection; retry like EAGAIN.
+        case EINTR:
+        case ECONNABORTED:
+        case ENETDOWN:
+        case EPROTO:
+        case ENOPROTOOPT:
+        case EHOSTDOWN:
+        case ENONET:
+        case EHOSTUNREACH:
+        case EOPNOTSUPP:
+        case ENETUNREACH:
+          continue;
+        default:
+          // EMFILE, ENFILE, ENOBUFS, ENOMEM: try again shortly; the
+          // connections stay queued (or the peer gives up).
+          if (!l->accept_failing) {
+            std::fprintf(stderr, "KernelTransport: accept4: %s (retrying every 10 ms)\n",
+                         std::strerror(err));
+            l->accept_failing = true;
+          }
+          retry_accept(id, std::chrono::milliseconds(10));
+          return;
       }
-      if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        // EMFILE and the like: report and retry at the next connection.
-        std::fprintf(stderr, "KernelTransport: accept4: %s\n", std::strerror(errno));
-      }
-      return;
     }
+    l->accept_failing = false;
     const ConnId c = add(Sock{.kind = Kind::tcp, .fd = fd, .opts = l->opts});
     watch(c, fd);
     if (handler_ != nullptr) {
       handler_->on_accept(id, c);
     }
   }
+}
+
+void KernelTransport::retry_accept(ConnId id, Duration delay) {
+  Sock* l = find(id, Kind::listener);
+  if (l == nullptr || l->accept_retry) {
+    return;
+  }
+  l->accept_retry = true;
+  add_oneshot(delay, [this, id] {
+    if (Sock* s = find(id, Kind::listener)) {
+      s->accept_retry = false;
+      on_listener(id);
+    }
+  });
 }
 
 void KernelTransport::on_io(ConnId id, std::uint32_t ev) {
@@ -566,6 +622,10 @@ void KernelTransport::on_io(ConnId id, std::uint32_t ev) {
       s->error = fail("connect", err);
       handler_->on_error(id, *s->error);
       return;
+    }
+    if (s->shutdown_pending) {
+      s->shutdown_pending = false;
+      ::shutdown(s->fd, SHUT_WR);
     }
     handler_->on_connected(id);
     s = find(id, Kind::tcp);

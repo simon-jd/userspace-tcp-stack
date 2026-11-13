@@ -12,11 +12,20 @@
 // are queued and delivered from an eventfd, so they never run inside the
 // call.
 //
-// sample() maps TCP_INFO by the table of DESIGN §10.1. Socket options:
-// nodelay -> TCP_NODELAY, snd_buf/rcv_buf -> SO_SNDBUF/SO_RCVBUF (only when
-// set: setting them turns off the kernel's autotuning), cc ->
-// TCP_CONGESTION ("reno" for newreno), mss_clamp -> TCP_MAXSEG. A listener
-// sets them before listen(), so accepted connections inherit them.
+// sample() maps TCP_INFO by the table of DESIGN §10.1 (sample_from_tcp_info
+// below) and reports the kernel's "reno" as "newreno", the name TcpInfo uses.
+// Socket options: nodelay -> TCP_NODELAY, snd_buf/rcv_buf ->
+// SO_SNDBUF/SO_RCVBUF (only when set: setting them turns off the kernel's
+// autotuning), cc -> TCP_CONGESTION ("reno" for newreno), mss_clamp ->
+// TCP_MAXSEG. A listener sets them before listen(), so accepted connections
+// inherit them.
+//
+// shutdown_write() during a connect is remembered and done once the connect
+// succeeds. A listener whose accept4 fails for lack of resources (EMFILE,
+// ENFILE, ENOBUFS, ENOMEM), or that is left with connections queued when
+// run() stops, accepts again from a timer (10 ms after a failure, at the next
+// run() after a stop): the edge-triggered listener gets no new edge for
+// connections already queued.
 //
 // The backend selection shared by the programs (--backend kernel|utcp and the
 // utcp backend's options) is at the end of this file.
@@ -37,6 +46,8 @@
 #include "common/cli.hpp"
 #include "common/transport.hpp"
 #include "utcp/event_loop.hpp"
+
+struct tcp_info;  // <linux/tcp.h>
 
 namespace utcp::app {
 
@@ -93,6 +104,9 @@ private:
     bool connecting = false;        // connect() in progress
     bool want_writable = false;     // a send was refused or short
     bool fin_sent = false;          // shutdown_write() was called
+    bool shutdown_pending = false;  // shutdown_write() during the connect: done when it completes
+    bool accept_retry = false;      // listener: a timer will call on_listener again
+    bool accept_failing = false;    // listener: accept4 failed (EMFILE, ...) and was reported
     bool closed_delivered = false;  // on_closed was delivered
     std::optional<Error> error{};   // the connection failed (from SO_ERROR or a call)
   };
@@ -118,6 +132,7 @@ private:
   void queue(Pending p);
   void on_io(ConnId id, std::uint32_t events);
   void on_listener(ConnId id);
+  void retry_accept(ConnId id, Duration delay);
   void on_pending();
   void on_deadline(Time now);
   [[nodiscard]] Time next_deadline() const;
@@ -136,6 +151,11 @@ private:
   std::uint64_t next_timer_seq_ = 0;
   std::string detail_;
 };
+
+// The TcpInfo fields of a TCP_INFO result, by the table of DESIGN §10.1:
+// times in us (rto, ato, rtt, ...) or ms (last_*) become Durations; cc_name is
+// `cc` with "reno" reported as "newreno". sample() uses it.
+[[nodiscard]] ConnSample sample_from_tcp_info(const ::tcp_info& ti, std::string_view cc);
 
 // Linux errno -> Error (the inverse of to_errno; unknown values give
 // invalid_state).

@@ -6,12 +6,20 @@
 // side and waits for the receiver's FIN. The receiver reads to the end of
 // stream, then sends its FIN and closes. The duration is measured from the
 // connection's establishment to the end of stream (receiver) or the
-// receiver's FIN (sender).
+// receiver's FIN (sender). A receiver FIN that arrives before the sender has
+// sent everything is an error (ok = false, exit status 1).
 //
 // Every --sample-ms a JSONL line has the connection's statistics (every
 // TcpInfo field, §10.1) and inflight = unacked - sacked - lost + retrans. The
 // summary line has bytes, duration, goodput, SHA-256, retransmissions, the
 // three limited times and the event loop's lateness percentiles.
+//
+// Lateness is what the EventLoop records (§8.3): now - deadline when it runs
+// the timers, after the I/O callbacks of the same iteration. Those callbacks
+// include this program's send and receive loops, so the figures contain its
+// own work: a loop runs for at most one slice (100 us) plus one --chunk call
+// before it yields to the event loop, and a loop that has yielded does not
+// run again from an I/O callback until its continuation timer fires.
 //
 // --recv-pause MS:BYTES stops reading for MS after every BYTES read, so the
 // sender sees a zero window.
@@ -110,9 +118,10 @@ private:
   bool sending_done_ = false;              // FIN queued (sender)
   bool stop_sending_ = false;              // --duration elapsed
   bool paused_ = false;
-  static constexpr Duration slice = std::chrono::milliseconds(1);
+  // Longest run of a send or receive loop before it yields (see the top).
+  static constexpr Duration slice = std::chrono::microseconds(100);
   Time slice_start_{};
-  bool pump_scheduled_ = false, drain_scheduled_ = false;
+  bool pump_scheduled_ = false, drain_scheduled_ = false;  // a continuation timer is armed
   std::uint64_t since_pause_ = 0;
   TimerToken sample_timer_ = 0;
   bool sample_timer_on_ = false;

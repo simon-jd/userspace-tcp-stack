@@ -240,6 +240,71 @@ TEST(BulkErrors, ResetDuringTransferFails) {
   EXPECT_NE(send.result().error.find("connection_reset"), std::string::npos) << send.result().error;
 }
 
+// A receiver that sends its FIN after `limit` bytes and keeps reading (a
+// peer that ends the transfer early); forwards the sender's events.
+class EarlyCloser final : public Handler {
+public:
+  EarlyCloser(Transport& t, BulkApp& sender, std::uint64_t limit) : t_(t), s_(sender), limit_(limit) {}
+  void listen(std::uint16_t port) { l_ = *t_.listen(Endpoint{Ipv4Addr{}, port}, 1, {}); }
+  void on_accept(ConnId l, ConnId c) override {
+    if (l != l_) return s_.on_accept(l, c);
+    c_ = c;
+    read();
+  }
+  void on_connected(ConnId c) override { s_.on_connected(c); }
+  void on_readable(ConnId c) override { c == c_ ? read() : s_.on_readable(c); }
+  void on_writable(ConnId c) override { s_.on_writable(c); }
+  void on_closed(ConnId c) override { c == c_ ? void() : s_.on_closed(c); }
+  void on_error(ConnId c, Error e) override { c == c_ ? void() : s_.on_error(c, e); }
+  std::uint64_t got = 0;
+
+private:
+  void read() {
+    std::vector<std::byte> b(3000);
+    while (true) {
+      auto r = t_.recv(c_, b);
+      if (!r || *r == 0) return;
+      got += *r;
+      if (got >= limit_ && !shut_) {
+        shut_ = true;
+        t_.shutdown_write(c_);
+      }
+    }
+  }
+  Transport& t_;
+  BulkApp& s_;
+  std::uint64_t limit_;
+  ConnId l_ = no_conn, c_ = no_conn;
+  bool shut_ = false;
+};
+
+TEST(BulkErrors, ReceiverFinBeforeTheEndFailsTheSender) {
+  for (const bool by_duration : {false, true}) {
+    FakeTransport t({.rcv_buf = 4096});
+    Options so = connector(5001, true);
+    if (by_duration) {
+      so.duration = std::chrono::seconds(10);
+    } else {
+      so.bytes = 1'000'000;
+    }
+    so.sample_interval = Duration::zero();
+    BulkApp send(t, so, nullptr);
+    EarlyCloser recv(t, send, 20'000);
+    recv.listen(5001);
+    ASSERT_TRUE(send.start());
+    for (int i = 0; i < 10 && !send.done(); ++i) {
+      t.run(recv);
+    }
+    ASSERT_TRUE(send.done()) << by_duration;
+    EXPECT_FALSE(send.result().ok) << by_duration;
+    EXPECT_NE(send.result().error.find("the receiver closed after"), std::string::npos)
+        << send.result().error;
+    EXPECT_LT(send.result().bytes, 1'000'000u);
+    EXPECT_GE(recv.got, 20'000u);
+    EXPECT_NE(send.summary().str().find("\"ok\":false"), std::string::npos);
+  }
+}
+
 TEST(BulkOptions, Parse) {
   CliParser cli("utcp-bulk", "");
   add_options(cli);

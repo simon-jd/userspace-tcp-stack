@@ -2,8 +2,17 @@
 // utcp-echo's server and client on top. These tests live here because the
 // KernelTransport sources (apps/common/kernel_transport.*) are tested from a
 // program directory; they need only the loopback interface.
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <linux/tcp.h>
+#include <netinet/in.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <vector>
@@ -295,6 +304,247 @@ TEST(EchoKernelTransport, SocketOptionErrorsAreReported) {
   ASSERT_FALSE(c);
   EXPECT_EQ(c.error(), Error::invalid_argument);
   EXPECT_NE(t.last_error_detail().find("TCP_MAXSEG"), std::string::npos) << t.last_error_detail();
+}
+
+TEST(EchoKernelTransport, TcpInfoMapsEveryField) {
+  // Distinct values in every field, so a swapped field or a wrong unit shows.
+  tcp_info ti{};
+  ti.tcpi_state = 1;  // TCP_ESTABLISHED
+  ti.tcpi_ca_state = TCP_CA_Recovery;
+  ti.tcpi_snd_wscale = 7;
+  ti.tcpi_rcv_wscale = 9;
+  ti.tcpi_rto = 1001;
+  ti.tcpi_ato = 1002;
+  ti.tcpi_rtt = 1003;
+  ti.tcpi_rttvar = 1004;
+  ti.tcpi_min_rtt = 1005;
+  ti.tcpi_snd_cwnd = 1006;
+  ti.tcpi_snd_ssthresh = 1007;
+  ti.tcpi_snd_mss = 1008;
+  ti.tcpi_rcv_mss = 1009;
+  ti.tcpi_advmss = 1010;
+  ti.tcpi_pmtu = 1011;
+  ti.tcpi_bytes_sent = 1012;
+  ti.tcpi_bytes_retrans = 1013;
+  ti.tcpi_bytes_acked = 1014;
+  ti.tcpi_bytes_received = 1015;
+  ti.tcpi_segs_out = 1016;
+  ti.tcpi_segs_in = 1017;
+  ti.tcpi_data_segs_out = 1018;
+  ti.tcpi_data_segs_in = 1019;
+  ti.tcpi_pacing_rate = 1020;
+  ti.tcpi_delivery_rate = 1021;
+  ti.tcpi_delivered = 1022;
+  ti.tcpi_delivery_rate_app_limited = 1;
+  ti.tcpi_busy_time = 1023;
+  ti.tcpi_rwnd_limited = 1024;
+  ti.tcpi_sndbuf_limited = 1025;
+  ti.tcpi_unacked = 1026;
+  ti.tcpi_sacked = 1027;
+  ti.tcpi_lost = 1028;
+  ti.tcpi_retrans = 1029;
+  ti.tcpi_total_retrans = 1030;
+  ti.tcpi_dsack_dups = 1031;
+  ti.tcpi_reordering = 1032;
+  ti.tcpi_reord_seen = 1033;
+  ti.tcpi_rcv_rtt = 1034;
+  ti.tcpi_rcv_space = 1035;
+  ti.tcpi_rcv_ssthresh = 1036;
+  ti.tcpi_snd_wnd = 1037;
+  ti.tcpi_rcv_wnd = 1038;
+  ti.tcpi_notsent_bytes = 1039;
+  ti.tcpi_last_data_sent = 1040;
+  ti.tcpi_last_data_recv = 1041;
+  ti.tcpi_last_ack_recv = 1042;
+  using std::chrono::microseconds, std::chrono::milliseconds;
+  const ConnSample s = sample_from_tcp_info(ti, "cubic");
+  EXPECT_EQ(s.cc_name_view(), "cubic");
+  EXPECT_EQ(s.state, TcpState::established);
+  EXPECT_EQ(s.ca_state, CaState::recovery);
+  EXPECT_EQ(s.snd_wscale, 7);
+  EXPECT_EQ(s.rcv_wscale, 9);
+  EXPECT_EQ(s.rto, microseconds(1001));
+  EXPECT_EQ(s.ato, microseconds(1002));
+  EXPECT_EQ(s.srtt, microseconds(1003));
+  EXPECT_EQ(s.rttvar, microseconds(1004));
+  EXPECT_EQ(s.min_rtt, microseconds(1005));
+  EXPECT_EQ(s.cwnd, 1006u);
+  EXPECT_EQ(s.ssthresh, 1007u);
+  EXPECT_EQ(s.snd_mss, 1008u);
+  EXPECT_EQ(s.rcv_mss, 1009u);
+  EXPECT_EQ(s.adv_mss, 1010u);
+  EXPECT_EQ(s.pmtu, 1011u);
+  EXPECT_EQ(s.bytes_sent, 1012u);
+  EXPECT_EQ(s.bytes_retrans, 1013u);
+  EXPECT_EQ(s.bytes_acked, 1014u);
+  EXPECT_EQ(s.bytes_received, 1015u);
+  EXPECT_EQ(s.segs_out, 1016u);
+  EXPECT_EQ(s.segs_in, 1017u);
+  EXPECT_EQ(s.data_segs_out, 1018u);
+  EXPECT_EQ(s.data_segs_in, 1019u);
+  EXPECT_EQ(s.pacing_rate, 1020u);
+  EXPECT_EQ(s.delivery_rate, 1021u);
+  EXPECT_EQ(s.delivered, 1022u);
+  EXPECT_TRUE(s.app_limited);
+  EXPECT_EQ(s.busy_time, microseconds(1023));
+  EXPECT_EQ(s.rwnd_limited, microseconds(1024));
+  EXPECT_EQ(s.sndbuf_limited, microseconds(1025));
+  EXPECT_EQ(s.unacked, 1026u);
+  EXPECT_EQ(s.sacked, 1027u);
+  EXPECT_EQ(s.lost, 1028u);
+  EXPECT_EQ(s.retrans, 1029u);
+  EXPECT_EQ(s.total_retrans, 1030u);
+  EXPECT_EQ(s.dsack_dups, 1031u);
+  EXPECT_EQ(s.reordering, 1032u);
+  EXPECT_EQ(s.reord_seen, 1033u);
+  EXPECT_EQ(s.rcv_rtt, microseconds(1034));
+  EXPECT_EQ(s.rcv_space, 1035u);
+  EXPECT_EQ(s.rcv_ssthresh, 1036u);
+  EXPECT_EQ(s.snd_wnd, 1037u);
+  EXPECT_EQ(s.rcv_wnd, 1038u);
+  EXPECT_EQ(s.notsent_bytes, 1039u);
+  EXPECT_EQ(s.last_data_sent, milliseconds(1040));
+  EXPECT_EQ(s.last_data_recv, milliseconds(1041));
+  EXPECT_EQ(s.last_ack_recv, milliseconds(1042));
+  // Linux's "reno" is NewReno; TcpInfo names it "newreno" (stats.hpp).
+  EXPECT_EQ(sample_from_tcp_info(ti, "reno").cc_name_view(), "newreno");
+  EXPECT_EQ(sample_from_tcp_info(ti, "bbr").cc_name_view(), "bbr");
+}
+
+TEST(EchoKernelTransport, SampleOfALiveConnectionNamesNewReno) {
+  KernelTransport t(quiet_loop());
+  guard(t);
+  ConnId l = no_conn, srv = no_conn;
+  TcpSocketOptions o;
+  o.cc = CcAlgo::newreno;
+  const Endpoint ep = listen_any(t, l, o);
+  Script s;
+  s.accept = [&](ConnId, ConnId c) {
+    srv = c;
+    t.stop();
+  };
+  const ConnId cli = *t.connect(ep, o);
+  t.run(s);
+  ASSERT_NE(srv, no_conn);
+  const ConnSample cs = t.sample(cli);
+  EXPECT_EQ(cs.cc_name_view(), "newreno");
+  EXPECT_EQ(cs.state, TcpState::established);
+  EXPECT_GT(cs.snd_mss, 0u);
+  EXPECT_GT(cs.cwnd, 0u);
+  EXPECT_GE(cs.rto, std::chrono::milliseconds(200));  // TCP_RTO_MIN
+  EXPECT_EQ(t.sample(srv).cc_name_view(), "newreno");  // inherited from the listener
+  t.close(cli);
+  t.close(srv);
+  t.close(l);
+}
+
+TEST(EchoKernelTransport, ShutdownWriteDuringConnectSendsFinAfterIt) {
+  KernelTransport t(quiet_loop());
+  guard(t);
+  ConnId l = no_conn, srv = no_conn;
+  const Endpoint ep = listen_any(t, l);
+  bool srv_eof = false;
+  Script s;
+  s.accept = [&](ConnId, ConnId c) { srv = c; };
+  s.readable = [&](ConnId c) {
+    if (c != srv) return;
+    std::vector<std::byte> b(16);
+    while (auto r = t.recv(c, b)) {
+      if (*r == 0) {
+        srv_eof = true;
+        t.stop();
+        return;
+      }
+    }
+  };
+  const ConnId cli = *t.connect(ep, {});
+  t.shutdown_write(cli);  // the connect is (usually) still in progress
+  EXPECT_EQ(t.send(cli, bytes("x")).error(), Error::shut_down);
+  t.run(s);
+  EXPECT_TRUE(srv_eof);  // the FIN went out once the connect completed
+  EXPECT_EQ(std::ranges::count(s.log, std::string("connected")), 1);
+  t.close(cli);
+  t.close(srv);
+  t.close(l);
+}
+
+// Connects `n` blocking client sockets to `ep` (they complete in the
+// listener's accept queue) and returns their fds.
+std::vector<int> queue_connections(Endpoint ep, int n) {
+  std::vector<int> fds;
+  sockaddr_in sa{};
+  sa.sin_family = AF_INET;
+  sa.sin_port = htons(ep.port);
+  sa.sin_addr.s_addr = htonl(ep.addr.v);
+  for (int i = 0; i < n; ++i) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    EXPECT_GE(fd, 0);
+    EXPECT_EQ(::connect(fd, reinterpret_cast<const sockaddr*>(&sa), sizeof sa), 0);
+    fds.push_back(fd);
+  }
+  return fds;
+}
+
+TEST(EchoKernelTransport, AcceptRetriesAfterRunningOutOfDescriptors) {
+  KernelTransport t(quiet_loop());
+  guard(t);
+  ConnId l = no_conn;
+  const Endpoint ep = listen_any(t, l);
+  const std::vector<int> clients = queue_connections(ep, 5);
+  // Use up the descriptors: lower the soft limit to just above the highest
+  // open fd, then fill every free number below it.
+  rlimit old{};
+  ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &old), 0);
+  int max_fd = 0;
+  if (DIR* d = ::opendir("/proc/self/fd")) {
+    while (const dirent* e = ::readdir(d)) {
+      max_fd = std::max(max_fd, std::atoi(e->d_name));
+    }
+    ::closedir(d);
+  }
+  rlimit low = old;
+  low.rlim_cur = static_cast<rlim_t>(max_fd + 1);
+  ASSERT_EQ(::setrlimit(RLIMIT_NOFILE, &low), 0);
+  std::vector<int> fillers;
+  for (int fd; (fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0;) {
+    fillers.push_back(fd);
+  }
+  int accepted = 0;
+  Script s;
+  s.accept = [&](ConnId, ConnId) { ++accepted; };
+  // The listener's edge arrives now: accept4 fails with EMFILE.
+  t.add_oneshot(std::chrono::milliseconds(50), [&] { t.stop(); });
+  t.run(s);
+  EXPECT_EQ(accepted, 0);
+  // Free the descriptors. No new connection arrives, so no new edge: only the
+  // retry timer can accept the five queued connections.
+  for (const int fd : fillers) ::close(fd);
+  ASSERT_EQ(::setrlimit(RLIMIT_NOFILE, &old), 0);
+  s.accept = [&](ConnId, ConnId) {
+    if (++accepted == 5) t.stop();
+  };
+  t.run(s);
+  EXPECT_EQ(accepted, 5);
+  for (const int fd : clients) ::close(fd);
+}
+
+TEST(EchoKernelTransport, AcceptResumesAfterAStopWithConnectionsQueued) {
+  KernelTransport t(quiet_loop());
+  guard(t);
+  ConnId l = no_conn;
+  const Endpoint ep = listen_any(t, l);
+  const std::vector<int> clients = queue_connections(ep, 3);
+  int accepted = 0;
+  Script s;
+  s.accept = [&](ConnId, ConnId) {
+    ++accepted;
+    t.stop();  // one at a time
+  };
+  for (int i = 0; i < 3; ++i) {
+    t.run(s);  // the guard ends a run that hangs
+    ASSERT_EQ(accepted, i + 1);
+  }
+  for (const int fd : clients) ::close(fd);
 }
 
 TEST(EchoKernelServerClient, ManyConnectionsOverLoopback) {
