@@ -43,7 +43,8 @@ docker exec -i "$peer" bash -c '
     nc -u -w 2 198.18.0.2 7' <"$tmp/sent.txt" >"$tmp/received.txt"
 echo "sent $(wc -l <"$tmp/sent.txt") lines, received $(wc -l <"$tmp/received.txt") lines"
 
-docker exec "$dut" pkill -INT -x backend_udp_echo
+# -f: the process name is cut to 15 characters ("backend_udp_ech").
+docker exec "$dut" pkill -INT -f "/utcp/$prog"
 wait "$echo_pid"
 echo_rc=$?
 echo "== backend_udp_echo exit status $echo_rc, summary:"

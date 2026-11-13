@@ -9,13 +9,16 @@
 #      and `tcpdump -i utcp0` in the DUT shows the ICMP 3/4 with MTU 1400 coming
 #      back; a 1500-byte DF ping from the peer toward the stack gets ICMP 3/4
 #      from the router
+#   transport  backend_transport_check --tun utcp0 in the DUT (UtcpTransport
+#      checks over a socketpair, open() refuses a wrong MTU and accepts 1500);
+#      with utcp0 down, open() fails with "not running"
 #   nat  nat.sh; a DNS query from 198.18.0.2 through utcp0 to the host's
 #      upstream resolver gets an answer (needs Internet access)
 #   5  netem.sh N1..N4 (and N0) shows the qdiscs on both interfaces; combo.sh
 #      check starts peers with the 8 SACK/TS/WS settings and tcp_ecn 1 and 3
 #   6  down.sh leaves no testbed container or network
 #
-# Needs: testbed/m1/build.sh gcc-release tun_probe backend_tun_tool
+# Needs: testbed/m1/build.sh gcc-release tun_probe backend_tun_tool backend_transport_check backend_udp_echo
 # Usage: tests/interop/backend_testbed.sh
 # Environment: UTCP_IMAGE, UTCP_CPUS (testbed/m1/common.sh), UTCP_PRESET
 # (default gcc-release: programs in build/tb-$UTCP_PRESET).
@@ -25,9 +28,10 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tb=$repo/testbed/m1
 preset=${UTCP_PRESET:-gcc-release}
 bin=/utcp/build/tb-$preset
-for p in apps/tun_probe/tun_probe tests/interop/backend_tun_tool; do
+for p in apps/tun_probe/tun_probe tests/interop/backend_tun_tool \
+  tests/interop/backend_transport_check tests/interop/backend_udp_echo; do
   [[ -x $repo/build/tb-$preset/$p ]] || {
-    echo "missing $repo/build/tb-$preset/$p (testbed/m1/build.sh $preset tun_probe backend_tun_tool)" >&2
+    echo "missing $repo/build/tb-$preset/$p (testbed/m1/build.sh $preset tun_probe backend_tun_tool backend_transport_check backend_udp_echo)" >&2
     exit 2
   }
 done
@@ -73,6 +77,18 @@ replies=$(grep -c 'wrote 84 bytes: ICMP echo reply' "$tmp/probe.log")
   ((replies == 3)) && has "$tmp/up.log" "qdisc pfifo state" && has "$tmp/up.log" "qlen 10000" &&
   has "$tmp/up.log" "limit 10000p" && has "$tmp/up.log" "net.ipv4.tcp_no_metrics_save = 1" && ok=0
 verdict "test 3" "$ok" "ping 3/3 answered by tun_probe ($replies replies written), utcp0 qlen 10000 + pfifo limit 10000p, peer tcp_no_metrics_save = 1"
+
+# --- UtcpTransport on utcp0
+step "transport: backend_transport_check --tun utcp0; open() with utcp0 down"
+docker exec "$dut" "$bin/tests/interop/backend_transport_check" --tun utcp0 | tee "$tmp/tc.log"
+tc_rc=${PIPESTATUS[0]}
+docker exec "$dut" ip link set utcp0 down
+docker exec "$dut" timeout 10 "$bin/tests/interop/backend_udp_echo" 2>&1 | tee "$tmp/downopen.log"
+downopen_rc=${PIPESTATUS[0]}
+docker exec "$dut" ip link set utcp0 up
+ok=1
+((tc_rc == 0 && downopen_rc == 1)) && has "$tmp/downopen.log" "is not running" && ok=0
+verdict "transport" "$ok" "$(grep -c '^PASS' "$tmp/tc.log") self-checks passed; open() on a down utcp0 refused"
 
 # --- 4
 step "test 4: pmtu.sh, ICMP 3/4 from the DUT into utcp0 and from the router to the peer"
