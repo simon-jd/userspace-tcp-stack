@@ -11,3 +11,8 @@ foreach(src IN LISTS utcp_interop_sources)
   target_link_libraries(${name} PRIVATE utcp_appkit utcp_backend utcp_core_internal)
   utcp_target_warnings(${name})
 endforeach()
+
+# UtcpTransport over a socketpair (no TUN interface, no root): timers, pcap,
+# signals, device errors. The pcap file goes to the build directory.
+add_test(NAME interop.backend_transport_check
+         COMMAND backend_transport_check --tmp ${CMAKE_CURRENT_BINARY_DIR})

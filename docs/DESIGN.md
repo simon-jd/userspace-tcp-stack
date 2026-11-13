@@ -1045,7 +1045,8 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
   client abort at a random point, connect to a closed port, simultaneous open}, backlog limits.
 - Data bytes are a function of `(seed, conn, direction, offset)`; receivers check every byte without storing it.
 - Exact replay: same binary + scenario gives the same run. Each run reports a digest (SipHash over every
-  transmitted datagram and its time, socket events, errors and checker verdicts) and an event count; a SIGABRT
+  transmitted datagram and its time, every datagram delivered to a node and its time (after the link's loss,
+  corruption, duplication and reordering), socket events, errors and checker verdicts) and an event count; a SIGABRT
   handler in `utcp-sim` prints both, so crashing seeds compare too. CI runs a seed twice and on both compilers and
   compares digests, and replays `tests/sim/corpus/` (the dumped scenario of every SIM-BUGS entry).
 

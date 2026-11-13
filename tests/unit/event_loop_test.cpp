@@ -84,7 +84,9 @@ TEST(EventLoop, PipeCallbackGetsTheEvents) {
   EXPECT_EQ(loop.stats().deadline_calls, 0u);
 }
 
-TEST(EventLoop, CallbacksAndDeadlinesFireInOrder) {
+// One run of CallbacksAndDeadlinesFireInOrder; returns the number of deadline
+// handler calls.
+std::uint64_t run_callbacks_and_deadlines() {
   EventLoop loop(no_signals());
   Pipe p;
   std::vector<std::string> log;
@@ -99,8 +101,19 @@ TEST(EventLoop, CallbacksAndDeadlinesFireInOrder) {
                                                {start + 4ms, "d4b"},
                                                {start + 6ms, "d6"}};
   std::vector<Duration> late;
+  std::uint64_t calls = 0;
+  std::uint64_t empty_calls = 0;
   loop.set_deadline_source([&] { return due.empty() ? Time::never() : due.front().first; });
   loop.set_deadline_handler([&](Time now) {
+    ++calls;
+    if (due.empty() || due.front().first > now) {
+      ++empty_calls;
+    } else {
+      // The wait before this call aimed at the earliest pending deadline, not
+      // a later one: it started at or after `start`, so its timeout is at
+      // most that deadline - start.
+      EXPECT_LE(loop.stats().last_timeout_ns, (due.front().first - start).count());
+    }
     while (!due.empty() && due.front().first <= now) {
       late.push_back(now - due.front().first);
       log.push_back(due.front().second);
@@ -120,7 +133,28 @@ TEST(EventLoop, CallbacksAndDeadlinesFireInOrder) {
     EXPECT_GE(d.count(), 0);  // never called before its deadline
   }
   EXPECT_GE(mono_now() - start, 6ms);
-  EXPECT_GE(loop.stats().deadline_calls, 3u);
+  // Every handler call is a counted deadline call that handles at least one
+  // due deadline.
+  EXPECT_EQ(empty_calls, 0u);
+  EXPECT_EQ(loop.stats().deadline_calls + loop.stats().deadline_calls_after_wake, calls);
+  EXPECT_EQ(loop.stats().pending_calls, 0u);
+  return calls;
+}
+
+TEST(EventLoop, CallbacksAndDeadlinesFireInOrder) {
+  // The three deadline times take three handler calls when the loop wakes
+  // less than 2 ms late; one wake-up 2 ms or more late (a busy host) handles
+  // d2 and d4 together. So the run is repeated until one gets three calls,
+  // at most 5 times; a loop that sleeps past the earliest deadline never
+  // gets there.
+  std::vector<std::uint64_t> calls;
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    calls.push_back(run_callbacks_and_deadlines());
+    if (::testing::Test::HasFailure() || calls.back() >= 3) {
+      break;
+    }
+  }
+  EXPECT_GE(calls.back(), 3u) << "deadline handler calls per run: " << ::testing::PrintToString(calls);
 }
 
 TEST(EventLoop, FutureDeadlineGivesItsTimeout) {
