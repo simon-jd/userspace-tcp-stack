@@ -1,5 +1,6 @@
 # Build and testbed image: compilers, the unit test framework and the network
-# tools for the testbed. Build with testbed/build-image.sh (tag utcp-testbed:dev).
+# tools for the testbed (nftables and conntrack for the DUT's NAT,
+# testbed/m1/nat.sh). Build with testbed/build-image.sh (tag utcp-testbed:dev).
 #
 # The base image is pinned by its index digest. GoogleTest is pinned by
 # package version because the tests are written against it; the rest comes
@@ -16,7 +17,7 @@ RUN apt-get update \
       cmake ninja-build \
       googletest=1.17.0-1build1 \
       iperf3 tcpdump tshark nginx \
-      iproute2 ethtool iputils-ping curl netcat-openbsd procps \
+      iproute2 ethtool iputils-ping curl netcat-openbsd procps nftables conntrack \
       python3 python3-numpy python3-matplotlib \
       ca-certificates git \
  && rm -rf /var/lib/apt/lists/* \

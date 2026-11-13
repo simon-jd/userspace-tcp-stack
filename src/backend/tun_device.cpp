@@ -7,7 +7,9 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <thread>
 #include <utility>
 
 namespace utcp {
@@ -68,6 +70,42 @@ std::expected<std::size_t, std::error_code> TunDevice::read(std::span<std::byte>
     return std::unexpected(last_error());
   }
   return static_cast<std::size_t>(n);
+}
+
+std::string TunDevice::operstate() const {
+  const std::string path = "/sys/class/net/" + name_ + "/operstate";
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return {};
+  }
+  char buf[32] = {};
+  const ssize_t n = ::read(fd, buf, sizeof buf - 1);
+  ::close(fd);
+  if (n <= 0) {
+    return {};
+  }
+  std::string s(buf, static_cast<std::size_t>(n));
+  while (!s.empty() && (s.back() == '\n' || s.back() == ' ')) {
+    s.pop_back();
+  }
+  return s;
+}
+
+bool TunDevice::wait_running(std::chrono::nanoseconds max) const {
+  using clock = std::chrono::steady_clock;
+  const auto end = clock::now() + max;
+  for (;;) {
+    if (operstate() == "up") {
+      // linkwatch_do_dev sets operstate (rfc2863_policy) just before
+      // dev_activate; give the activation time to finish.
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+      return true;
+    }
+    if (clock::now() >= end) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds{100});
+  }
 }
 
 std::expected<std::size_t, std::error_code> TunDevice::write(
