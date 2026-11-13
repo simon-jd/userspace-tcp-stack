@@ -236,10 +236,12 @@ create a new one, down, that disappears with the fd.
 Offloads. Linux TCP always builds GSO packets of up to 64 KB, and a veth
 with TSO (Docker's default) passes them on whole; the forwarding DUT keeps
 them whole, and utcp0 (TUN without `IFF_VNET_HDR`) splits them only after its
-qdisc. With the peer's defaults, netem on utcp0 dropped, duplicated and
-reordered whole bursts of about 24 segments in the Linux-to-stack direction,
-while the stack writes single packets in the other direction, and the pfifo
-and netem limits counted bursts. So the peer's interfaces get `ethtool -K
+qdisc. With the peer's defaults (tso on), an 8 MB iperf3 flow reached the
+DUT's eth0 as packets of up to 65160 payload bytes (45 segments; 135 of 201
+captured data packets above 1460), so netem on utcp0 would drop, duplicate and
+reorder bursts in the Linux-to-stack direction while the stack writes single
+packets in the other, and the pfifo and netem limits would count bursts. So
+the peer's interfaces get `ethtool -K
 tso off gso off` (its kernel splits before the veth; PLAN 2d does the same for
 its sender) and the forwarding interfaces of the DUT and the router `gro off`
 (Docker's default; set so nothing merges segments again). `tc -s` counts

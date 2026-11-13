@@ -97,7 +97,7 @@ sleep 1.5
 docker exec "$peer" iperf3 -c 198.19.1.2 -p 5201 -n 8M | tail -4
 wait "$td"
 segs=$(grep -c ' tcp [0-9]*$' "$tmp/seg.log")
-max_seg=$(awk '$NF ~ /^[0-9]+$/ && $(NF-1) == "tcp" && $NF > m {m = $NF} END {print m + 0}' "$tmp/seg.log")
+max_seg=$(awk 'NF >= 2 && $(NF-1) == "tcp" && $NF ~ /^[0-9]+$/ && $NF + 0 > m + 0 {m = $NF} END {print m + 0}' "$tmp/seg.log")
 echo "-- tcpdump -i $eth in $dut: $segs data packets from the peer, largest TCP payload $max_seg bytes"
 ok=1
 grep -q "^$peer [^ ]* 198.19.1.3: tso off gso off" "$tmp/up.log" &&

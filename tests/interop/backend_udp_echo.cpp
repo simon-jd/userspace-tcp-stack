@@ -134,13 +134,15 @@ int main(int argc, char** argv) {
       "\"device\":{{\"rx_datagrams\":{},\"rx_bytes\":{},\"tx_datagrams\":{},\"tx_bytes\":{},"
       "\"rx_errors\":{},\"tx_errors\":{},\"tx_eagain\":{},\"pcap_records\":{},"
       "\"pcap_failed\":{},\"device_failed\":{}}},"
-      "\"loop\":{{\"iterations\":{},\"deadline_calls\":{},\"pending_calls\":{},"
+      "\"loop\":{{\"iterations\":{},\"deadline_calls\":{},\"deadline_calls_after_wake\":{},"
+      "\"pending_calls\":{},"
       "\"lateness_p50_ns\":{},"
       "\"lateness_p99_ns\":{},\"lateness_max_ns\":{}}}}}",
       echo.received, echo.echoed, echo.bytes, echo.truncated, echo.recv_errors, echo.send_errors,
       echo.last_send_error, (*t)->stop_signal(), stats, d.rx_datagrams, d.rx_bytes,
       d.tx_datagrams, d.tx_bytes, d.rx_errors, d.tx_errors, d.tx_eagain, d.pcap_records,
-      d.pcap_failed, d.device_failed, ls.iterations, ls.deadline_calls, ls.pending_calls,
+      d.pcap_failed, d.device_failed, ls.iterations, ls.deadline_calls, ls.deadline_calls_after_wake,
+      ls.pending_calls,
       ls.lateness.percentile(0.5).count(), ls.lateness.percentile(0.99).count(),
       ls.lateness.max.count());
   return d.device_failed || d.pcap_failed ? 1 : 0;
