@@ -295,4 +295,78 @@ TEST(EventLoopLateness, PastDeadlineDoesNotSpin) {
   EXPECT_GE(loop.stats().lateness.max, 1ms);
 }
 
+// Pending work (UtcpTransport: blocked connections can resume, which
+// Stack::next_deadline() reports as the stack's now()): a zero-timeout wait
+// and a deadline handler call, but no lateness sample, as nothing was waited
+// for. Without pending work the same loop waits for its deadline again.
+TEST(EventLoopLateness, PendingWorkAddsNoLatenessSample) {
+  EventLoop loop(spin_options(0));
+  Time deadline = mono_now() + 2s;
+  bool pending = true;
+  int calls = 0;
+  loop.set_deadline_source([&] { return deadline; });
+  loop.set_pending_source([&] { return pending; });
+  loop.set_deadline_handler([&](Time) { ++calls; });
+  const Time t0 = mono_now();
+  loop.run_once();
+  EXPECT_LT(mono_now() - t0, 1s) << "waited for the deadline";
+  EXPECT_EQ(calls, 1);
+  const auto& st = loop.stats();
+  EXPECT_EQ(st.pending_polls, 1u);
+  EXPECT_EQ(st.pending_calls, 1u);
+  EXPECT_EQ(st.last_timeout_ns, 0);
+  EXPECT_EQ(st.deadline_calls, 0u);
+  EXPECT_EQ(st.zero_timeouts, 0u);
+  EXPECT_EQ(st.lateness.count, 0u);
+
+  pending = false;
+  deadline = mono_now() + 3ms;
+  loop.run_once();
+  EXPECT_EQ(calls, 2);
+  EXPECT_GT(st.last_timeout_ns, 0);
+  EXPECT_EQ(st.pending_polls, 1u);
+  EXPECT_EQ(st.pending_calls, 1u);
+  EXPECT_EQ(st.deadline_calls, 1u);
+  EXPECT_EQ(st.lateness.count, 1u);
+}
+
+// Pending work and a deadline that has passed: one handler call, and the
+// deadline's lateness is recorded.
+TEST(EventLoopLateness, PendingWorkAndAPastDeadline) {
+  EventLoop loop(spin_options(0));
+  const Time past = mono_now() - 1ms;
+  int calls = 0;
+  loop.set_deadline_source([&] { return past; });
+  loop.set_pending_source([] { return true; });
+  loop.set_deadline_handler([&](Time) { ++calls; });
+  loop.run_once();
+  const auto& st = loop.stats();
+  EXPECT_EQ(calls, 1);
+  EXPECT_EQ(st.zero_timeouts, 1u);
+  EXPECT_EQ(st.deadline_calls, 1u);
+  EXPECT_EQ(st.pending_polls, 0u);
+  EXPECT_EQ(st.pending_calls, 0u);
+  EXPECT_EQ(st.lateness.count, 1u);
+  EXPECT_GE(st.lateness.max, 1ms);
+}
+
+// Pending work does not spin, even with the deadline inside the window.
+TEST(EventLoopLateness, PendingWorkDoesNotSpin) {
+  EventLoop loop(spin_options(20'000));
+  const Time deadline = mono_now() + 5ms;
+  int calls = 0;
+  loop.set_deadline_source([&] { return deadline; });
+  loop.set_pending_source([] { return true; });
+  loop.set_deadline_handler([&](Time) { ++calls; });
+  loop.run_once();
+  const auto& st = loop.stats();
+  EXPECT_EQ(calls, 1);
+  EXPECT_EQ(st.spin_waits, 0u);
+  EXPECT_EQ(st.spin_polls, 0u);
+  EXPECT_EQ(st.pending_polls, 1u);
+  // The deadline has passed by the handler call only if this thread was
+  // descheduled for 5 ms.
+  EXPECT_EQ(st.pending_calls + st.deadline_calls, 1u);
+}
+
 }  // namespace

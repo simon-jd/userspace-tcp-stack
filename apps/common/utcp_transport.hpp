@@ -10,10 +10,14 @@
 //       datagrams, each stack.receive(mono_now(), ...) (per-packet clock for
 //       RTT precision);
 //    c. the deadline has passed: stack.advance(now) and the app timers due.
+//    When next_deadline() is the stack's now() (blocked connections can
+//    resume, §3.4), the loop gets it as pending work instead: a zero-timeout
+//    wait and stack.advance(now), without a lateness sample (§8.3).
 // 2. Socket events (Stack::poll_event) go to the Handler, whose callbacks
 //    call the Transport, until no event is left.
 // 3. pop_transmit() is drained with write(2); on EAGAIN the packet is kept
 //    and the device is watched for EPOLLOUT until it has been written.
+// 4. The --pcap buffer is written to the file.
 // Host contract (§3.4): drained before every wait, advance when the deadline
 // has passed, now non-decreasing (CLOCK_MONOTONIC). Calls made outside run()
 // (setup before the first run, or after it returned) first advance the stack
@@ -30,8 +34,11 @@
 //
 // --pcap FILE (§10.2): every datagram read from or written to the device, as
 // LINKTYPE_RAW records with CLOCK_REALTIME nanosecond timestamps (so they
-// line up with tcpdump on the peer), snaplen 65535. Written through a 1 MiB
-// stdio buffer, flushed when the transport is destroyed.
+// line up with tcpdump on the peer), snaplen 65535. The file header is
+// written when the file is opened; records go through a 1 MiB stdio buffer
+// that is written out before every wait of run() and after calls made
+// outside run(), so a process that aborts or is killed keeps everything up
+// to its last wait.
 #pragma once
 
 #include <cstddef>
@@ -66,9 +73,10 @@ struct DeviceStats {
 
 class UtcpTransport final : public Transport {
 public:
-  // Opens the TUN interface opts.tun (IFF_TUN | IFF_NO_PI, non-blocking; it is
-  // created if missing, which needs CAP_NET_ADMIN; addresses and routes are
-  // the testbed's job, §8.1), checks that opts.stack.mtu equals its MTU, waits
+  // Opens the existing TUN interface opts.tun (IFF_TUN | IFF_NO_PI,
+  // non-blocking; creating it, its addresses and routes are the testbed's job,
+  // §8.1: a missing interface is an error at once, as TUNSETIFF would create
+  // one that never comes up), checks that opts.stack.mtu equals its MTU, waits
   // up to 1 s until the interface is running (TunDevice::wait_running; an
   // error if it is down), fills the seed from getrandom(2) if asked, and opens
   // the pcap file.
@@ -120,7 +128,7 @@ public:
   [[nodiscard]] const DeviceStats& device_stats() const noexcept { return dev_; }
   // The signal that ended run(), 0 if none.
   [[nodiscard]] int stop_signal() const noexcept { return loop_.stop_signal(); }
-  // Writes the pcap buffer to the file now.
+  // Writes the pcap buffer to the file now (run() does it before every wait).
   void flush_pcap();
 
 private:

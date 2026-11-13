@@ -4,12 +4,15 @@
 //
 // One iteration (run_once):
 // 1. deadline = the deadline source's value (Time::never() without one);
-// 2. wait with epoll_pwait2: timeout 0 if the deadline has passed, no timeout
-//    (blocking) for Time::never(), else deadline - mono_now();
+//    pending = the pending source's value (false without one);
+// 2. wait with epoll_pwait2: timeout 0 if the deadline has passed or pending
+//    is set, no timeout (blocking) for Time::never(), else deadline -
+//    mono_now();
 // 3. call the callbacks of ready fds in the order epoll reports them; a
 //    readable signalfd stops the loop (stop_signal() tells which signal);
 // 4. if mono_now() >= deadline, record the lateness (now - deadline) and call
-//    the deadline handler with that time.
+//    the deadline handler with that time; otherwise, if pending was set, call
+//    the deadline handler without a lateness sample.
 // With EventLoopOptions::spin_us = N > 0 (--spin-us, §8.3), step 2 sleeps only
 // until N us before the deadline and then busy-polls (epoll_pwait2 with a
 // zero timeout) until the deadline or the first ready fd. A wait that starts
@@ -65,13 +68,16 @@ struct LatenessHistogram {
 struct LoopStats {
   std::uint64_t iterations = 0;        // run_once calls
   std::uint64_t io_wakeups = 0;        // waits that returned ready fds
-  std::uint64_t deadline_calls = 0;    // deadline handler calls
+  std::uint64_t deadline_calls = 0;    // deadline handler calls for a deadline that passed
+  std::uint64_t pending_calls = 0;     // deadline handler calls for pending work only
   std::uint64_t zero_timeouts = 0;     // waits whose deadline had already passed
+  std::uint64_t pending_polls = 0;     // zero-timeout waits for pending work (deadline not passed)
   std::uint64_t blocking_waits = 0;    // waits without a deadline
   // Timeout of the last iteration's first wait; -1 = none (blocking). With
   // spin_us, the sleep before the spin (deadline - spin_us - now, or 0).
   std::int64_t last_timeout_ns = -1;
-  // now - deadline at each deadline handler call (§8.3).
+  // now - deadline at each deadline handler call for a deadline that passed
+  // (§8.3); pending work is not a deadline and adds no sample.
   LatenessHistogram lateness;
   // --spin-us (§8.3). spin_time is the wall time spent busy-polling, which is
   // also its CPU cost (less if the thread was preempted while spinning).
@@ -86,6 +92,7 @@ public:
   using IoCallback = std::function<void(std::uint32_t epoll_events)>;
   using DeadlineSource = std::function<Time()>;
   using DeadlineHandler = std::function<void(Time now)>;
+  using PendingSource = std::function<bool()>;
 
   // epoll_create1, the signalfd and the timer slack. Aborts with a message if
   // a system call fails. The stop signals are blocked in the constructing
@@ -111,6 +118,14 @@ public:
   // app timers)).
   void set_deadline_source(DeadlineSource f);
   void set_deadline_handler(DeadlineHandler f);
+  // Queried at the start of every iteration: true when work is due now that
+  // is not a timer (UtcpTransport: blocked connections can resume, which
+  // Stack::next_deadline() reports as now(), §3.4). Such an iteration does
+  // not sleep (zero timeout, no --spin-us) and then calls the deadline
+  // handler, but records no lateness sample: nothing was waited for, and
+  // now - stack.now() would only measure the processing since the last
+  // stack call.
+  void set_pending_source(PendingSource f);
 
   void run_once();
   // Iterates until stop() or a stop signal; returns at once if already stopped.
@@ -141,6 +156,7 @@ private:
   Duration spin_{};  // EventLoopOptions::spin_us
   DeadlineSource deadline_source_;
   DeadlineHandler deadline_handler_;
+  PendingSource pending_source_;
   bool stopped_ = false;
   int stop_signal_ = 0;
   LoopStats stats_;

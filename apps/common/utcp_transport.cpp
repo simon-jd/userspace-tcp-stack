@@ -70,6 +70,7 @@ std::expected<int, std::string> interface_mtu(const std::string& name) {
 struct UtcpTransport::PcapWriter {
   std::FILE* f = nullptr;
   std::unique_ptr<char[]> buf;
+  bool dirty = false;  // records written to the buffer since the last flush
 
   PcapWriter() = default;
   PcapWriter(const PcapWriter&) = delete;
@@ -85,7 +86,9 @@ struct UtcpTransport::PcapWriter {
     std::setvbuf(f, buf.get(), _IOFBF, pcap_buffer);
     std::array<std::byte, pcap_file_header_size> hdr{};
     write_pcap_file_header(hdr, pcap_snaplen);
-    if (std::fwrite(hdr.data(), 1, hdr.size(), f) != hdr.size()) {
+    // The file header goes out at once: a run that ends without a flush
+    // (abort, SIGKILL) still leaves a readable file.
+    if (std::fwrite(hdr.data(), 1, hdr.size(), f) != hdr.size() || std::fflush(f) != 0) {
       return std::unexpected(errno_text("cannot write pcap file " + path, errno));
     }
     return {};
@@ -95,13 +98,17 @@ struct UtcpTransport::PcapWriter {
     const auto len = static_cast<std::uint32_t>(datagram.size());
     write_pcap_record_header(hdr, realtime_now(), len, pcap_snaplen);
     const std::size_t cap = std::min<std::size_t>(len, pcap_snaplen);
+    dirty = true;
     return std::fwrite(hdr.data(), 1, hdr.size(), f) == hdr.size() &&
            std::fwrite(datagram.data(), 1, cap, f) == cap;
   }
-  void flush() {
-    if (f != nullptr) {
-      std::fflush(f);
+  // Writes the buffered records to the file; false if that failed.
+  bool flush() {
+    if (f == nullptr || !dirty) {
+      return true;
     }
+    dirty = false;
+    return std::fflush(f) == 0;
   }
   void close() {
     if (f != nullptr) {
@@ -115,6 +122,20 @@ struct UtcpTransport::PcapWriter {
 
 std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::open(
     const UtcpTransportOptions& opts) {
+  // TUNSETIFF on a name that does not exist creates a new interface, down and
+  // without an address, that goes away with the fd: it never comes up. The
+  // testbed creates and configures the interface (§8.1).
+  if (opts.tun.empty() || opts.tun.size() >= IFNAMSIZ || opts.tun == "." || opts.tun == ".." ||
+      opts.tun.find('/') != std::string::npos) {
+    return std::unexpected(std::format("invalid TUN interface name \"{}\"", opts.tun));
+  }
+  if (const std::string sys = "/sys/class/net/" + opts.tun; ::access(sys.c_str(), F_OK) != 0) {
+    if (errno == ENOENT) {
+      return std::unexpected(std::format(
+          "interface {} does not exist (testbed/m1/up.sh creates it)", opts.tun));
+    }
+    return std::unexpected(errno_text("cannot check " + sys, errno));
+  }
   auto tun = TunDevice::open(opts.tun, /*nonblocking=*/true);
   if (!tun) {
     return std::unexpected(
@@ -186,7 +207,17 @@ UtcpTransport::UtcpTransport(int fd, const UtcpTransportOptions& opts)
     : opt_(opts), fd_(fd), loop_(loop_options(opts)), stack_(opts.stack), rxbuf_(max_datagram) {
   loop_.watch(fd_, EPOLLIN, [this](std::uint32_t ev) { on_device(ev); });
   watched_ = true;
-  loop_.set_deadline_source([this] { return std::min(stack_.next_deadline(), timer_deadline()); });
+  // §3.4: next_deadline() == now() means that blocked connections can
+  // resume. That is work to do at once, not a timer the loop waited for, so
+  // it reaches the loop as pending work and adds no lateness sample (§8.3);
+  // only timer deadlines do. (A stack timer that falls due while the stack
+  // stays resumable fires in a pending iteration, also without a sample:
+  // next_deadline() hides it then.)
+  loop_.set_deadline_source([this] {
+    const Time s = stack_.next_deadline();
+    return std::min(s <= stack_.now() ? Time::never() : s, timer_deadline());
+  });
+  loop_.set_pending_source([this] { return stack_.next_deadline() <= stack_.now(); });
   loop_.set_deadline_handler([this](Time now) {
     stack_.advance(now);
     fire_timers(now);
@@ -318,8 +349,9 @@ void UtcpTransport::record_pcap(std::span<const std::byte> datagram) {
 }
 
 void UtcpTransport::flush_pcap() {
-  if (pcap_) {
-    pcap_->flush();
+  if (pcap_ && !pcap_->flush()) {
+    dev_.pcap_failed = true;
+    pcap_->close();
   }
 }
 
@@ -334,6 +366,10 @@ void UtcpTransport::run(Handler& h) {
   for (;;) {
     deliver_events();
     drain_tx();  // host contract 1: drained before every wait
+    // Everything recorded up to this wait reaches the file, so a run that
+    // aborts (UTCP_CHECK, §13.2) or is killed keeps its capture; records of
+    // one iteration are still written together.
+    flush_pcap();
     if (stop_requested_ || loop_.stopped()) {
       break;
     }
@@ -354,6 +390,7 @@ void UtcpTransport::outside_run_enter() {
 void UtcpTransport::outside_run_leave() {
   if (!in_run_) {
     drain_tx();
+    flush_pcap();
   }
 }
 

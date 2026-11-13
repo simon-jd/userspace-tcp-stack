@@ -197,16 +197,25 @@ void EventLoop::set_deadline_source(DeadlineSource f) { deadline_source_ = std::
 
 void EventLoop::set_deadline_handler(DeadlineHandler f) { deadline_handler_ = std::move(f); }
 
+void EventLoop::set_pending_source(PendingSource f) { pending_source_ = std::move(f); }
+
 void EventLoop::run_once() {
   ++stats_.iterations;
   const Time deadline = deadline_source_ ? deadline_source_() : Time::never();
+  const bool pending = pending_source_ && pending_source_();
 
   // §8.2: timeout = deadline - now as a timespec, zero if past, NULL if never.
   // §8.3 --spin-us: sleep only until spin_ before the deadline, then
   // busy-poll with zero timeouts until the deadline or a ready fd.
+  // Pending work: a zero timeout, whatever the deadline.
   epoll_event events[max_events];
   int n = 0;
-  if (deadline.is_never()) {
+  if (pending && (deadline.is_never() || deadline > mono_now())) {
+    ++stats_.pending_polls;
+    stats_.last_timeout_ns = 0;
+    const timespec zero{};
+    n = wait(epfd_, events, &zero);
+  } else if (deadline.is_never()) {
     ++stats_.blocking_waits;
     stats_.last_timeout_ns = -1;
     n = wait(epfd_, events, nullptr);
@@ -267,11 +276,14 @@ void EventLoop::run_once() {
     }
   }
 
-  if (!deadline.is_never() && deadline_handler_) {
+  if ((pending || !deadline.is_never()) && deadline_handler_) {
     const Time now = mono_now();
-    if (now >= deadline) {
+    if (!deadline.is_never() && now >= deadline) {
       ++stats_.deadline_calls;
       stats_.lateness.record(now - deadline);
+      deadline_handler_(now);
+    } else if (pending) {
+      ++stats_.pending_calls;  // not a wake-up for a deadline: no lateness sample (§8.3)
       deadline_handler_(now);
     }
   }

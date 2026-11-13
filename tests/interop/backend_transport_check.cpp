@@ -10,12 +10,20 @@
 //   rerun           run() works again after stop()
 //   device_rx_pcap  datagrams read from the device are counted and recorded
 //                   in the --pcap file byte for byte (LINKTYPE_RAW,
-//                   nanosecond magic, CLOCK_REALTIME stamps)
+//                   nanosecond magic, CLOCK_REALTIME stamps); the file
+//                   header is on disk right after open, and the records
+//                   before the transport is destroyed (a killed process
+//                   keeps them)
 //   signal          SIGTERM ends run() through the EventLoop's signalfd
 //   device_hup      the device's peer closing ends run() (device_failed)
+//   open_missing    open() on a TUN interface that does not exist fails at
+//                   once with "does not exist" and creates nothing
 // With --expect-stack (needs the m1-ip Stack):
 //   icmp_echo       an echo request written to the device is answered
 //   udp_echo        a UDP datagram reaches a Handler that echoes it back
+//                   (both without a periodic timer: a reply left queued
+//                   across a blocking wait is never written, and the check
+//                   fails after 2 s)
 //   tx_eagain       64 datagrams sent while the device's peer does not read:
 //                   writes hit EAGAIN, the packet is kept, EPOLLOUT resumes
 //                   the drain, and all 64 arrive in order
@@ -23,12 +31,15 @@
 //   open_tun        open() refuses a stack MTU that differs from the
 //                   interface's and accepts the right one
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -46,6 +57,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "common/cli.hpp"
@@ -54,6 +66,7 @@
 #include "core/wire/ipv4.hpp"
 #include "core/wire/udp.hpp"
 #include "utcp/checksum.hpp"
+#include "utcp/event_loop.hpp"
 #include "utcp/pcap.hpp"
 
 namespace {
@@ -244,6 +257,53 @@ void check_timers_and_rerun() {
   expect(ran, "rerun", "run() after stop() fires a new timer and returns on stop()");
 }
 
+// What is wrong with the pcap file at `path`, empty if nothing: it must hold
+// the file header (magic a1b23c4d, snaplen 65535, LINKTYPE_RAW) and exactly
+// `records`, in order, with CLOCK_REALTIME stamps in [before, after].
+std::string pcap_problem(const std::filesystem::path& path,
+                         const std::vector<std::vector<std::byte>>& records, Time before,
+                         Time after) {
+  std::ifstream f(path, std::ios::binary);
+  const std::vector<char> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  const std::span<const std::byte> b(reinterpret_cast<const std::byte*>(raw.data()), raw.size());
+  const auto le32 = [&b](std::size_t at) {
+    std::uint32_t v = 0;
+    for (int i = 3; i >= 0; --i) {
+      v = (v << 8) | std::to_integer<std::uint32_t>(b[at + static_cast<std::size_t>(i)]);
+    }
+    return v;
+  };
+  if (b.size() < utcp::pcap_file_header_size) {
+    return std::format("{} bytes on disk: no file header", b.size());
+  }
+  if (le32(0) != utcp::pcap_magic_ns || le32(16) != 65535 || le32(20) != utcp::pcap_linktype_raw) {
+    return "wrong file header";
+  }
+  std::size_t at = utcp::pcap_file_header_size;
+  for (std::size_t k = 0; k < records.size(); ++k) {
+    const auto& d = records[k];
+    if (at + utcp::pcap_record_header_size > b.size()) {
+      return std::format("{} bytes on disk: record {} of {} missing", b.size(), k + 1,
+                         records.size());
+    }
+    const std::int64_t ts = std::int64_t{le32(at)} * 1'000'000'000 + le32(at + 4);
+    const std::uint32_t caplen = le32(at + 8), len = le32(at + 12);
+    at += utcp::pcap_record_header_size;
+    if (ts < before.ns || ts > after.ns) {
+      return std::format("record {} stamped outside the run", k + 1);
+    }
+    if (caplen != d.size() || len != d.size() || at + caplen > b.size() ||
+        !std::ranges::equal(b.subspan(at, caplen), std::span<const std::byte>(d))) {
+      return std::format("record {} differs from the datagram", k + 1);
+    }
+    at += caplen;
+  }
+  if (at != b.size()) {
+    return std::format("{} bytes after the last record", b.size() - at);
+  }
+  return {};
+}
+
 void check_device_rx_pcap(const std::filesystem::path& dir) {
   const std::filesystem::path pcap = dir / "backend_transport_check.pcap";
   std::vector<std::vector<std::byte>> sent;
@@ -258,6 +318,9 @@ void check_device_rx_pcap(const std::filesystem::path& dir) {
   {
     Pair p;
     auto t = attach(p, options(pcap.string()));
+    const std::string at_open = pcap_problem(pcap, {}, before, before);
+    expect(at_open.empty(), "device_rx_pcap",
+           at_open.empty() ? "the file header is on disk right after open" : at_open);
     for (const auto& d : sent) {
       if (!p.write_theirs(d)) {
         expect(false, "device_rx_pcap", "write to the socketpair failed");
@@ -275,39 +338,20 @@ void check_device_rx_pcap(const std::filesystem::path& dir) {
                        d.rx_datagrams, d.rx_bytes, d.rx_errors));
     expect(d.pcap_records == 3 && !d.pcap_failed, "device_rx_pcap",
            std::format("pcap_records {}", d.pcap_records));
-  }  // destroyed: the pcap buffer is flushed
-  const Time after = realtime_now();
-
-  std::ifstream f(pcap, std::ios::binary);
-  const std::vector<char> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  std::span<const std::byte> b(reinterpret_cast<const std::byte*>(raw.data()), raw.size());
-  const auto le32 = [&b](std::size_t at) {
-    std::uint32_t v = 0;
-    for (int i = 3; i >= 0; --i) {
-      v = (v << 8) | std::to_integer<std::uint32_t>(b[at + static_cast<std::size_t>(i)]);
-    }
-    return v;
-  };
-  bool ok = b.size() >= 24 && le32(0) == utcp::pcap_magic_ns && le32(16) == 65535 &&
-            le32(20) == utcp::pcap_linktype_raw;
-  std::size_t at = 24;
-  std::string detail = std::format("{} bytes", b.size());
-  for (const auto& d : sent) {
-    if (!ok || at + 16 > b.size()) {
-      ok = false;
-      break;
-    }
-    const std::int64_t ts = std::int64_t{le32(at)} * 1'000'000'000 + le32(at + 4);
-    const std::uint32_t caplen = le32(at + 8), len = le32(at + 12);
-    ok = ts >= before.ns && ts <= after.ns && caplen == d.size() && len == d.size() &&
-         at + 16 + caplen <= b.size() &&
-         std::ranges::equal(b.subspan(at + 16, caplen), std::span<const std::byte>(d));
-    at += 16 + caplen;
+    // The datagrams were read before run()'s last wait, so they are on disk
+    // now, with the transport still alive: a process killed here keeps them.
+    const std::string in_run = pcap_problem(pcap, sent, before, realtime_now());
+    expect(in_run.empty(), "device_rx_pcap",
+           in_run.empty() ? "the 3 records are on disk before the transport is destroyed"
+                          : in_run + " before the transport is destroyed");
   }
-  ok = ok && at == b.size();
-  expect(ok, "device_rx_pcap",
-         detail + ": header (magic a1b23c4d, snaplen 65535, LINKTYPE_RAW) and 3 records "
-                  "with CLOCK_REALTIME stamps and the bytes read");
+  const Time after = realtime_now();
+  const std::string final_problem = pcap_problem(pcap, sent, before, after);
+  expect(final_problem.empty(), "device_rx_pcap",
+         final_problem.empty() ? "after destruction: header (magic a1b23c4d, snaplen 65535, "
+                                 "LINKTYPE_RAW) and 3 records with CLOCK_REALTIME stamps and "
+                                 "the bytes read"
+                               : final_problem);
   std::filesystem::remove(pcap);
 }
 
@@ -361,6 +405,53 @@ void run_until(UtcpTransport& t, utcp::app::Handler& h, const std::function<void
   t.cancel_timer(limit);
 }
 
+// Runs `t` until a datagram that `wanted` accepts comes out of the device,
+// at most 2 s. A helper thread reads the kernel's end with poll(2) and ends
+// run() with SIGTERM (the EventLoop's signalfd) once it has seen the
+// datagram. No periodic timer wakes the loop, so a datagram left queued
+// across a blocking wait (host contract 1, §3.4: pop_transmit is drained
+// before every wait) never comes out and the 2 s limit fails the check.
+bool run_until_datagram(UtcpTransport& t, const Pair& p, utcp::app::Handler& h,
+                        const std::function<bool(std::span<const std::byte>)>& wanted) {
+  std::atomic<bool> seen{false};
+  std::atomic<bool> quit{false};
+  // Started after the transport's EventLoop blocked SIGTERM, so it is blocked
+  // here too and the signal stays pending for the signalfd.
+  std::thread reader([&] {
+    while (!quit.load()) {
+      pollfd pfd{.fd = p.theirs, .events = POLLIN, .revents = 0};
+      if (poll(&pfd, 1, 10) <= 0) {
+        continue;
+      }
+      while (const auto d = p.read_theirs()) {
+        if (wanted(*d)) {
+          seen = true;
+          kill(getpid(), SIGTERM);
+          return;
+        }
+      }
+    }
+  });
+  bool timed_out = false;
+  const auto limit = t.add_oneshot(2s, [&] {
+    timed_out = true;
+    t.stop();
+  });
+  t.run(h);
+  quit = true;
+  reader.join();
+  t.cancel_timer(limit);
+  // A SIGTERM sent after run() returned is still pending: take it before the
+  // EventLoop's destructor unblocks the signal.
+  sigset_t term;
+  sigemptyset(&term);
+  sigaddset(&term, SIGTERM);
+  const timespec zero{};
+  while (sigtimedwait(&term, nullptr, &zero) == SIGTERM) {
+  }
+  return seen.load() && !timed_out && t.stop_signal() == SIGTERM;
+}
+
 void check_icmp_echo() {
   Pair p;
   auto t = attach(p, options());
@@ -369,25 +460,21 @@ void check_icmp_echo() {
   std::ranges::copy(payload, icmp.begin() + wire::icmp_header_len);
   wire::write_icmp(icmp, wire::icmp_echo_header(wire::icmp_echo_request, 0x1234, 7));
   const bool wrote = p.write_theirs(ipv4_datagram(kernel_addr, stack_addr, utcp::ip_proto_icmp, icmp));
-  bool got = false;
   Recorder h;
   h.t = t.get();
-  run_until(
-      *t, h,
-      [&] {
-        while (const auto d = p.read_theirs()) {
-          const auto ip = wire::parse_ipv4(*d);
-          if (!ip || ip->h.proto != utcp::ip_proto_icmp) {
-            continue;
-          }
-          const auto m = wire::parse_icmp(ip->payload, true);
-          got = got || (m && m->h.type == wire::icmp_echo_reply && m->h.echo_id() == 0x1234 &&
-                        m->h.echo_seq() == 7 && ip->h.src == stack_addr &&
-                        ip->h.dst == kernel_addr && std::ranges::equal(m->body, payload));
-        }
-      },
-      [&] { return got; });
-  expect(wrote && got, "icmp_echo", "echo request id 0x1234 seq 7 answered with the same payload");
+  const bool got = run_until_datagram(*t, p, h, [&](std::span<const std::byte> d) {
+    const auto ip = wire::parse_ipv4(d);
+    if (!ip || ip->h.proto != utcp::ip_proto_icmp) {
+      return false;
+    }
+    const auto m = wire::parse_icmp(ip->payload, true);
+    return m && m->h.type == wire::icmp_echo_reply && m->h.echo_id() == 0x1234 &&
+           m->h.echo_seq() == 7 && ip->h.src == stack_addr && ip->h.dst == kernel_addr &&
+           std::ranges::equal(m->body, payload);
+  });
+  expect(wrote && got, "icmp_echo",
+         "echo request id 0x1234 seq 7 answered with the same payload, without a periodic "
+         "wake-up");
 }
 
 void check_udp_echo() {
@@ -400,26 +487,21 @@ void check_udp_echo() {
   }
   const auto payload = bytes_of("one datagram for the echo handler");
   const bool wrote = p.write_theirs(udp_from_kernel(5555, 7, payload));
-  bool got = false;
   Recorder h;
   h.t = t.get();
   h.echo_udp = true;
-  run_until(
-      *t, h,
-      [&] {
-        while (const auto d = p.read_theirs()) {
-          const auto ip = wire::parse_ipv4(*d);
-          if (!ip || ip->h.proto != utcp::ip_proto_udp) {
-            continue;
-          }
-          const auto u = wire::parse_udp(ip->payload, ip->h.src, ip->h.dst, true);
-          got = got || (u && u->h.sport == 7 && u->h.dport == 5555 && ip->h.dst == kernel_addr &&
-                        std::ranges::equal(u->payload, payload));
-        }
-      },
-      [&] { return got; });
+  const bool got = run_until_datagram(*t, p, h, [&](std::span<const std::byte> d) {
+    const auto ip = wire::parse_ipv4(d);
+    if (!ip || ip->h.proto != utcp::ip_proto_udp) {
+      return false;
+    }
+    const auto u = wire::parse_udp(ip->payload, ip->h.src, ip->h.dst, true);
+    return u && u->h.sport == 7 && u->h.dport == 5555 && ip->h.dst == kernel_addr &&
+           std::ranges::equal(u->payload, payload);
+  });
   expect(wrote && got && h.udp_echoed == 1, "udp_echo",
-         std::format("datagram echoed by the Handler ({} sends)", h.udp_echoed));
+         std::format("datagram echoed by the Handler ({} sends), without a periodic wake-up",
+                     h.udp_echoed));
 }
 
 void check_tx_eagain() {
@@ -476,6 +558,25 @@ void check_tx_eagain() {
                      got.size(), n, send_errors, d.tx_eagain, d.tx_errors));
 }
 
+// open() on an interface that does not exist fails at once: TUNSETIFF would
+// create a new interface that never comes up, and open() would wait 1 s for it.
+void check_open_missing() {
+  UtcpTransportOptions o = options();
+  o.tun = std::format("utcpnx{}", getpid() % 100000);
+  const std::filesystem::path sys = "/sys/class/net/" + o.tun;
+  if (std::filesystem::exists(sys)) {
+    expect(false, "open_missing", std::format("{} exists", sys.string()));
+    return;
+  }
+  const Time t0 = utcp::mono_now();
+  const auto r = UtcpTransport::open(o);
+  const auto took = utcp::mono_now() - t0;
+  expect(!r && r.error().find("does not exist") != std::string::npos && took < 100ms,
+         "open_missing",
+         std::format("{} after {} us", r ? "open succeeded" : r.error(), took.count() / 1000));
+  expect(!std::filesystem::exists(sys), "open_missing", std::format("{} not created", o.tun));
+}
+
 void check_open_tun(const std::string& tun) {
   UtcpTransportOptions o = options();
   o.tun = tun;
@@ -508,6 +609,7 @@ int main(int argc, char** argv) {
   check_device_rx_pcap(*args->get("tmp"));
   check_signal();
   check_device_hup();
+  check_open_missing();
   if (args->flag("expect-stack")) {
     check_icmp_echo();
     check_udp_echo();
