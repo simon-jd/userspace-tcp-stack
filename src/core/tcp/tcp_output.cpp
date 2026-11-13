@@ -353,12 +353,18 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     // 1. Segments marked lost (RFC 6582, RFC 5681 §3.2; Linux
     // tcp_xmit_retransmit_queue). The fast retransmit is exempt from the
     // cwnd gate (RFC 6675 §5 (4.3)).
-    for (std::size_t i = 0;; ++i) {
+    // The walk stops after the last lost segment (lost_out counts them), so
+    // a long queue with nothing lost costs nothing per call.
+    std::uint32_t lost_seen = 0;
+    for (std::size_t i = 0; lost_seen < t.sndq.counters().lost_out; ++i) {
       const std::span<const TxSeg> segs = t.sndq.segs();
       if (i >= segs.size()) {
         break;
       }
       const TxSeg seg = segs[i];
+      if (seg.lost) {
+        ++lost_seen;
+      }
       if (!seg.lost || seg.retrans_inflight || seg.sacked) {
         continue;
       }

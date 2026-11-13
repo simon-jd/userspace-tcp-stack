@@ -316,6 +316,41 @@ TEST(TcpTimer, SynRetrySchedules) {
   }
 }
 
+// §4.8: a passive child whose SYN-ACK is never acknowledged resends it at 1,
+// 3, 7, 15 and 31 s (synack_retries 5, doubling from rto_initial) and is
+// freed silently at 63 s (Linux reqsk_timer_handler, tcp_synack_retries).
+TEST(TcpTimer, SynAckRetriesFreeTheChild) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    Driven d(profile);
+    ASSERT_TRUE(d.stack().tcp_listen(Endpoint{{}, port}, 4, {}));
+    t::TcpSpec syn(Driven::peer(40000), d.local());
+    syn.seq = Seq32{1000};
+    syn.flags = w::tcp_syn;
+    syn.opt.mss = 1460;
+    d.send(syn);
+    const Time t0 = d.now();
+    std::vector<Duration> synacks;
+    for (int ms = 0; ms <= 70'000; ms += 500) {
+      for (const t::Bytes& b : d.out()) {
+        const auto q = parse(b);
+        ASSERT_TRUE(q && is_synack(q->v));
+        synacks.push_back(d.now() - t0);
+      }
+      if (ms == 62'500) {
+        EXPECT_EQ(d.stack().debug_usage().tcp_slots, 2u);
+      }
+      d.run_for(500ms);
+    }
+    const std::vector<Duration> want{0s, 1s, 3s, 7s, 15s, 31s};
+    EXPECT_EQ(synacks, want);
+    EXPECT_EQ(d.stack().debug_usage().tcp_slots, 1u);  // the listener
+    EXPECT_EQ(d.stack().stats().TcpExtTCPSynRetrans, 5u);
+    EXPECT_EQ(d.stack().stats().TcpOutRsts, 0u);
+    d.stack().debug_check();
+  }
+}
+
 // §4.8 data retry limit (Linux retransmits_timed_out): the connection sends
 // RST and fails with timed_out at the first RTO expiry with now -
 // retrans_stamp >= retry_abort_time(data_retries, rto_min, rto_max), measured
