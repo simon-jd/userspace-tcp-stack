@@ -68,8 +68,10 @@ class UtcpTransport final : public Transport {
 public:
   // Opens the TUN interface opts.tun (IFF_TUN | IFF_NO_PI, non-blocking; it is
   // created if missing, which needs CAP_NET_ADMIN; addresses and routes are
-  // the testbed's job, §8.1), checks that opts.stack.mtu equals its MTU, fills
-  // the seed from getrandom(2) if asked, and opens the pcap file.
+  // the testbed's job, §8.1), checks that opts.stack.mtu equals its MTU, waits
+  // up to 1 s until the interface is running (TunDevice::wait_running; an
+  // error if it is down), fills the seed from getrandom(2) if asked, and opens
+  // the pcap file.
   static std::expected<std::unique_ptr<UtcpTransport>, std::string> open(
       const UtcpTransportOptions& opts);
   // The same over an already open datagram fd (one IPv4 datagram per read

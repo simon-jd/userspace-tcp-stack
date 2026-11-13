@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -127,6 +128,13 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::open(
   if (*mtu != opts.stack.mtu) {
     return std::unexpected(std::format("stack MTU {} differs from the MTU {} of {}",
                                        opts.stack.mtu, *mtu, tun->name()));
+  }
+  // Until the kernel has re-enabled the interface's qdisc after the attach,
+  // it drops what it sends to the stack (TunDevice::wait_running).
+  if (!tun->wait_running(std::chrono::seconds{1})) {
+    return std::unexpected(std::format("interface {} is not running (operstate \"{}\"); "
+                                       "is it up?",
+                                       tun->name(), tun->operstate()));
   }
   return attach(tun->release(), opts);
 }

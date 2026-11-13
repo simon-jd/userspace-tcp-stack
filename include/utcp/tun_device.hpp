@@ -2,6 +2,7 @@
 // IP packet and each write sends one, with no extra header in front.
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <expected>
 #include <span>
@@ -37,6 +38,17 @@ public:
   std::expected<std::size_t, std::error_code> read(std::span<std::byte> buf) const;
   // Writes one packet.
   std::expected<std::size_t, std::error_code> write(std::span<const std::byte> packet) const;
+
+  // The interface's operational state, /sys/class/net/<name>/operstate
+  // without the newline ("up", "down", ...); empty if it cannot be read.
+  [[nodiscard]] std::string operstate() const;
+  // Waits until operstate() is "up", polling every 100 us for at most `max`,
+  // then 1 ms more. Attaching to an interface turns its carrier on, but until
+  // the kernel's link watcher has re-enabled the qdisc (right after it sets
+  // operstate to "up"), packets the kernel sends to the interface are dropped
+  // and counted as TX dropped. An interface that is administratively down
+  // never gets there. Returns whether it did.
+  [[nodiscard]] bool wait_running(std::chrono::nanoseconds max) const;
 
 private:
   TunDevice(int fd, std::string name) noexcept : fd_(fd), name_(std::move(name)) {}
