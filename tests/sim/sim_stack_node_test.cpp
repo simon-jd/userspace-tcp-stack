@@ -1,6 +1,6 @@
-// StackNode scenarios over UDP and ICMP. They need a working Stack: the
-// TCP-less parts (IPv4, UDP, ICMP) come with m1-ip, so they are disabled
-// until it is merged.
+// StackNode scenarios over UDP, ICMP and TCP. They need a working Stack: the
+// TCP-less parts (IPv4, UDP, ICMP) come with m1-ip and TCP with m1-tcp-core,
+// so they are disabled until those are merged.
 #include <gtest/gtest.h>
 
 #include "utcp/sim/datagram.hpp"
@@ -105,6 +105,33 @@ TEST(SimStackNode, DISABLED_UdpThroughNarrowRouterLearnsPmtu) {
   const StackRun r = run_stack(s);
   ASSERT_EQ(r.result.verdict, Verdict::ok) << first_violation(r.result);
   EXPECT_EQ(r.result.links[1].frag_needed, 1u);  // later sends fail with message_too_big
+}
+
+// Backlog limits (§7.2): four clients start within 300 us against one
+// listener with backlog 1. SYNs beyond the backlog are dropped and
+// retransmitted (§3.5); the listener accepts each client, told apart by its
+// fixed client port, and every byte arrives at the right connection.
+// TODO(m1-tcp-core): enable once the Stack has the TCP engine.
+TEST(SimStackNode, DISABLED_SharedListenerAcceptsEveryClientBeyondItsBacklog) {
+  Scenario s = two_node_scenario(6, path(10ms), path(10ms));
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    ConnSpec c;
+    c.client = 0;
+    c.server_port = 5000;
+    c.client_port = static_cast<std::uint16_t>(41000 + i);
+    c.backlog = 1;
+    c.start = 1ms + i * 100us;
+    c.bytes_c2s = 20'000 + i * 1000;
+    c.bytes_s2c = 10'000 + i;
+    s.conn.push_back(c);
+  }
+  const StackRun r = run_stack(s);
+  ASSERT_EQ(r.result.verdict, Verdict::ok) << first_violation(r.result);
+  EXPECT_EQ(r.a.tcp_bytes_sent, 86'000u);
+  EXPECT_EQ(r.b.tcp_bytes_received, 86'000u);
+  EXPECT_EQ(r.b.tcp_bytes_sent, 40'006u);
+  EXPECT_EQ(r.a.tcp_bytes_received, 40'006u);
+  EXPECT_EQ(r.a.tcp_errors + r.b.tcp_errors, 0u);
 }
 
 }  // namespace
