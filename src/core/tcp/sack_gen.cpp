@@ -39,7 +39,12 @@ void SackGenerator::on_arrival(Range seg, const RecvBuffer& rb) {
       order[n++] = static_cast<std::uint8_t>(i);
     }
   };
-  add(overlapping(ooo, seg));
+  // Held out of order: inside one range. A segment that was not stored
+  // (empty) or is in-order data lies in none.
+  if (const std::size_t i = overlapping(ooo, seg);
+      i < ooo.size() && ooo[i].begin <= seg.begin && seg.end <= ooo[i].end) {
+    add(i);
+  }
   for (const Range& e : recent_) {
     add(overlapping(ooo, e));
   }

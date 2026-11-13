@@ -2,11 +2,15 @@
 // 7.0 tcp_event_data_recv, __tcp_ack_snd_check, tcp_send_delayed_ack,
 // tcp_dec_quickack_mode, tcp_delack_timer_handler; DESIGN §4.10).
 //
-// Not modelled: pingpong (interactive) mode, the PSH-based ICSK_ACK_PUSHED
-// flags, SACK compression (tcp_comp_sack_*), and the quick-ack reset of the
-// __tcp_select_window call in tcp_cleanup_rbuf. The window conditions of
-// __tcp_ack_snd_check and tcp_cleanup_rbuf come from RcvWindowView
-// (on_window, on_read).
+// Not modelled: pingpong (interactive) mode, so tcp_cleanup_rbuf's ACK after
+// a draining read takes ICSK_ACK_PUSHED alone (in pingpong mode Linux needs
+// ICSK_ACK_PUSHED2, a second small segment); the PSH flag, which also sets
+// ICSK_ACK_PUSHED for a segment of rcv_mss or more (on_data does not see
+// flags); SACK compression (tcp_comp_sack_*); and the quick-ack reset of the
+// __tcp_select_window call in tcp_cleanup_rbuf. ICSK_ACK_PUSHED's other use,
+// the 200 ms max_ato of tcp_send_delayed_ack, changes nothing here: ato
+// stays at most delack_max. The window conditions of __tcp_ack_snd_check and
+// tcp_cleanup_rbuf come from RcvWindowView (on_window, on_read).
 #include "core/tcp/ack_policy.hpp"
 
 #include <algorithm>
@@ -47,18 +51,24 @@ void AckPolicy::measure_rcv_mss(std::uint32_t len, std::uint16_t gso_size) {
   // tcp_measure_rcv_mss. The second branch of Linux adds the TCP header
   // length and compares with TCP_MSS_DEFAULT + 20, and also accepts segments
   // of TCP_MIN_MSS + 20 without PSH, FIN, SYN or URG; the policy sees payload
-  // lengths only, so it takes payload >= TCP_MSS_DEFAULT.
+  // lengths only, so it takes payload >= TCP_MSS_DEFAULT. Only two equal
+  // consecutive segments lower rcv_mss: last_seg_size is reset every time.
   const std::uint32_t lss = last_seg_size_;
   last_seg_size_ = 0;
   const std::uint32_t l = gso_size != 0 ? gso_size : len;
   if (l >= rcv_mss_) {
     rcv_mss_ = static_cast<std::uint16_t>(std::min<std::uint32_t>(l, adv_mss_));
-  } else if (l >= tcp_mss_default) {
+    return;
+  }
+  if (l >= tcp_mss_default) {
     last_seg_size_ = l;
     if (l == lss) {
       rcv_mss_ = static_cast<std::uint16_t>(l);
+      return;
     }
   }
+  // A segment below rcv_mss: ICSK_ACK_PUSHED (PSH or not), see on_read.
+  pushed_ = true;
 }
 
 void AckPolicy::incr_quickack(std::uint32_t rcv_wnd) {
@@ -78,6 +88,13 @@ void AckPolicy::on_data(Time now, std::uint32_t len, std::uint16_t gso_size,
                         const InsertResult& r, std::uint32_t rcv_wnd, Duration rto) {
   rto_ = rto;
   if (len == 0) {
+    return;
+  }
+  if (linux_quickack_ && r.out_of_order && r.dropped > 0) {
+    // tcp_data_queue_ofo: tcp_try_rmem_schedule failed, so it returns before
+    // tcp_measure_rcv_mss and inet_csk_schedule_ack; tcp_ack_snd_check then
+    // sends nothing (no extra duplicate ACK for the peer's dupthresh). The
+    // range-limit drop, which Linux does not have, is handled the same way.
     return;
   }
   rcv_nxt_ = r.contiguous_end;
@@ -193,8 +210,11 @@ void AckPolicy::on_window(Time now, const RcvWindowView& v) {
 
 void AckPolicy::on_read(const RcvWindowView& v) {
   view_ = v;
-  // tcp_cleanup_rbuf: inet_csk_ack_scheduled and rcv_nxt - rcv_wup > rcv_mss.
-  if (linux_quickack_ && pending_ && rcv_nxt_ - rcv_wup_ > rcv_mss_) {
+  // __tcp_cleanup_rbuf with copied > 0: inet_csk_ack_scheduled and either
+  // rcv_nxt - rcv_wup > rcv_mss, or ICSK_ACK_PUSHED (not in pingpong mode)
+  // with sk_rmem_alloc == 0.
+  if (linux_quickack_ && pending_ &&
+      (rcv_nxt_ - rcv_wup_ > rcv_mss_ || (pushed_ && !v.unread && !v.ooo_held))) {
     now_ = true;
   }
 }
@@ -239,6 +259,7 @@ void AckPolicy::on_ack_sent(Time /*now*/) {
     }
   }
   pending_ = false;
+  pushed_ = false;  // inet_csk_clear_xmit_timer(ICSK_TIME_DACK) clears icsk_ack.pending
   now_ = false;
   timer_ = false;
   deadline_ = Time::never();

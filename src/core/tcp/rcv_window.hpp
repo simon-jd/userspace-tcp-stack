@@ -31,6 +31,18 @@ namespace utcp {
   return rcv_wscale == 0 ? 1u : std::uint32_t{2} << rcv_wscale;
 }
 
+// The largest window scale a receive buffer of `rcv_buf` bytes (>= 1)
+// supports: the largest s <= max_wscale with min_rcv_buf(s) <= rcv_buf. An
+// engine that offers a shift from the configuration (effective_rcv_wscale)
+// for a smaller socket buffer can offer min(that shift, max_rcv_wscale(rcv_buf)).
+[[nodiscard]] constexpr std::uint8_t max_rcv_wscale(std::uint32_t rcv_buf) noexcept {
+  std::uint8_t s = 0;
+  while (s < max_wscale && min_rcv_buf(static_cast<std::uint8_t>(s + 1)) <= rcv_buf) {
+    ++s;
+  }
+  return s;
+}
+
 struct SelectedWindow {
   std::uint32_t window = 0;  // bytes advertised (a multiple of 2^rcv_wscale)
   std::uint16_t field = 0;   // the header value, window >> rcv_wscale
@@ -96,7 +108,8 @@ public:
   // The window state AckPolicy::on_window and on_read take (Linux
   // __tcp_select_window as __tcp_ack_snd_check and tcp_select_window see
   // it): data unread, the window before the SWS rule (rounded down) at least
-  // last_window(), and less than half the buffer free.
+  // last_window(), less than half the buffer free, and out-of-order data
+  // held.
   [[nodiscard]] RcvWindowView ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss) const;
 
   // After the application read: whether a window update should be sent now

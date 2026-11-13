@@ -190,6 +190,7 @@ RcvWindowView RcvWindow::ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss) c
   const std::uint64_t free = rb.right_edge() - rb.contiguous_end();
   RcvWindowView v;
   v.unread = rb.readable() > 0;
+  v.ooo_held = !rb.ooo_ranges().empty();
   // __tcp_select_window(sk) >= tp->rcv_wnd, both rounded down here (the
   // unscaled SYN window too).
   v.not_shrinking = std::min(round_down(target(rb, rcv_mss), wscale_), max_win) >=

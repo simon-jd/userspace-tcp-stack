@@ -516,6 +516,127 @@ TEST(AckPolicy, AckNowEnterQuickAckAndWindowGrowth) {
   EXPECT_EQ(y.ap.need(), AckNeed::delayed);
 }
 
+TEST(AckPolicy, AckNowUsesUpNoQuickAck) {
+  // tcp_dec_quickack_mode: pkts = inet_csk_ack_scheduled ? 1 : 0. An ACK
+  // with no data owed leaves the quick-ack count as it was.
+  Rx x(linux_cfg(), 3 * 2 * 1448);  // quick-ack count 3
+  x.next(0ms, 1448);
+  ASSERT_EQ(x.ap.need(), AckNeed::now);
+  x.ap.on_ack_sent(at(0ms));  // 2 left
+  ASSERT_TRUE(x.ap.in_quickack_mode());
+  x.ap.ack_now();  // e.g. a window update after a read
+  EXPECT_EQ(x.ap.need(), AckNeed::now);
+  x.ap.on_ack_sent(at(1ms));
+  EXPECT_TRUE(x.ap.in_quickack_mode());
+  // Two quick ACKs are left for data.
+  for (int i = 0; i < 2; ++i) {
+    x.next(Duration{(2 + i) * 1ms}, 1448);
+    ASSERT_EQ(x.ap.need(), AckNeed::now) << i;
+    x.ap.on_ack_sent(at(Duration{(2 + i) * 1ms}));
+  }
+  EXPECT_FALSE(x.ap.in_quickack_mode());
+  x.next(4ms, 1448);
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+}
+
+TEST(AckPolicy, RcvMssFallsOnlyAfterTwoEqualSegmentsInARow) {
+  // tcp_measure_rcv_mss resets last_seg_size on every call: a short segment
+  // between two equal ones keeps rcv_mss.
+  Rx x(linux_cfg());
+  x.next(0ms, 64'000);
+  ASSERT_EQ(x.ap.rcv_mss(), 1460);
+  x.next(1ms, 1000);
+  x.next(2ms, 400);
+  x.next(3ms, 1000);
+  EXPECT_EQ(x.ap.rcv_mss(), 1460);
+  x.next(4ms, 1000);  // the second 1000 in a row
+  EXPECT_EQ(x.ap.rcv_mss(), 1000);
+}
+
+TEST(AckPolicy, LinuxOutOfOrderSegmentDroppedForMemoryOwesNoAck) {
+  // tcp_data_queue_ofo: tcp_try_rmem_schedule failed; it returns before
+  // tcp_measure_rcv_mss and inet_csk_schedule_ack, so no duplicate ACK goes
+  // out. The 65th-range drop is treated the same.
+  for (const bool range_limit : {false, true}) {
+    Rx x(linux_cfg(), 1u << 20);
+    for (int i = 0; i < 20; ++i) {
+      x.next(Duration{i * 1ms}, 1448);
+      x.ack_if_now(Duration{i * 1ms});
+    }
+    x.ap.on_ack_sent(at(20ms));
+    ASSERT_FALSE(x.ap.in_quickack_mode());
+    ASSERT_EQ(x.ap.rcv_mss(), 1448);
+    InsertResult r;
+    r.contiguous_end = x.rb.contiguous_end();
+    r.out_of_order = true;
+    r.dropped = 1460;
+    r.range_limit = range_limit;
+    x.ap.on_data(at(21ms), 1460, 0, r, x.rcv_wnd, x.rto);
+    EXPECT_EQ(x.ap.need(), AckNeed::none) << range_limit;
+    EXPECT_EQ(x.ap.rcv_mss(), 1448) << range_limit;  // not measured
+    EXPECT_EQ(x.ap.delack_deadline(), Time::never());
+    // A delayed ACK owed before stays as it was.
+    x.next(30ms, 100);
+    ASSERT_EQ(x.ap.need(), AckNeed::delayed);
+    const Time deadline = x.ap.delack_deadline();
+    x.ap.on_data(at(31ms), 1460, 0, r, x.rcv_wnd, x.rto);
+    EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+    EXPECT_EQ(x.ap.delack_deadline(), deadline);
+  }
+  // RFC 5681 §4.2: the rfc profile sends the duplicate ACK.
+  Rx y(rfc_cfg());
+  y.next(0ms, 100);
+  y.ap.on_ack_sent(at(0ms));
+  InsertResult r;
+  r.contiguous_end = y.rb.contiguous_end();
+  r.out_of_order = true;
+  r.dropped = 1000;
+  y.ap.on_data(at(1ms), 1000, 0, r, y.rcv_wnd, y.rto);
+  EXPECT_EQ(y.ap.need(), AckNeed::now);
+}
+
+TEST(AckPolicy, LinuxReadThatDrainsTheBufferAcksASmallSegment) {
+  // __tcp_cleanup_rbuf: with an ACK scheduled, ICSK_ACK_PUSHED (set by
+  // tcp_measure_rcv_mss for a segment below rcv_mss) and sk_rmem_alloc == 0
+  // after the read, ACK at once instead of waiting for the delack timer.
+  Rx x(linux_cfg(), 1u << 20);
+  for (int i = 0; i < 20; ++i) {
+    x.next(Duration{i * 1ms}, 1448);
+    x.ack_if_now(Duration{i * 1ms});
+  }
+  x.ap.on_ack_sent(at(20ms));
+  ASSERT_FALSE(x.ap.in_quickack_mode());
+  ASSERT_EQ(x.ap.rcv_mss(), 1448);
+
+  x.next(30ms, 100);  // a request
+  ASSERT_EQ(x.ap.need(), AckNeed::delayed);
+  x.ap.on_read({.unread = true});  // part of it read: wait
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+  x.ap.on_read({.unread = false, .ooo_held = true});  // out-of-order data still held
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+  x.ap.on_read({});  // drained
+  EXPECT_EQ(x.ap.need(), AckNeed::now);
+  x.ap.on_ack_sent(at(31ms));
+
+  // A full-sized segment sets no flag (PSH is not seen): the read waits.
+  x.next(40ms, 1448);
+  ASSERT_EQ(x.ap.need(), AckNeed::delayed);
+  x.ap.on_read({});
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+  x.ap.on_delack_timer(x.ap.delack_deadline());
+  x.ap.on_ack_sent(x.ap.delack_deadline());
+  // The flag went with the ACK.
+  x.next(300ms, 1448);
+  x.ap.on_read({});
+  EXPECT_EQ(x.ap.need(), AckNeed::delayed);
+
+  // No quick ACK on read in the rfc profile.
+  Rx y(rfc_cfg());
+  y.next(0ms, 100);
+  y.ap.on_read({});
+  EXPECT_EQ(y.ap.need(), AckNeed::delayed);
+}
+
 TEST(AckPolicy, ZeroLengthSegmentChangesNothing) {
   Rx x(linux_cfg());
   x.ap.on_data(at(0ms), 0, 0, InsertResult{}, 64240, 1s);

@@ -34,6 +34,8 @@ struct RcvWindowView {
   // Less than half the buffer is free (Linux __tcp_select_window then clears
   // icsk_ack.quick).
   bool low_space = false;
+  // Out-of-order data is held (with `unread`: Linux sk_rmem_alloc != 0).
+  bool ooo_held = false;
 };
 
 class AckPolicy {
@@ -62,12 +64,19 @@ public:
   // records a D-SACK (SACK negotiated and cfg.dsack). Only in-order data
   // updates ato and the inter-arrival clock (tcp_event_data_recv); rcv_mss is
   // measured on in-order and out-of-order data (Linux 7.0 also measures in
-  // tcp_data_queue_ofo).
+  // tcp_data_queue_ofo). quickack = linux: an out-of-order segment dropped
+  // whole (r.dropped, for lack of chunks or at the range limit) changes
+  // nothing and owes no ACK, as Linux tcp_data_queue_ofo returns on a failed
+  // tcp_try_rmem_schedule before tcp_measure_rcv_mss and
+  // inet_csk_schedule_ack; quickack = rfc sends the duplicate ACK (RFC 5681
+  // §4.2).
   void on_data(Time now, std::uint32_t len, std::uint16_t gso_size, const InsertResult& r,
                std::uint32_t rcv_wnd, Duration rto);
   // An event that needs an immediate ACK (Linux ICSK_ACK_NOW): FIN, a
   // D-SACK, a zero-window drop, a window update after a read. It does not
-  // count as received data, so the ACK it causes uses up no quick ACK.
+  // count as received data, so the ACK it causes uses up no quick ACK
+  // (tcp_dec_quickack_mode counts only a scheduled ACK; Linux schedules one
+  // for a FIN, but no data follows a FIN).
   void ack_now();
   // Linux tcp_enter_quickack_mode (e.g. data below RCV.NXT): an ACK is owed
   // now; linux_compat also refills the quick-ack count and resets ato.
@@ -90,11 +99,14 @@ public:
   // that with less than half the buffer free ends quick-ack mode
   // (__tcp_select_window). An ACK that is then delayed arms the timer.
   void on_window(Time now, const RcvWindowView& v);
-  // The application read data (call after RecvBuffer::read with the new
-  // view). quickack = linux: with an ACK owed and more than one full segment
-  // unacknowledged, ACK now (tcp_cleanup_rbuf: "once-per-two-segments ACK
-  // was not sent by tcp_input.c"). The window update after a read is
-  // RcvWindow::update_after_read's.
+  // The application read data (call after a RecvBuffer::read that returned
+  // bytes, with the new view). quickack = linux: with an ACK owed, ACK now if
+  // more than one full segment is unacknowledged (tcp_cleanup_rbuf:
+  // "once-per-two-segments ACK was not sent by tcp_input.c") or if a segment
+  // shorter than rcv_mss arrived since the last ACK and the read left nothing
+  // unread and no out-of-order data (ICSK_ACK_PUSHED and !sk_rmem_alloc:
+  // "user drained receive buffer and there was a small segment in queue").
+  // The window update after a read is RcvWindow::update_after_read's.
   void on_read(const RcvWindowView& v);
 
   // After input processing: nothing owed, a delayed ACK at delack_deadline(),
@@ -137,6 +149,8 @@ private:
   std::uint16_t adv_mss_ = 536;
   std::uint16_t rcv_mss_ = 536;      // TCP_MSS_DEFAULT until init()
   std::uint32_t last_seg_size_ = 0;  // icsk_ack.last_seg_size
+  // A segment below rcv_mss arrived since the last ACK (ICSK_ACK_PUSHED).
+  bool pushed_ = false;
   Duration ato_{0};
   Duration rto_{0};
   Duration srtt_{0};

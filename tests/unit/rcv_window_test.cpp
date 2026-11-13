@@ -180,6 +180,29 @@ TEST(RcvWindow, MinimumBufferIsTwoScaleUnits) {
   }
 }
 
+TEST(RcvWindow, LargestShiftABufferSupports) {
+  // The largest s <= 14 with min_rcv_buf(s) <= rcv_buf: what an engine can
+  // offer for a socket buffer smaller than the configured shift allows.
+  EXPECT_EQ(utcp::max_rcv_wscale(1), 0);
+  EXPECT_EQ(utcp::max_rcv_wscale(3), 0);
+  EXPECT_EQ(utcp::max_rcv_wscale(4), 1);
+  EXPECT_EQ(utcp::max_rcv_wscale(2047), 9);
+  EXPECT_EQ(utcp::max_rcv_wscale(2048), 10);
+  EXPECT_EQ(utcp::max_rcv_wscale(32767), 13);
+  EXPECT_EQ(utcp::max_rcv_wscale(32768), 14);
+  EXPECT_EQ(utcp::max_rcv_wscale(1u << 30), 14);
+  for (std::uint32_t b = 1; b < 70'000; b += 37) {
+    const std::uint8_t s = utcp::max_rcv_wscale(b);
+    ASSERT_LE(utcp::min_rcv_buf(s), b) << b;
+    if (s < utcp::max_wscale) {
+      ASSERT_GT(utcp::min_rcv_buf(static_cast<std::uint8_t>(s + 1)), b) << b;
+    }
+  }
+  // A buffer at that shift is accepted.
+  RcvWindow rw(linux_cfg(), 1000, false);
+  rw.on_established(utcp::max_rcv_wscale(1000), 1460, rw.syn_window(1460));
+}
+
 TEST(RcvWindowDeathTest, BufferBelowTwoScaleUnitsAborts) {
   // A 1000-byte buffer at shift 10 could only ever advertise 0.
   RcvWindow rw(linux_cfg(), 1000, false);
@@ -277,6 +300,11 @@ TEST(RcvWindow, AckViewFollowsLinuxSelectWindow) {
   v = x.rw.ack_view(x.rb, x.mss);
   EXPECT_FALSE(v.unread);
   EXPECT_FALSE(v.low_space);
+  EXPECT_FALSE(v.ooo_held);
+  x.put(x.rb.contiguous_end() + 1000, 100);  // out of order
+  v = x.rw.ack_view(x.rb, x.mss);
+  EXPECT_FALSE(v.unread);
+  EXPECT_TRUE(v.ooo_held);
 }
 
 TEST(RcvWindow, ReceiverSwsHoldsTheEdgeUntilItCanMoveByOneMss) {

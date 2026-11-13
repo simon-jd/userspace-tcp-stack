@@ -20,14 +20,19 @@ class SackGenerator {
 public:
   SackGenerator() = default;
 
-  // A segment covering `seg` arrived and was inserted into `rb`: remembers the
-  // block containing it as the most recent (RFC 2018 §4, first block). Called
-  // for duplicate out-of-order segments too (Linux tcp_data_queue_ofo goes to
-  // tcp_sack_new_ofo_skb for them). A segment that is not held out of order
-  // (in-order, or dropped) changes no order: RFC 2018 §4 exempts a segment
-  // that advanced the ACK, and like Linux nothing that is not held is
-  // reported. A pending D-SACK that does not lie in `seg` came from an earlier
-  // segment and is forgotten (RFC 2883 §4 rule 1, Linux tcp_data_queue).
+  // A data segment went through RecvBuffer::insert; `seg` is the result's
+  // `stored` range (empty when the segment was dropped or nothing of it was
+  // in the window). Called for every data segment, before on_duplicate.
+  // Remembers the block containing `seg` as the most recent (RFC 2018 §4,
+  // first block), duplicate out-of-order segments included (Linux
+  // tcp_data_queue_ofo goes to tcp_sack_new_ofo_skb for them). Only a `seg`
+  // that lies inside one out-of-order range changes the order: in-order data
+  // advanced the ACK (RFC 2018 §4 exempts it), and a dropped segment is
+  // reported nowhere (Linux tcp_data_queue_ofo returns on a failed
+  // tcp_try_rmem_schedule before tcp_sack_new_ofo_skb), even if it overlaps
+  // a held range. A pending D-SACK that does not lie in `seg` came from an
+  // earlier segment and is forgotten (RFC 2883 §4 rule 1; Linux
+  // tcp_data_queue clears rx_opt.dsack for every data segment).
   void on_arrival(Range seg, const RecvBuffer& rb);
   // Duplicate payload `dup` arrived (InsertResult::duplicate): the next ACK
   // carries it as a D-SACK block (RFC 2883 §4.1). It replaces a D-SACK still

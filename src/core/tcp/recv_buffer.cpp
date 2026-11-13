@@ -119,6 +119,17 @@ InsertResult RecvBuffer::insert(std::uint64_t off, std::span<const std::byte> da
       while (!chunks_fit(lo, hi) && !ooo_.empty() && ooo_.back().begin >= off) {
         r.pruned += prune_last_range();
       }
+      // A duplicate of pruned data is no duplicate any more: Linux inserts
+      // the segment into what is left of the queue and sets a D-SACK only
+      // for overlaps found there. Pruned ranges are the highest ones, so if
+      // the range holding the lowest duplicate run went, every higher one
+      // went too.
+      if (r.pruned > 0 && r.duplicate && r.duplicate->begin >= old_end) {
+        const std::size_t i = first_ending_after(ooo_, r.duplicate->begin);
+        if (i == ooo_.size() || ooo_[i].begin > r.duplicate->begin) {
+          r.duplicate.reset();
+        }
+      }
     }
     if (range_count_with(lo, hi) > max_ooo_ranges) {
       r.range_limit = true;
@@ -168,6 +179,15 @@ InsertResult RecvBuffer::insert(std::uint64_t off, std::span<const std::byte> da
       }
       r.stored = Range{lo, hi};
     }
+  }
+  // A segment dropped whole reports no duplicate unless it began below the
+  // old contiguous end: Linux tcp_data_queue_ofo returns on a failed
+  // tcp_try_rmem_schedule before tcp_dsack_set, and in-order data at
+  // RCV.NXT is dropped before tcp_ofo_queue looks for overlaps, but a
+  // partial packet (seq < RCV.NXT) has its D-SACK set first. (A segment
+  // dropped at the range limit overlaps nothing held.)
+  if (r.dropped > 0 && off >= old_end) {
+    r.duplicate.reset();
   }
 
   r.contiguous_end = rcv_end_;

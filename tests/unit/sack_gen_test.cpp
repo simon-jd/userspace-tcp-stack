@@ -46,7 +46,7 @@ public:
   Ack arrive(std::uint64_t b, std::uint64_t e, std::size_t max_blocks = 4) {
     const std::vector<std::byte> data(static_cast<std::size_t>(e - b), std::byte{0x5a});
     last = rb.insert(b, data, rb.right_edge());
-    sg.on_arrival(Range{b, e}, rb);
+    sg.on_arrival(last.stored, rb);
     if (last.duplicate) {
       sg.on_duplicate(*last.duplicate, rb);
     }
@@ -199,7 +199,7 @@ TEST(SackGen, DsackIsReportedInExactlyOneAck) {
   r.arrive(1000, 1100);  // advances RCV.NXT
   const InsertResult dup = r.rb.insert(1000, std::vector<std::byte>(50), r.rb.right_edge());
   ASSERT_EQ(dup.duplicate, (Range{1000, 1050}));
-  r.sg.on_arrival(Range{1000, 1050}, r.rb);
+  r.sg.on_arrival(dup.stored, r.rb);
   r.sg.on_duplicate(*dup.duplicate, r.rb);
   EXPECT_TRUE(r.sg.dsack_pending());
   EXPECT_EQ(r.blocks().front(), (Range{1000, 1050}));
@@ -214,7 +214,7 @@ TEST(SackGen, DsackOfAnEarlierSegmentIsForgotten) {
   Receiver r(1000);
   r.arrive(3000, 3500);
   const InsertResult dup = r.rb.insert(500, std::vector<std::byte>(100), r.rb.right_edge());
-  r.sg.on_arrival(Range{500, 600}, r.rb);
+  r.sg.on_arrival(dup.stored, r.rb);
   r.sg.on_duplicate(*dup.duplicate, r.rb);
   EXPECT_TRUE(r.sg.dsack_pending());
   // No ACK went out before the next segment.
@@ -251,7 +251,7 @@ TEST(SackGen, PrunedDataIsNotReported) {
   const auto arrive = [&](std::uint64_t b, std::uint64_t e) {
     const std::vector<std::byte> data(static_cast<std::size_t>(e - b));
     const InsertResult r = rb.insert(b, data, rb.right_edge());
-    sg.on_arrival(Range{b, e}, rb);
+    sg.on_arrival(r.stored, rb);
     return r;
   };
   arrive(4096, 4196);    // chunk 1
@@ -265,6 +265,56 @@ TEST(SackGen, PrunedDataIsNotReported) {
   ASSERT_EQ(sg.fill(rb, out, 4), 2u);
   EXPECT_EQ(out[0], (Range{8192, 8292}));
   EXPECT_EQ(out[1], (Range{4096, 4196}));
+}
+
+TEST(SackGen, DroppedSegmentChangesNoOrderAndReportsNoDsack) {
+  // A segment dropped for lack of chunks that overlaps a held range: Linux
+  // tcp_data_queue_ofo returns before tcp_dsack_set and
+  // tcp_sack_new_ofo_skb, and tcp_data_queue has already cleared a pending
+  // D-SACK.
+  constexpr std::uint64_t cs = ChunkPool::chunk_size;
+  ChunkPool pool(2);
+  RecvBuffer rb(1u << 20, pool);
+  SackGenerator sg;
+  const auto arrive = [&](std::uint64_t b, std::uint64_t e) {
+    const std::vector<std::byte> data(static_cast<std::size_t>(e - b));
+    const InsertResult r = rb.insert(b, data, rb.right_edge());
+    sg.on_arrival(r.stored, rb);
+    if (r.duplicate) {
+      sg.on_duplicate(*r.duplicate, rb);
+    }
+    return r;
+  };
+  const auto blocks = [&] {
+    std::array<Range, 4> out{};
+    const std::size_t n = sg.fill(rb, out, 4);
+    return std::vector<Range>(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(n));
+  };
+  arrive(3 * cs + 100, 3 * cs + 200);  // chunk 3
+  arrive(cs + 100, cs + 200);          // chunk 1: the pool is used up
+  ASSERT_EQ(blocks(), (std::vector<Range>{{cs + 100, cs + 200}, {3 * cs + 100, 3 * cs + 200}}));
+  sg.on_ack_sent();
+
+  InsertResult r = arrive(3 * cs + 150, 4 * cs + 100);  // needs chunk 4
+  ASSERT_EQ(r.dropped, cs - 100);
+  EXPECT_FALSE(r.duplicate);
+  EXPECT_FALSE(sg.dsack_pending());
+  EXPECT_EQ(blocks(), (std::vector<Range>{{cs + 100, cs + 200}, {3 * cs + 100, 3 * cs + 200}}));
+  // Given the whole segment instead of `stored`, the generator still sees
+  // that it is not held: it lies inside no range.
+  sg.on_arrival(Range{3 * cs + 150, 4 * cs + 100}, rb);
+  EXPECT_EQ(blocks(), (std::vector<Range>{{cs + 100, cs + 200}, {3 * cs + 100, 3 * cs + 200}}));
+
+  // A D-SACK still pending when a dropped segment arrives is forgotten.
+  r = arrive(cs + 120, cs + 130);  // duplicate, stored in place
+  ASSERT_EQ(r.duplicate, (Range{cs + 120, cs + 130}));
+  ASSERT_TRUE(sg.dsack_pending());
+  EXPECT_EQ(blocks(), (std::vector<Range>{
+                          {cs + 120, cs + 130}, {cs + 100, cs + 200}, {3 * cs + 100, 3 * cs + 200}}));
+  r = arrive(3 * cs + 150, 4 * cs + 100);
+  ASSERT_EQ(r.dropped, cs - 100);
+  EXPECT_FALSE(sg.dsack_pending());
+  EXPECT_EQ(blocks(), (std::vector<Range>{{cs + 100, cs + 200}, {3 * cs + 100, 3 * cs + 200}}));
 }
 
 TEST(SackGen, BlocksNeverReportedAreAppendedLowestFirst) {

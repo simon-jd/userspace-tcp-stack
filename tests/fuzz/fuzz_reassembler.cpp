@@ -11,11 +11,19 @@
 // checks that only whole ranges at or above the segment's offset were
 // pruned, from the top, and applies the same pruning to the reference; a
 // dropped segment must change nothing else. A mismatch aborts through
-// UTCP_CHECK.
+// UTCP_CHECK. FINs and segments can be placed relative to the end of the
+// highest byte held, so the boundary cases there (the last segment and its
+// FIN while earlier data is missing) take a few input bytes.
+//
+// Cost: the reference does O(window) work per step, so the capacities stay
+// at most 70'000 bytes (280'000 after growing). A 10-minute campaign runs
+// e.g. -max_len=1024 -jobs=8 -workers=8 on CPUs 16-31.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -33,7 +41,7 @@ using utcp::RecvBuffer;
 using utcp::test::NaiveReassembler;
 
 constexpr std::uint64_t cs = ChunkPool::chunk_size;
-constexpr std::uint32_t capacities[] = {1, 100, 3000, 4096, 3 * 4096 + 17, 16384, 65535, 200000};
+constexpr std::uint32_t capacities[] = {1, 100, 3000, 4096, 3 * 4096 + 17, 16384, 65535, 70000};
 
 class Input {
 public:
@@ -76,20 +84,26 @@ void check_same(const RecvBuffer& rb, const NaiveReassembler& ref) {
   UTCP_CHECK(rb.chunks_held() <= rb.capacity() / cs + 2);
 }
 
+// The end of the highest byte held (contiguous_end() without out-of-order
+// data).
+std::uint64_t top(const RecvBuffer& rb) {
+  return rb.ooo_ranges().empty() ? rb.contiguous_end() : rb.ooo_ranges().back().end;
+}
+
 void insert(RecvBuffer& rb, NaiveReassembler& ref, std::uint64_t off,
             std::span<const std::byte> data, std::uint64_t limit, bool short_pool) {
   const std::vector<Range> before(rb.ooo_ranges().begin(), rb.ooo_ranges().end());
+  const std::uint64_t old_end = rb.contiguous_end();
   const InsertResult x = rb.insert(off, data, limit);
   if (x.pruned > 0 || (x.dropped > 0 && !x.range_limit)) {
     // Short of chunks: only with a short pool, and never at the range limit.
     UTCP_CHECK(short_pool);
     UTCP_CHECK(!x.range_limit);
-    // What insert decides before pruning, against the unpruned reference.
-    NaiveReassembler probe = ref;
-    const InsertResult y = probe.insert(off, data, limit);
+    // What insert decides before pruning, from the unpruned reference.
+    const InsertResult y = ref.plan(off, data.size(), limit);
     UTCP_CHECK(!y.range_limit);
     UTCP_CHECK(x.out_of_order == y.out_of_order);
-    UTCP_CHECK(x.duplicate == y.duplicate);
+    std::uint64_t pruned_from = std::numeric_limits<std::uint64_t>::max();
     if (x.pruned > 0) {
       // Whole ranges from the top, each beginning at or above `off`.
       std::uint64_t sum = 0;
@@ -101,8 +115,17 @@ void insert(RecvBuffer& rb, NaiveReassembler& ref, std::uint64_t off,
         sum += before[k].end - before[k].begin;
       }
       UTCP_CHECK(sum == x.pruned);
-      ref.drop_from(before[k].begin);
+      pruned_from = before[k].begin;
+      ref.drop_from(pruned_from);
     }
+    // The duplicate, except one in a pruned range or of a segment at or
+    // above the old contiguous end that was dropped (Linux sets no D-SACK
+    // for either).
+    std::optional<Range> dup = y.duplicate;
+    if (dup && dup->begin >= old_end && (x.dropped > 0 || dup->begin >= pruned_from)) {
+      dup.reset();
+    }
+    UTCP_CHECK(x.duplicate == dup);
     if (x.dropped > 0) {
       // The whole segment, nothing else changed.
       UTCP_CHECK(x.stored == Range{});
@@ -165,9 +188,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       case 1:
       case 2:
       case 3: {
-        // A segment near contiguous_end or the read offset, from a little
-        // below it to past the right edge.
-        const std::uint64_t base = (op & 8) != 0 ? rb.read_offset() : rb.contiguous_end();
+        // A segment near contiguous_end, the read offset or the end of the
+        // highest byte held, from a little below it to past the right edge.
+        const std::uint64_t base = (op & 3) == 3   ? top(rb)
+                                   : (op & 8) != 0 ? rb.read_offset()
+                                                   : rb.contiguous_end();
         const std::uint16_t d = in.u16();
         std::uint64_t off = 0;
         if ((op & 16) != 0) {
@@ -185,8 +210,16 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         read(rb, ref, in.u16() % (cap + 1));
         break;
       case 5: {
-        const std::uint64_t base = (op & 8) != 0 ? rb.read_offset() : rb.contiguous_end();
-        const std::uint64_t at = base + in.u16() % (cap + 1);
+        std::uint64_t at = 0;
+        if ((op & 16) != 0) {
+          // top - 2 .. top + 2 around the end of the highest byte held.
+          const std::uint64_t t = top(rb);
+          const std::uint64_t d = in.u8() % 5;
+          at = t + d >= 2 ? t + d - 2 : 0;
+        } else {
+          const std::uint64_t base = (op & 8) != 0 ? rb.read_offset() : rb.contiguous_end();
+          at = base + in.u16() % (cap + 1);
+        }
         rb.set_fin(at);
         ref.set_fin(at);
         break;

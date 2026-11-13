@@ -37,6 +37,11 @@ struct InsertResult {
   bool ooo_held = false;
   // The lowest run of segment bytes that were already received (below the old
   // contiguous_end or inside an old range): the D-SACK candidate (RFC 2883 §4).
+  // As Linux, not set for a segment at or above the old contiguous_end that
+  // was dropped whole (tcp_data_queue_ofo drops before tcp_dsack_set), nor
+  // for a run inside a range pruned for this segment; a segment below it
+  // keeps [off, old contiguous_end) even when dropped (tcp_data_queue sets
+  // that D-SACK first).
   std::optional<Range> duplicate;
   // [max(off, read_offset()), clipped end): the part of the segment held
   // after the insert; empty (Range{}) when the segment was dropped or nothing
