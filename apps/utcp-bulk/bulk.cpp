@@ -164,7 +164,10 @@ std::expected<void, std::string> BulkApp::start() {
 }
 
 void BulkApp::on_accept(ConnId listener, ConnId conn) {
-  if (listener != listener_ || conn_ != no_conn) {
+  if (listener_ == no_conn || listener != listener_) {
+    return;  // not ours
+  }
+  if (conn_ != no_conn) {
     t_.close(conn);  // one connection only
     return;
   }
