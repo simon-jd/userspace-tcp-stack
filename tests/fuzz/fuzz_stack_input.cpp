@@ -152,10 +152,10 @@ public:
         c.h.reset();
       }
     }
-    for (const Handle& a : accepted_) {
+    for (const Handle& a : loose_) {
       static_cast<void>(stack_.tcp_close(a));
     }
-    accepted_.clear();
+    loose_.clear();
     for (const Handle& l : listeners_) {
       static_cast<void>(stack_.tcp_close(l));
     }
@@ -498,7 +498,7 @@ private:
         hs.push_back(*c.h);
       }
     }
-    hs.insert(hs.end(), accepted_.begin(), accepted_.end());
+    hs.insert(hs.end(), loose_.begin(), loose_.end());
     if (hs.empty()) {
       return;
     }
@@ -510,7 +510,7 @@ private:
           c.h.reset();
         }
       }
-      std::erase(accepted_, h);
+      std::erase(loose_, h);
     };
     switch ((sel >> 4) % 8) {
       case 0:
@@ -562,15 +562,15 @@ private:
     }
   }
 
-  // tcp_accept on the listener. The child's handle joins the application's
-  // (socket calls reach it, finish() closes it); which Conn it is does not
-  // matter, the peer side is driven through its Conn entry either way.
+  // tcp_accept on the listener. The child's handle joins loose_; which Conn
+  // it is does not matter, the peer side is driven through its Conn entry
+  // either way.
   void accept() {
-    if (listeners_.empty() || accepted_.size() >= 16) {
+    if (listeners_.empty() || loose_.size() >= 16) {
       return;
     }
     if (const auto a = stack_.tcp_accept(listeners_[0])) {
-      accepted_.push_back(*a);
+      loose_.push_back(*a);
     }
   }
 
@@ -583,9 +583,13 @@ private:
     if (!h) {
       return;
     }
+    // Under a hold the queue also holds earlier output, ICMP included.
     while (auto p = stack_.pop_transmit()) {
       const auto ip = wire::parse_ipv4(p->buf.bytes());
       UTCP_CHECK(ip.has_value());
+      if (ip->h.proto != utcp::ip_proto_tcp) {
+        continue;
+      }
       const auto seg = wire::parse_tcp(ip->payload, ip->h.src, ip->h.dst, true);
       UTCP_CHECK(seg.has_value());
       if ((seg->h.flags & wire::tcp_syn) == 0 || seg->h.dport != rport) {
@@ -606,6 +610,10 @@ private:
       }
       last_sent_.assign(p->buf.bytes().begin(), p->buf.bytes().end());
     }
+    if (std::none_of(conns_.begin(), conns_.end(), [&](const Conn& k) { return k.h == *h; })) {
+      loose_.push_back(*h);  // no SYN went out yet (transmit queue full)
+      return;
+    }
     // The peer may answer at once with a SYN-ACK.
     if ((in.u8() & 1) != 0) {
       for (Conn& k : conns_) {
@@ -624,7 +632,10 @@ private:
   PeerOptions peer_opt_;
   std::vector<Conn> conns_;
   std::vector<Handle> listeners_;
-  std::vector<Handle> accepted_;  // children taken by accept()
+  // Handles without a Conn entry: children taken by accept(), connects whose
+  // SYN a full transmit queue held back. Socket calls reach them; finish()
+  // closes them.
+  std::vector<Handle> loose_;
   std::vector<std::byte> last_sent_;
   int hold_ = 0;  // operations left before the next drain
 };
