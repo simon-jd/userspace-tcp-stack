@@ -181,12 +181,16 @@ private:
   [[nodiscard]] bool paws_reject(const Tcb& t, const InSeg& s) const;
   void update_ts_recent(Tcb& t, const InSeg& s);
   [[nodiscard]] std::uint32_t peer_window(const Tcb& t, std::uint16_t field) const;
-  // RFC 5961 §7 / Linux tcp_oow_rate_limited: false (and `skipped` counted)
-  // within oow_ack_interval of the last such ACK; segments with data or FIN
-  // and no SYN are never limited.
+  // RFC 5961 §7 / Linux __tcp_oow_rate_limited: false (and `skipped`
+  // counted) within oow_ack_interval of the last such ACK. With
+  // `exempt_data` (Linux tcp_oow_rate_limited, for duplicate ACKs only),
+  // segments with data or FIN and no SYN are never limited; challenge ACKs
+  // always are (Linux tcp_send_challenge_ack).
   [[nodiscard]] bool oow_allowed(std::optional<Time>& last, const InSeg& s,
-                                 std::uint64_t& skipped);
+                                 std::uint64_t& skipped, bool exempt_data);
   void challenge_ack(Tcb& t, const InSeg& s);
+  [[nodiscard]] bool rst_exact(const Tcb& t, const InSeg& s) const;
+  void reset_input(Tcb& t);
   void dup_ack(Tcb& t, const InSeg& s, std::uint64_t& skipped);
   [[nodiscard]] bool process_ack_input(Tcb& t, const InSeg& s);
   [[nodiscard]] bool data_input(Tcb& t, const InSeg& s);

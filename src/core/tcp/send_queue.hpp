@@ -161,6 +161,13 @@ public:
   // (checked): a TxSeg starts at off and 0 < len < its length.
   void split(std::uint64_t off, std::uint32_t len);
 
+  // The connection is gone (reset, timed out, aborted; Linux
+  // tcp_write_queue_purge): every TxSeg and unsent byte is dropped and the
+  // ring's chunks go back to the pool. una() and nxt() move to end(), so the
+  // TxSegs still cover [una(), nxt()); the packet counters are zero, the byte
+  // totals (bytes_sent, ...) stay.
+  void purge();
+
   [[nodiscard]] const Counters& counters() const;
   // Packets marked lost so far (Linux tp->lost): mark_lost calls that set a
   // lost mark or found a lost retransmission. AckOutcome::newly_lost is its

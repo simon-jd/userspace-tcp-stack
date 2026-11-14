@@ -353,6 +353,53 @@ TEST(TcpPmtu, UnreachableInSynSent) {
   }
 }
 
+// §4.7: a soft error stored in SYN-SENT ends with the handshake, whose ACK
+// is an acceptable ACK (Linux tcp_ack clears sk_err_soft): the first SYN
+// draws a host unreachable, the retransmitted SYN completes, and
+// take_error (SO_ERROR) reports nothing on the working connection.
+TEST(TcpPmtu, SoftErrorInSynSentEndsWithTheHandshake) {
+  t::TcpHarness h;
+  std::optional<t::Bytes> syn;
+  bool dead = false;
+  h.set_hook([&](Side from, t::Bytes& d) {
+    if (dead) {
+      return t::Verdict::drop;
+    }
+    const auto q = parse(d);
+    if (from == Side::a && q && is_syn(q->v) && !syn) {
+      syn = d;
+      return t::Verdict::drop;
+    }
+    return t::Verdict::deliver;
+  });
+  const auto l = h.b().tcp_listen(Endpoint{{}, port}, 4, {});
+  ASSERT_TRUE(l);
+  const auto c = h.a().tcp_connect(Endpoint{h.addr(Side::b), port}, {});
+  ASSERT_TRUE(c);
+  h.settle();
+  ASSERT_TRUE(syn.has_value());
+  h.a().receive(h.now(), t::icmp_error(h.addr(Side::b), h.addr(Side::a), w::icmp_dest_unreach,
+                                       w::icmp_host_unreach, 0, *syn));
+  EXPECT_EQ(state(h.a(), *c), TcpState::syn_sent);
+  h.run_for(3s);
+  ASSERT_EQ(state(h.a(), *c), TcpState::established);
+  EXPECT_EQ(h.a().stats().TcpExtTCPSynRetrans, 1u);
+  EXPECT_EQ(h.a().take_error(*c), std::nullopt);
+  const auto s = h.b().tcp_accept(*l);
+  ASSERT_TRUE(s);
+  ASSERT_TRUE(h.a().tcp_send(*c, t::pattern(1000)));
+  h.run_for(1s);
+  EXPECT_EQ(drain(h.b(), *s), t::pattern(1000));
+  EXPECT_EQ(h.a().take_error(*c), std::nullopt);
+  // The path dies: the timeout reports timed_out, not the old soft error.
+  dead = true;
+  ASSERT_TRUE(h.a().tcp_send(*c, t::pattern(1000, 1)));
+  h.run_for(2000s);
+  EXPECT_EQ(state(h.a(), *c), TcpState::closed);
+  EXPECT_EQ(h.a().take_error(*c), Error::timed_out);
+  h.a().debug_check();
+}
+
 // RFC 5461 §4: in a synchronized state every unreachable is soft. The
 // connection carries on; the error is reported like SO_ERROR, and it is the
 // error of a later timeout unless an acceptable ACK cleared it (Linux

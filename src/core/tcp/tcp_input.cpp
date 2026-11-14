@@ -16,6 +16,9 @@ using namespace wire;
 
 constexpr Duration paws_24days = std::chrono::hours{24 * 24};
 constexpr Duration paws_msl = std::chrono::seconds{60};  // Linux TCP_PAWS_MSL
+// Linux TCP_TIMEOUT_MIN (2 jiffies at HZ = 1000): the SYN timer after an
+// unacceptable ACK in SYN-SENT.
+constexpr Duration syn_rearm_delay = std::chrono::milliseconds{2};
 
 // RFC 7323 §2.3: a shift above 14 is used as 14.
 std::uint8_t clamp_wscale(std::uint8_t s) { return std::min<std::uint8_t>(s, max_wscale); }
@@ -229,6 +232,13 @@ void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
   t.backoff = 0;
   t.rto_count = 0;
   t.retrans_stamp.reset();
+  // The handshake's ACK is an acceptable ACK (§4.7): the peer answered, so a
+  // soft error stored in a SYN state (an ICMP unreachable for an earlier
+  // SYN) is no longer the connection's error (Linux tcp_ack, reached from
+  // tcp_rcv_synsent_state_process and tcp_rcv_state_process, clears
+  // sk_err_soft and icsk_probes_out).
+  t.soft_error.reset();
+  t.probes_out = 0;
   core_.timers().cancel(t.t_xmit);
   t.xmit_kind = XmitTimer::none;
   set_state(t, TcpState::established);
@@ -261,6 +271,17 @@ void TcpEngine::syn_sent_input(Tcb& t, const InSeg& s) {
       if (!s.has(tcp_rst)) {
         send_reset_reply(t.tuple, s);
       }
+      // As built, Linux tcp_rcv_synsent_state_process ("Previous FIN/ACK or
+      // RST/ACK might be ignored"): before any SYN retransmission, the SYN
+      // goes again after syn_rearm_delay instead of the full RTO. The usual
+      // case is a peer holding a stale connection on the reused tuple: it
+      // answers our SYN with a challenge ACK, our RST frees it, and the next
+      // SYN can complete at once. The early expiry counts as a retry.
+      if (t.rto_count == 0) {
+        core_.timers().arm(t.t_xmit, now + syn_rearm_delay);
+        t.xmit_kind = XmitTimer::rto;
+        trace_timer(t, TraceTimer::rto, TimerOp::armed);
+      }
       trace_drop(&t, s);
       return;
     }
@@ -268,8 +289,10 @@ void TcpEngine::syn_sent_input(Tcb& t, const InSeg& s) {
     // TSecr validation (Linux tcp_rcv_synsent_state_process,
     // PAWSActiveRejected): a nonzero TSecr must echo a TSval sent between
     // our first SYN and now, else the segment is an old duplicate: RST
-    // <SEQ=SEG.ACK> (none to an RST) and drop, still in SYN-SENT.
-    if (s.v->opt.ts && s.v->opt.ts->ecr != 0) {
+    // <SEQ=SEG.ACK> (none to an RST) and drop, still in SYN-SENT. Only if
+    // our SYN offered timestamps: otherwise the option is ignored, as Linux
+    // tcp_parse_options does in SYN-SENT with tcp_timestamps off.
+    if (cfg_.timestamps && s.v->opt.ts && s.v->opt.ts->ecr != 0) {
       const std::uint32_t lo = ts_now(t, t.syn_first_tx);
       if (s.v->opt.ts->ecr - lo > ts_now(t, s.now) - lo) {
         ++core_.stats().TcpExtPAWSActive;
@@ -339,9 +362,10 @@ bool TcpEngine::paws_reject(const Tcb& t, const InSeg& s) const {
   return may_update_window || static_cast<std::int64_t>(older) > rto_ms * 1200 / 1000;
 }
 
-bool TcpEngine::oow_allowed(std::optional<Time>& last, const InSeg& s, std::uint64_t& skipped) {
+bool TcpEngine::oow_allowed(std::optional<Time>& last, const InSeg& s, std::uint64_t& skipped,
+                            bool exempt_data) {
   // Linux tcp_oow_rate_limited: data or FIN without SYN cannot be an ACK loop.
-  if (s.len > 0 && !s.has(tcp_syn)) {
+  if (exempt_data && s.len > 0 && !s.has(tcp_syn)) {
     return true;
   }
   if (last && s.now - *last < cfg_.oow_ack_interval) {
@@ -352,10 +376,13 @@ bool TcpEngine::oow_allowed(std::optional<Time>& last, const InSeg& s, std::uint
   return true;
 }
 
-// RFC 5961 §3.2, §4.2, §5.2.
+// RFC 5961 §3.2, §4.2, §5.2, rate-limited per §7 whatever the segment
+// carries (Linux tcp_send_challenge_ack calls __tcp_oow_rate_limited, which
+// has no data exemption): an RST, SYN or bad ACK with payload is still a
+// challenge, not a duplicate to acknowledge at once.
 void TcpEngine::challenge_ack(Tcb& t, const InSeg& s) {
   StackStats& st = core_.stats();
-  if (oow_allowed(t.last_oow_ack, s, st.TcpExtTCPACKSkippedChallenge)) {
+  if (oow_allowed(t.last_oow_ack, s, st.TcpExtTCPACKSkippedChallenge, false)) {
     ++st.TcpExtTCPChallengeACK;
     send_ack(t, s.now, TxKind::challenge_ack);
   }
@@ -365,7 +392,7 @@ void TcpEngine::challenge_ack(Tcb& t, const InSeg& s) {
 // D-SACK for payload below RCV.NXT (RFC 2883 §4; Linux tcp_send_dupack).
 // SYN and FIN never produce a D-SACK block (§3.2).
 void TcpEngine::dup_ack(Tcb& t, const InSeg& s, std::uint64_t& skipped) {
-  if (!oow_allowed(t.last_oow_ack, s, skipped)) {
+  if (!oow_allowed(t.last_oow_ack, s, skipped, true)) {
     return;
   }
   if (s.plen > 0 && t.sack_ok && cfg_.dsack) {
@@ -403,7 +430,7 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
     // Only a SYN passing PAWS resends the SYN-ACK (Linux tcp_check_req,
     // inet_rtx_syn_ack), rate-limited; an older duplicate takes the PAWS
     // path below.
-    if (oow_allowed(t.last_oow_ack, s, st.TcpExtTCPACKSkippedSynRecv)) {
+    if (oow_allowed(t.last_oow_ack, s, st.TcpExtTCPACKSkippedSynRecv, true)) {
       send_syn(t, now);
     }
     return;
@@ -449,10 +476,17 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
     window_drop = true;
   }
   if (!acceptable) {
-    trace_drop(&t, s);
     if (s.has(tcp_rst)) {
+      // Out of the window: dropped silently (RFC 5961 §3.2), unless it is
+      // the RCV.NXT − 1 case of rst_exact.
+      if (rst_exact(t, s)) {
+        reset_input(t);
+        return;
+      }
+      trace_drop(&t, s);
       return;
     }
+    trace_drop(&t, s);
     if (s.has(tcp_syn)) {
       ++st.TcpExtTCPSYNChallenge;
       challenge_ack(t, s);
@@ -466,27 +500,13 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
   // must not move it (update_ts_recent).
   // Step 3 (RFC 5961 §3.2): RST.
   if (s.has(tcp_rst)) {
-    if (s.seq != rcv_nxt) {
+    if (!rst_exact(t, s)) {
       challenge_ack(t, s);
       transmit(t, now);
       return;
     }
-    switch (t.state) {
-      case TcpState::syn_received:
-        if (t.passive) {
-          close_conn(t, CloseCause::child_reset);
-        } else {
-          close_conn(t, CloseCause::refused, Error::connection_refused);
-        }
-        return;
-      case TcpState::closing:
-      case TcpState::last_ack:
-        close_conn(t, CloseCause::rst_received);
-        return;
-      default:
-        close_conn(t, CloseCause::rst_received, Error::connection_reset);
-        return;
-    }
+    reset_input(t);
+    return;
   }
   // Step 5 (RFC 5961 §4.2): SYN.
   if (s.has(tcp_syn) && !crossing) {
@@ -546,6 +566,45 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
     return;
   }
   transmit(t, now);
+}
+
+// RFC 5961 §3.2: an RST resets only at SEG.SEQ == RCV.NXT. As built, both
+// profiles also take the two extensions of Linux tcp_validate_incoming
+// (§4.4 step 3): RCV.NXT − 1 once the peer's FIN is in (CLOSE-WAIT, CLOSING,
+// LAST-ACK; tcp_reset_check), since a peer may reset at its FIN's sequence
+// number, and, with SACK, the right edge of the highest out-of-order block,
+// which is the peer's SND.NXT when only a hole is missing.
+bool TcpEngine::rst_exact(const Tcb& t, const InSeg& s) const {
+  const Seq32 rcv_nxt = t.rcv_nxt();
+  if (s.seq == rcv_nxt) {
+    return true;
+  }
+  if (s.seq == rcv_nxt - 1 && (t.state == TcpState::close_wait || t.state == TcpState::closing ||
+                               t.state == TcpState::last_ack)) {
+    return true;
+  }
+  const auto ooo = t.rcvq.ooo_ranges();
+  return t.sack_ok && !ooo.empty() && s.seq == seq_at(t.rcv_base(), ooo.back().end);
+}
+
+// Step 3, an exact RST: the reset per state (RFC 9293 §3.10.7.4).
+void TcpEngine::reset_input(Tcb& t) {
+  switch (t.state) {
+    case TcpState::syn_received:
+      if (t.passive) {
+        close_conn(t, CloseCause::child_reset);
+      } else {
+        close_conn(t, CloseCause::refused, Error::connection_refused);
+      }
+      return;
+    case TcpState::closing:
+    case TcpState::last_ack:
+      close_conn(t, CloseCause::rst_received);
+      return;
+    default:
+      close_conn(t, CloseCause::rst_received, Error::connection_reset);
+      return;
+  }
 }
 
 // The window field of a non-SYN segment in bytes (RFC 7323 §2.3), or as a
@@ -636,9 +695,17 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
                      !before(o.sack[1].second, o.sack[0].second);
         }
         if (is_dsack) {
-          if (b < e && e > 0) {
+          // §4.5: inside [SND.UNA − MAX.SND.WND, SND.NXT] like any block
+          // (Linux tcp_is_sackblock_valid; tcp_dsack_seen also refuses one
+          // longer than the largest window). An invalid D-SACK is discarded
+          // and the ACK counts as one without D-SACK.
+          const std::int64_t lo =
+              static_cast<std::int64_t>(prior_una) - std::int64_t{t.max_snd_wnd};
+          if (b < e && e > 0 && static_cast<std::uint64_t>(e) <= nxt_off && b >= lo) {
             dsack = Range{static_cast<std::uint64_t>(std::max<std::int64_t>(b, 0)),
                           static_cast<std::uint64_t>(e)};
+          } else {
+            ++st.TcpExtTCPSACKDiscard;
           }
           continue;
         }
@@ -736,8 +803,13 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
     sndbuf_expand(t);
     window_writable(t, now);
   }
-  // RFC 5681 §4.1 after the window opened on an idle connection.
-  if (window_update && t.sndq.counters().packets_out == 0 && t.sndq.end() > t.sndq.nxt()) {
+  // RFC 5681 §4.1 after the window opened on an idle connection (rfc5681
+  // only). Linux restarts only when new data is queued (tcp_skb_entail, our
+  // tcp_send), so idle_restart = linux keeps cwnd across a zero-window stall:
+  // zero-window probes do not move lsndtime, and a halving per RTO of the
+  // stall would collapse cwnd to IW.
+  if (cfg_.idle_restart == IdleRestart::rfc5681 && window_update &&
+      t.sndq.counters().packets_out == 0 && t.sndq.end() > t.sndq.nxt()) {
     cwnd_restart(t.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
                  t.rtt.rto_backed_off(t.backoff), initial_window(t));
   }
@@ -978,7 +1050,7 @@ void TcpEngine::time_wait_input(std::uint32_t index, const InSeg& s) {
   if (e.has_oow_ack) {
     last = e.last_oow_ack;
   }
-  if (oow_allowed(last, s, st.TcpExtTCPACKSkippedTimeWait)) {
+  if (oow_allowed(last, s, st.TcpExtTCPACKSkippedTimeWait, true)) {
     if (last) {
       e.last_oow_ack = *last;
       e.has_oow_ack = true;

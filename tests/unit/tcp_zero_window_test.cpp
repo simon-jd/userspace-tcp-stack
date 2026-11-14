@@ -344,4 +344,61 @@ TEST(TcpZeroWindow, ReadingResumesTheTransfer) {
   }
 }
 
+// §3.9 idle_restart: a receiver that keeps its window at 0 for 10 s while
+// data waits (probes unanswered, so nothing moves lsndtime) and then opens
+// it. Under rfc5681 the window update finds the connection idle for more
+// than an RTO and restarts from min(IW, cwnd) (RFC 5681 §4.1); under linux
+// cwnd is kept, as Linux checks idle restart only when new data is queued
+// (tcp_skb_entail), never on a window update.
+TEST(TcpZeroWindow, StalledWindowKeepsCwndUnderLinuxIdleRestart) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    Scripted c(profile);
+    ASSERT_TRUE(c.accept());
+    const std::uint32_t iw = c.stack().tcp_info(c.h)->cwnd;
+    // A bulk writer; the peer ACKs every data segment at once.
+    const t::Bytes chunk = t::pattern(65536);
+    for (int round = 0; round < 400 && c.stack().tcp_info(c.h)->cwnd < 40; ++round) {
+      static_cast<void>(c.stack().tcp_send(c.h, chunk));
+      c.d().run_for(1ms);
+      for (const Parsed& p : c.out()) {
+        if (is_data(p.v)) {
+          c.their = p.v.h.seq + static_cast<std::uint32_t>(p.v.payload.size());
+          c.send(c.spec(w::tcp_ack));
+        }
+      }
+    }
+    // The last ACK closes the window over everything sent so far.
+    static_cast<void>(c.stack().tcp_send(c.h, chunk));
+    for (const Parsed& p : c.out()) {
+      if (is_data(p.v)) {
+        c.their = p.v.h.seq + static_cast<std::uint32_t>(p.v.payload.size());
+      }
+    }
+    c.window = 0;
+    c.send(c.spec(w::tcp_ack));
+    (void)c.out();
+    const auto before = *c.stack().tcp_info(c.h);
+    ASSERT_GE(before.cwnd, 40u);
+    ASSERT_EQ(before.unacked, 0u);
+    ASSERT_GT(before.notsent_bytes, 0u);
+    // 10 s at window 0, the probes unanswered.
+    c.d().run_for(10s);
+    EXPECT_GT(c.stack().stats().TcpExtTCPWinProbe, 2u);
+    (void)c.out();
+    c.window = 65535;
+    c.send(c.spec(w::tcp_ack));
+    const auto after = *c.stack().tcp_info(c.h);
+    EXPECT_EQ(after.state, TcpState::established);
+    if (profile == ProfileId::rfc) {
+      EXPECT_EQ(after.cwnd, std::min(iw, before.cwnd));
+    } else {
+      EXPECT_EQ(after.cwnd, before.cwnd);
+      EXPECT_EQ(after.ssthresh, before.ssthresh);
+    }
+    EXPECT_FALSE(c.out().empty());  // the queued data goes out
+    c.stack().debug_check();
+  }
+}
+
 }  // namespace

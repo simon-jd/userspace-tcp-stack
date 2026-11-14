@@ -369,6 +369,15 @@ std::span<const TxSeg> SendQueue::segs() const {
   return std::span<const TxSeg>(segs_).subspan(head_);
 }
 
+void SendQueue::purge() {
+  ring_.consume(end_ - una());  // begin() reaches high_water(): every chunk is freed
+  nxt_ = end_;
+  segs_.clear();
+  head_ = 0;
+  ctr_.packets_out = ctr_.sacked_out = ctr_.lost_out = ctr_.retrans_out = 0;
+  high_sacked_ = 0;
+}
+
 void SendQueue::compact() {
   if (head_ == segs_.size()) {
     segs_.clear();

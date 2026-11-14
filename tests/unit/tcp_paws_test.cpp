@@ -426,4 +426,42 @@ TEST(TcpPaws, SynSentRejectsSynAckWithInvalidTsecr) {
   }
 }
 
+// The TSecr check of SYN-SENT applies only when our SYN offered timestamps.
+// With timestamps off, a SYN-ACK carrying a TS option with any TSecr is
+// taken as if it had none (Linux tcp_parse_options ignores the option in
+// SYN-SENT with tcp_timestamps off): the handshake completes and no segment
+// carries timestamps.
+TEST(TcpPaws, SynSentIgnoresTimestampsItDidNotOffer) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    StackConfig cfg = config(Side::b, profile);
+    cfg.tcp.timestamps = false;
+    Driven d(cfg);
+    const auto h = d.stack().tcp_connect(Endpoint{Driven::peer(80)}, {});
+    ASSERT_TRUE(h);
+    const auto syn_out = d.out();
+    ASSERT_EQ(syn_out.size(), 1u);
+    const auto syn = parse(syn_out[0]);
+    ASSERT_TRUE(syn);
+    EXPECT_FALSE(syn->v.opt.ts.has_value());
+    d.run_for(50ms);
+    t::TcpSpec sa(Driven::peer(80), Endpoint{d.stack().config().local_addr, syn->v.h.sport});
+    sa.seq = Seq32{777};
+    sa.ack = syn->v.h.seq + 1;
+    sa.flags = w::tcp_syn | w::tcp_ack;
+    sa.opt.mss = 1460;
+    sa.opt.ts = w::Timestamps{100, 0x1234'5678u};
+    d.send(sa);
+    const auto ack = d.out();
+    ASSERT_EQ(ack.size(), 1u);
+    const auto a = parse(ack[0]);
+    ASSERT_TRUE(a);
+    EXPECT_TRUE(is_pure_ack(a->v));
+    EXPECT_FALSE(a->v.opt.ts.has_value());
+    EXPECT_EQ(state(d.stack(), *h), TcpState::established);
+    EXPECT_EQ(d.stack().stats().TcpExtPAWSActive, 0u);
+    d.stack().debug_check();
+  }
+}
+
 }  // namespace

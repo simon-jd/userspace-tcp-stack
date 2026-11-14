@@ -267,7 +267,7 @@ std::optional<Error> take_error(Handle);                                        
 | `tcp_accept` | pops the oldest established child. Children inherit the listener's options. |
 | `tcp_connect` | allocates a port (§4.6), sends SYN; result via `connected` or `error` events. `addr_not_available` when no port is free. |
 | `tcp_send` | copies up to the free send-buffer space; `would_block` if none; `shut_down` after `shutdown(write)`; the pending connection error otherwise. Allowed in SYN-SENT (data is queued). (As built: also in SYN-RECEIVED of a simultaneous open; queued data goes out once ESTABLISHED. When the ChunkPool has no chunk, `tcp_send` is short or `would_block` although the buffer has room, `tcp_readiness` reports not writable, and `ev_writable` follows once chunks are freed, by a read, an ACK or a freed connection, Linux `sk_stream_wait_memory`.) |
-| `tcp_recv` | returns in-order data; then 0 after the peer's FIN; then the connection error if any. Buffered data is returned before an error (after RST, data already received is still readable). |
+| `tcp_recv` | returns in-order data; then 0 after the peer's FIN; then the connection error if any. Buffered data is returned before an error (after RST, data already received is still readable). (As built: a connection that reaches CLOSED while the application holds it releases its send side at once, as Linux `tcp_reset` / `tcp_done_with_error` purge the write queue: unsent and unacknowledged data and its chunks are dropped; the receive side stays until `tcp_close`.) |
 | `tcp_shutdown(write)` | queues FIN after buffered data (half-close, RFC 9293 §3.6). `shutdown(read)`: `tcp_recv` returns 0; later data is acknowledged and discarded. |
 | `tcp_close` | if unread data remains, sends RST (RFC 1122 §4.2.2.13) and frees; otherwise behaves as shutdown(both) and the connection lives on as an orphan until CLOSED/TIME_WAIT. Data arriving after close also triggers RST. On a listener: closes it and RSTs non-accepted children. (As built: data after close resets in FIN-WAIT-1/2, as Linux `tcp_rcv_state_process`; after `shutdown(read)` alone, ESTABLISHED acknowledges and discards it.) |
 | `tcp_abort` | sends RST `<SEQ=SND.NXT>` if synchronized, frees immediately. |
@@ -377,7 +377,7 @@ Linux limits count `skb->truesize`, so a Linux buffer of nominal size N holds le
 | `initial_cwnd` | RFC 5681 §3.1 (3 segments at SMSS 1095..2190) | 10 | RFC 6928; `TCP_INIT_CWND` |
 | `iw_after_syn_loss` | 1 after any SYN/SYN-ACK retransmission | 1 after more than one | RFC 5681 §3.1; RFC 6928 §2; `tcp_init_transfer` |
 | `initial_ssthresh` | ∞ | ∞ | RFC 5681 §3.1 |
-| `idle_restart` | `rfc5681` (cwnd = min(IW, cwnd) after idle > RTO) | `linux` (`tcp_cwnd_restart`: halve per RTO idle, floor IW) | RFC 5681 §4.1 |
+| `idle_restart` | `rfc5681` (cwnd = min(IW, cwnd) after idle > RTO; checked when the application writes to an empty queue and when a window update opens the window with nothing in flight) | `linux` (`tcp_cwnd_restart`: halve per RTO idle, floor IW; checked only when the application writes to an empty queue, as `tcp_skb_entail`, so a zero-window stall keeps cwnd) | RFC 5681 §4.1; `tcp_slow_start_after_idle_check` |
 | `cwnd_growth_needs_cwnd_limited` | same: yes | | Linux `tcp_is_cwnd_limited`; RFC 7661 |
 | `recovery_reduction` (M2a) | `rfc6675` (cwnd = ssthresh on entry) | `prr` (SafeACK, as Linux 7.0) | RFC 6675 §5; RFC 9937; `tcp_cwnd_reduction` |
 | `frto`, `undo` | same: not modelled | | Linux `tcp_frto = 2` and `tcp_try_undo_*` are on; named in M2 results (§1.2) |
@@ -534,9 +534,13 @@ and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its S
 
 **SYN-SENT** (§3.10.7.3):
 1. ACK check: if `SEG.ACK ≤ ISS` or `SEG.ACK > SND.NXT`, send RST unless RST is set, drop. As built (Linux
-   `tcp_rcv_synsent_state_process`, `PAWSActiveRejected`): with an acceptable ACK, a nonzero TSecr that does not
+   `tcp_rcv_synsent_state_process`): before any SYN retransmission, such a segment (RST or not) also re-arms the
+   SYN timer at 2 ms (`TCP_TIMEOUT_MIN`) instead of the full RTO, so a reconnect on a reused tuple whose stale peer
+   connection answered with a challenge ACK, and was freed by our RST, completes at once; the early expiry counts
+   as a retransmission. As built (`PAWSActiveRejected`): with an acceptable ACK, a nonzero TSecr that does not
    lie between the TSval of our first SYN and now marks an old duplicate: the same RST reply and drop, still in
-   SYN-SENT (counted in `TcpExtPAWSActive`).
+   SYN-SENT (counted in `TcpExtPAWSActive`). Only when our SYN offered timestamps; otherwise a TS option on the
+   SYN-ACK is ignored (Linux `tcp_parse_options` with `tcp_timestamps` off).
 2. RST: acceptable only with an acceptable ACK (RFC 5961 §3 applies RFC 9293's rule); then fail the connect
    with `connection_refused`.
 3. SYN: record IRS, options, peer window (unscaled in a SYN, RFC 7323 §2.2). With an ACK, go to ESTABLISHED,
@@ -573,7 +577,11 @@ and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its S
 3. RST (RFC 5961 §3.2): `SEG.SEQ == RCV.NXT`: reset. In SYN-RECEIVED of a passive open, free the child (back to
    LISTEN), of an active open fail with `connection_refused` (RFC 9293 §3.10.7.4); otherwise CLOSED with
    `connection_reset` (CLOSING/LAST-ACK/TIME-WAIT: close without error). In window but not exact: challenge ACK.
-   TIME-WAIT follows `rst_in_time_wait`.
+   TIME-WAIT follows `rst_in_time_wait`. As built, both profiles take the two extensions of Linux
+   `tcp_validate_incoming`: an RST at `RCV.NXT − 1` (the peer's FIN) in CLOSE-WAIT, CLOSING and LAST-ACK resets
+   although it is left of the window (`tcp_reset_check`; step 2 lets it through), and with SACK an RST at the right
+   edge of the highest out-of-order block resets (the peer's SND.NXT when only a hole is missing; Linux takes the
+   highest of the blocks it reports).
 4. Security/compartment: not implemented (no IPsec, no labels).
 5. SYN (RFC 5961 §4): challenge ACK and drop (SYN-RECEIVED retransmissions are handled in step 0).
 6. ACK. No ACK bit: drop. RFC 5961 §5: acceptable when `SND.UNA − MAX.SND.WND ≤ SEG.ACK ≤ SND.NXT`;
@@ -628,8 +636,10 @@ SACK blocks fit, otherwise 4.
 - **Timestamps** (RFC 7323 §3-5): only if both SYNs carry TS; then every non-RST segment carries TSval =
   `now_ms + ts_offset`, TSecr = TS.Recent. A segment without TS is accepted (Linux; RFC 7323 §3.2 allows dropping).
 - **SACK-permitted / SACK / D-SACK** (RFC 2018, 2883): blocks are sent while out-of-order data is held or a D-SACK
-  is pending. Received blocks are validated (inside `[SND.UNA − MAX.SND.WND, SND.NXT]`, begin < end); a received
-  D-SACK increments `dsack_dups` and, from M2a, adapts RACK's reorder window.
+  is pending. Received blocks are validated (inside `[SND.UNA − MAX.SND.WND, SND.NXT]`, begin < end), the D-SACK
+  block too (Linux `tcp_is_sackblock_valid`; an invalid one counts in `TcpExtTCPSACKDiscard` and the ACK is
+  treated as one without D-SACK); a received D-SACK increments `dsack_dups` and, from M2a, adapts RACK's reorder
+  window.
 
 ### 4.6 Identifiers
 
@@ -651,13 +661,16 @@ SACK blocks fit, otherwise 4.
 - Challenge ACKs (RFC 5961 §3.2, §4, §5) and ACKs to out-of-window segments with SEG.LEN = 0 or SYN share one
   per-connection 500 ms limiter (`last_oow_ack`), as Linux `tcp_oow_rate_limited`. Segments with payload or FIN
   always get their duplicate ACK (with D-SACK), so a resent TLP or flight is answered at once (RFC 5681 §4.2).
+  That exemption is for duplicate ACKs only: a challenge ACK is limited whatever the segment carries (an RST with
+  payload, data with a bad ACK; Linux `tcp_send_challenge_ack` calls `__tcp_oow_rate_limited`).
   There is no stack-wide limit: a global counter is the side channel of CVE-2016-5696.
 - ICMP errors for TCP (validated against in-flight sequence numbers as in §4.13): in SYN-SENT, protocol and port
   unreachable fail the connect (`connection_refused`), other unreachables are stored as a soft error. In
   synchronized states all unreachables are soft errors (RFC 5461 §4): stored and reported only if the connection
   later times out (RFC 1122 §4.2.3.9). As built, as Linux: `take_error` returns a stored soft error when there is
   no hard one (`SO_ERROR`), and any acceptable ACK not below SND.UNA clears it (`tcp_ack` clears
-  `sk_err_soft`), so a later timeout reports only an error that arrived after the peer last answered.
+  `sk_err_soft`), the ACK that completes the handshake included, so a later timeout reports only an error that
+  arrived after the peer last answered.
 
 ### 4.8 RTT and RTO
 

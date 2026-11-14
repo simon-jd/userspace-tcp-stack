@@ -212,7 +212,12 @@ void TcpEngine::close_conn(Tcb& t, CloseCause cause, std::optional<Error> err) {
     return;
   }
   // The application still holds the handle: the TCB stays (unread data stays
-  // readable, §3.5) until tcp_close.
+  // readable, §3.5) until tcp_close. Nothing more can be sent, so the send
+  // side is released now, as Linux tcp_reset / tcp_done_with_error purge the
+  // write queue: the ChunkPool is shared, and a dead connection whose
+  // application is slow to close must not hold up to snd_buf_max of it.
+  t.sndq.purge();
+  wake_chunk_waiters();
   std::uint16_t ev = 0;
   if (!t.closed_event_sent) {
     ev |= ev_closed;
@@ -513,6 +518,16 @@ void TcpEngine::check_invariants() const {
       UTCP_CHECK(listener_for(t.tuple.local.port) == i);
     }
     UTCP_CHECK(t.state != TcpState::closed || !t.in_conn_table);
+    if (t.state == TcpState::closed || t.state == TcpState::time_wait) {
+      // Kept only because the application holds the handle (close_conn,
+      // enter_time_wait): no connection timer runs, the slot is not waiting
+      // in the blocked FIFO (§3.4), and the send side is released.
+      for (const TimerId id : {t.t_xmit, t.t_delack, t.t_pace, t.t_fin_wait2}) {
+        UTCP_CHECK(!core_.timers().armed(id));
+      }
+      UTCP_CHECK(!core_.blocked().contains(static_cast<std::uint32_t>(i)));
+      UTCP_CHECK(t.sndq.segs().empty() && t.sndq.chunks_held() == 0);
+    }
     t.check_invariants();
   }
   UTCP_CHECK(live == live_);

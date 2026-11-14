@@ -317,6 +317,66 @@ TEST(TcpTimer, SynRetrySchedules) {
   }
 }
 
+// As built, Linux tcp_rcv_synsent_state_process (§4.4 SYN-SENT step 1): an
+// unacceptable ACK in SYN-SENT draws <SEQ=SEG.ACK><CTL=RST> (none for an
+// RST) and, before any SYN retransmission, re-arms the SYN timer at 2 ms
+// (TCP_TIMEOUT_MIN), so a reused tuple whose stale peer connection our RST
+// just freed connects at once. The early SYN counts as a retransmission; a
+// later unacceptable ACK leaves the backed-off timer alone.
+TEST(TcpTimer, UnacceptableAckInSynSentResendsTheSynSoon) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    for (const bool rst : {false, true}) {
+      SCOPED_TRACE(name(profile) + (rst ? " rst" : " ack"));
+      Driven d(profile);
+      const auto h = d.stack().tcp_connect(Endpoint{Driven::peer(80)}, {});
+      ASSERT_TRUE(h);
+      const auto first = d.out();
+      ASSERT_EQ(first.size(), 1u);
+      const auto syn = parse(first[0]);
+      ASSERT_TRUE(syn && is_syn(syn->v));
+      d.run_for(10ms);
+      // The stale peer's challenge ACK for an old connection on the tuple.
+      t::TcpSpec bad(Driven::peer(80), Endpoint{d.stack().config().local_addr, syn->v.h.sport});
+      bad.seq = Seq32{5000};
+      bad.ack = syn->v.h.seq + 100'000;
+      bad.flags = rst ? w::tcp_rst | w::tcp_ack : w::tcp_ack;
+      d.send(bad);
+      const auto reply = d.out();
+      if (rst) {
+        EXPECT_TRUE(reply.empty());
+      } else {
+        ASSERT_EQ(reply.size(), 1u);
+        const auto r = parse(reply[0]);
+        ASSERT_TRUE(r && is_rst(r->v));
+        EXPECT_EQ(r->v.h.seq, bad.ack);
+      }
+      EXPECT_EQ(state(d.stack(), *h), TcpState::syn_sent);
+      EXPECT_EQ(d.stack().next_deadline() - d.now(), 2ms);
+      d.run_for(2ms);
+      const auto again = d.out();
+      ASSERT_EQ(again.size(), 1u);
+      const auto syn2 = parse(again[0]);
+      ASSERT_TRUE(syn2 && is_syn(syn2->v));
+      EXPECT_EQ(syn2->v.h.seq, syn->v.h.seq);
+      EXPECT_EQ(d.stack().stats().TcpExtTCPSynRetrans, 1u);
+      // After a retransmission the timer keeps its backed-off value.
+      const Duration left = d.stack().next_deadline() - d.now();
+      EXPECT_GE(left, 1s);
+      d.send(bad);
+      (void)d.out();
+      EXPECT_EQ(d.stack().next_deadline() - d.now(), left);
+      // The peer, its stale connection gone, completes the handshake.
+      t::TcpSpec sa = bad;
+      sa.flags = w::tcp_syn | w::tcp_ack;
+      sa.ack = syn->v.h.seq + 1;
+      sa.opt.mss = 1460;
+      d.send(sa);
+      EXPECT_EQ(state(d.stack(), *h), TcpState::established);
+      d.stack().debug_check();
+    }
+  }
+}
+
 // §4.8: a passive child whose SYN-ACK is never acknowledged resends it at 1,
 // 3, 7, 15 and 31 s (synack_retries 5, doubling from rto_initial) and is
 // freed silently at 63 s (Linux reqsk_timer_handler, tcp_synack_retries).

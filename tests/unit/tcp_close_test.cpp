@@ -267,4 +267,42 @@ TEST(TcpClose, RstWithDataOutstandingStopsTimers) {
   h.a().debug_check();
 }
 
+// A reset, held connection releases its send side at once (Linux tcp_reset
+// purges the write queue): its chunks go back to the shared ChunkPool, and
+// tcp_info shows nothing unacknowledged, while data received before the RST
+// stays readable until tcp_close.
+TEST(TcpClose, ResetReleasesTheSendQueueButKeepsReceivedData) {
+  t::TcpHarness h;
+  const auto p = open(h);
+  ASSERT_TRUE(p);
+  ASSERT_TRUE(h.b().tcp_send(p->server, t::pattern(500, 3)));
+  h.settle();
+  const std::uint32_t chunks0 = h.a().debug_usage().chunks - h.a().debug_usage().chunks_free;
+  h.set_hook([](Side from, t::Bytes&) {
+    return from == Side::b ? t::Verdict::drop : t::Verdict::deliver;  // b's ACKs lost
+  });
+  ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(16'000)));
+  h.settle();
+  EXPECT_GT(h.a().tcp_info(p->client)->unacked, 0u);
+  const utcp::StackUsage u1 = h.a().debug_usage();
+  EXPECT_GT(u1.chunks - u1.chunks_free, chunks0);
+  h.set_hook(nullptr);
+  ASSERT_TRUE(h.b().tcp_abort(p->server));
+  h.settle();
+  ASSERT_EQ(state(h.a(), p->client), TcpState::closed);
+  const auto info = h.a().tcp_info(p->client);
+  ASSERT_TRUE(info);
+  EXPECT_EQ(info->unacked, 0u);
+  EXPECT_EQ(info->notsent_bytes, 0u);
+  const utcp::StackUsage u2 = h.a().debug_usage();
+  EXPECT_EQ(u2.chunks - u2.chunks_free, chunks0);  // only the unread receive data
+  h.a().debug_check();
+  EXPECT_EQ(drain(h.a(), p->client), t::pattern(500, 3));
+  EXPECT_EQ(h.a().take_error(p->client), Error::connection_reset);
+  ASSERT_TRUE(h.a().tcp_close(p->client));
+  const utcp::StackUsage u3 = h.a().debug_usage();
+  EXPECT_EQ(u3.chunks_free, u3.chunks);
+  h.a().debug_check();
+}
+
 }  // namespace
