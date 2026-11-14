@@ -18,7 +18,8 @@ and evaluates each check:EXPR as a Python expression over
   tun            {"rx_dropped", "tx_dropped", ...} delta of utcp0
   qdisc          {"<dev> <kind>": dropped delta}
   pcap           {NAME: summary}
-  extra          extra.json
+  extra          extra.json (time_total_s, curl's time, is the duration of
+                 rows without a utcp-bulk sender)
   meta           the KEY=VALUE arguments (strings)
   sha_ok         both summaries ok, SHA-256 equal, bytes equal to meta["bytes_n"] if given
   fin_ok(NAME)   in capture NAME both sides sent a FIN, each FIN was
@@ -173,7 +174,8 @@ def main():
         "sha_ok": sha_ok,
         "sha256": send.get("sha256") or recv.get("sha256"),
         "bytes": send.get("bytes", recv.get("bytes")),
-        "duration_s": round(sender.get("duration_us", 0) / 1e6, 3) if sender else None,
+        "duration_s": round(sender.get("duration_us", 0) / 1e6, 3) if sender
+        else extra.get("time_total_s") or None,
         "goodput_mbps": round(sender.get("goodput_bps", 0) / 1e6, 1) if sender else None,
         "sender_total_retrans": sender.get("total_retrans"),
         "sender_rwnd_limited_us": sender.get("rwnd_limited_us"),

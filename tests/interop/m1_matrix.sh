@@ -39,7 +39,7 @@ keys = [("TcpExtTCPSACKDiscard", "SACKDiscard"), ("TcpExtTCPSACKReneging", "SACK
         ("TcpExtTCPToZeroWindowAdv", "ToZeroWindowAdv"), ("TcpExtTCPTimeouts", "Timeouts")]
 
 print("| Case | Direction | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) "
-      "| Goodput Mbit/s (non-timing) | Retransmissions (sender tcpi / peer RetransSegs) "
+      "| Goodput Mbit/s (non-timing) | Retransmissions (sender total_retrans / peer TcpRetransSegs) "
       "| Peer nstat deltas | utcp0 drops (rx/tx) | Result |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|")
 for c in order:
@@ -64,6 +64,9 @@ for c in order:
     rt = ""
     if r.get("sender_total_retrans") is not None:
         rt = f"{r['sender_total_retrans']} / {r.get('peer_TcpRetransSegs', '')}"
+    elif test == "D":
+        # The stack (utcp-httpd) sends: its TcpRetransSegs.
+        rt = f"stack {r.get('stack_TcpRetransSegs', '')} / {r.get('peer_TcpRetransSegs', '')}"
     elif not public and test != "H":
         rt = f"- / {r.get('peer_TcpRetransSegs', '')}"
     failed = [x["check"] for x in r.get("checks", []) if not x["ok"]]

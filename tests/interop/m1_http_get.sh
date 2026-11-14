@@ -62,7 +62,8 @@ http {
 }
 NG
     pgrep -x nginx >/dev/null || nginx -c /tmp/nginx.conf
-    if ! pgrep -f chunked_server.py >/dev/null; then
+    # (pgrep -f would match this bash, whose command line names the script.)
+    if ! ss -Hltn 'sport = :8081' | grep -q .; then
       nohup python3 -I /utcp/tests/interop/chunked_server.py --port 8081 --root $www > /tmp/cs.log 2>&1 &
     fi
     for i in \$(seq 50); do
@@ -74,7 +75,7 @@ NG
 }
 
 stop_peer_servers() {
-  tb_sh "$tb_peer" "nginx -c /tmp/nginx.conf -s stop 2>/dev/null; pkill -f chunked_server.py; true"
+  tb_sh "$tb_peer" "nginx -c /tmp/nginx.conf -s stop 2>/dev/null; pkill -f '^python3 -I /utcp/tests/interop/chunked_server.py'; true"
 }
 
 # get_case CASE URL TEST_KIND [EXTRA ARGS FOR utcp-http-get]

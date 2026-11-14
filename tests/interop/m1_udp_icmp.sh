@@ -49,7 +49,8 @@ h_case() {
   if [[ $c == H-udp ]]; then
     opts="nc -u, 1000 datagrams"
     for i in $(seq 1 1000); do printf 'datagram %04d from the Linux peer\n' "$i"; done >"$r/sent.txt"
-    tb_exec "$tb_peer" bash -c "while IFS= read -r line; do printf '%s\n' \"\$line\"; sleep 0.001; done |
+    # -i: the lines come from stdin.
+    docker exec -i "$tb_peer" bash -c "while IFS= read -r line; do printf '%s\n' \"\$line\"; sleep 0.001; done |
       nc -u -w 3 $stack_ip 7" <"$r/sent.txt" >"$r/received.txt" 2>"$r/nc.err"
     local same=0
     cmp -s "$r/sent.txt" "$r/received.txt" && same=1

@@ -1,24 +1,39 @@
 #!/usr/bin/env bash
 # Linux-to-Linux reference runs for docs/INTEROP.md (not acceptance cases):
-# 1 GB from utcp-bulk --backend kernel on the peer to utcp-bulk --backend
-# kernel on the DUT's own kernel (198.19.1.2, port 5002), under a netem
-# profile on both directions of that path: netem.sh's qdisc on the DUT's eth0
-# egress (the ACKs) plus the same netem on the peer's eth0 egress (the data),
-# removed after the run. So the Linux sender sees the same impairment as in
-# the Linux->stack cases, with a Linux receiver instead of the stack.
+# utcp-bulk --backend kernel on the peer sends to utcp-bulk --backend kernel
+# in a receiver container that sits behind the DUT, so the Linux receiver
+# takes the stack's place on a forwarded path with the same netem:
 #
-#   R-N0-l2l, R-N1-l2l, R-N3-l2l, R-N4-l2l
-#   R-pause200-l2l, R-pause500-l2l  100 MB under N0, the receiver with
-#                                   --recv-pause 200:1048576 / 500:1048576
+#   utcp-m1-peer 198.19.1.3 -- utcp-m1-net -- DUT eth0 198.19.1.2
+#   DUT 198.19.9.2 -- utcp-m1-accept-interop-refnet 198.19.9.0/24 (MTU 1500)
+#        -- 198.19.9.3 utcp-m1-accept-interop-ref (the Linux receiver)
 #
-# Records the same files as m1_bulk.sh (record.sh before and after: the
-# peer's nstat is the sender's; a capture of the peer's interface), plus
-# `nstat -asz` of the DUT before and after (the receiver), and writes a row.
+# netem.sh's profile is on the DUT's eth0 egress (the receiver's ACKs) and
+# the same netem (limit 20000) on the DUT's refnet egress (the data), as the
+# profile is on utcp0 in the Linux->stack cases. The DUT forwards single
+# segments: the peer has tso/gso off, the DUT's refnet interface gro off
+# (testbed/m1/common.sh), the receiver tso/gso off. (netem on the peer's own
+# egress would act on whole GSO bursts, which Linux TCP always builds.)
+#
+#   R-N0-l2l, R-N1-l2l, R-N3-l2l, R-N4-l2l   1 GB
+#   R-pause200-l2l, R-pause500-l2l           100 MB under N0, the receiver
+#                                            with --recv-pause 200:1048576 / 500:1048576
+#
+# Records what m1_bulk.sh records (record.sh before and after: the peer's
+# nstat is the sender's; a capture of the peer's interface) plus the
+# receiver's `nstat -asz` before and after, and writes a row. The receiver
+# container, its network and the DUT's link to it are removed at the end.
 #
 # Usage: tests/interop/m1_linux_ref.sh [PATTERN...]   (list: print the cases)
 source "$(dirname "${BASH_SOURCE[0]}")/m1_lib.sh"
 
 port=5002
+ref=$m1_prefix-ref
+refnet=$m1_prefix-refnet
+refnet_subnet=198.19.9.0/24
+refnet_gw=198.19.9.1
+dut_ref_ip=198.19.9.2
+ref_ip=198.19.9.3
 
 all_cases() { printf '%s\n' R-N0-l2l R-N1-l2l R-N3-l2l R-N4-l2l R-pause200-l2l R-pause500-l2l; }
 
@@ -32,6 +47,35 @@ netem_params() {
   esac
 }
 
+ref_up() {
+  tb_exists "$ref" && return 0
+  tb_ensure_network "$refnet" "$refnet_subnet" "$refnet_gw"
+  docker run -d --name "$ref" --hostname "$ref" --network "$refnet" --ip "$ref_ip" \
+    --cap-add NET_ADMIN --cpuset-cpus "$tb_cpus" --sysctl net.ipv4.tcp_no_metrics_save=1 \
+    -v "$m1_repo:/utcp:ro" "$tb_image" sleep infinity >/dev/null
+  docker network connect --ip "$dut_ref_ip" "$refnet" "$tb_dut"
+  tb_offloads "$ref" "$ref_ip" "${tb_sender_offloads[@]}"
+  tb_offloads "$tb_dut" "$dut_ref_ip" "${tb_forward_offloads[@]}"
+  tb_exec "$ref" ip route add "$tb_net_subnet" via "$dut_ref_ip"
+  tb_exec "$tb_peer" ip route replace "$refnet_subnet" via "$tb_dut_ip"
+  {
+    tb_show_offloads "$tb_peer" "$tb_peer_ip"
+    tb_show_offloads "$tb_dut" "$tb_dut_ip"
+    tb_show_offloads "$tb_dut" "$dut_ref_ip"
+    tb_show_offloads "$ref" "$ref_ip"
+  } >"$M1_RESULTS/ref-offloads.txt"
+}
+
+ref_down() {
+  tb_exists "$tb_peer" && tb_exec "$tb_peer" ip route del "$refnet_subnet" 2>/dev/null
+  if tb_exists "$tb_dut" &&
+    docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "$refnet" 2>/dev/null | grep -qw "$tb_dut"; then
+    docker network disconnect "$refnet" "$tb_dut"
+  fi
+  docker rm -f "$ref" >/dev/null 2>&1
+  tb_net_exists "$refnet" && docker network rm "$refnet" >/dev/null
+}
+
 ref_case() {
   local c=$1
   local netem=${c#R-} bytes=1G bytes_n=1000000000 recv_extra=() opts=default
@@ -43,41 +87,43 @@ ref_case() {
   fi
   m1_peer_for default
   m1_pmtu down
+  ref_up
   m1_case_dir "$c"
   local r=$M1_RESULTS/$c
   m1_netem "$netem" >"$r/netem.txt" 2>&1
-  local params peth
+  local params rdev
   params=$(netem_params "$netem")
-  peth=$(tb_ifname "$tb_peer" "$tb_peer_ip")
-  tb_exec "$tb_peer" tc qdisc del dev "$peth" root 2>/dev/null
+  rdev=$(tb_ifname "$tb_dut" "$dut_ref_ip")
+  tb_exec "$tb_dut" tc qdisc del dev "$rdev" root 2>/dev/null
   if [[ -n $params ]]; then
     # shellcheck disable=SC2086
-    tb_exec "$tb_peer" tc qdisc add dev "$peth" root netem $params limit 20000
+    tb_exec "$tb_dut" tc qdisc add dev "$rdev" root netem $params limit 20000
   fi
-  tb_exec "$tb_peer" tc -s qdisc show dev "$peth" >>"$r/netem.txt"
+  tb_exec "$tb_dut" tc -s qdisc show dev "$rdev" >>"$r/netem.txt"
   local metrics
-  metrics=$(m1_metrics_count)
-  m1_log "$c: Linux $tb_peer_ip -> Linux $tb_dut_ip $bytes $netem (both directions) $opts"
+  metrics=$(( $(m1_metrics_count) + $(tb_exec "$ref" ip tcp_metrics show | wc -l) ))
+  m1_log "$c: Linux $tb_peer_ip -> DUT -> Linux $ref_ip $bytes $netem $opts"
   m1_record "$c" before
-  tb_exec "$tb_dut" nstat -asz >"$r/dut-before.nstat"
+  tb_exec "$ref" nstat -asz >"$r/ref-before.nstat"
   m1_cap_start "$c" peer "$tb_peer" "$tb_peer_ip" "tcp port $port" || return 1
   local B=$m1_bin/apps/utcp-bulk/utcp-bulk
-  tb_exec "$tb_dut" timeout 1800 "$B" --backend kernel --sample-ms 100 --jsonl - --listen "$port" \
+  tb_exec "$ref" timeout 1800 "$B" --backend kernel --sample-ms 100 --jsonl - --listen "$port" \
     --recv --bytes "$bytes" "${recv_extra[@]}" >"$r/recv.out" 2>"$r/recv.err" &
   local rpid=$!
-  m1_wait_kernel_listen "$tb_dut" "$port"
+  m1_wait_kernel_listen "$ref" "$port"
   tb_exec "$tb_peer" timeout 1800 "$B" --backend kernel --sample-ms 100 --jsonl - \
-    --connect "$tb_dut_ip:$port" --send --bytes "$bytes" >"$r/send.out" 2>"$r/send.err"
+    --connect "$ref_ip:$port" --send --bytes "$bytes" >"$r/send.out" 2>"$r/send.err"
   local src=$?
   wait "$rpid"
   local rrc=$?
   sleep 2
   m1_record "$c" after
-  tb_exec "$tb_dut" nstat -asz >"$r/dut-after.nstat"
+  tb_exec "$ref" nstat -asz >"$r/ref-after.nstat"
+  tb_exec "$tb_dut" tc -s qdisc show dev "$rdev" >>"$r/netem.txt"
   m1_cap_stop "$c" peer
-  tb_exec "$tb_peer" tc qdisc del dev "$peth" root 2>/dev/null
-  # The receiver is 198.19.1.2: m1_pcap_summary's "stack" side is the DUT kernel here.
-  m1_analyze "$c" peer "$tb_dut_ip"
+  tb_exec "$tb_dut" tc qdisc del dev "$rdev" root 2>/dev/null
+  # m1_pcap_summary's "stack" side is the Linux receiver here.
+  m1_analyze "$c" peer "$ref_ip"
   python3 -I - "$r" "$metrics" "$src" "$rrc" <<'PY'
 import json, sys
 r, metrics, src, rrc = sys.argv[1:5]
@@ -88,10 +134,10 @@ def ns(p):
         if len(s) >= 2 and s[1].isdigit():
             d[s[0]] = int(s[1])
     return d
-b, a = ns(f"{r}/dut-before.nstat"), ns(f"{r}/dut-after.nstat")
-dut = {k: a[k] - b.get(k, 0) for k in a if a[k] - b.get(k, 0)}
+b, a = ns(f"{r}/ref-before.nstat"), ns(f"{r}/ref-after.nstat")
+rcv = {k: a[k] - b.get(k, 0) for k in a if a[k] - b.get(k, 0)}
 json.dump({"metrics_before": int(metrics), "send_exit": int(src), "recv_exit": int(rrc),
-           "dut_nstat": dut}, open(f"{r}/extra.json", "w"))
+           "receiver_nstat": rcv}, open(f"{r}/extra.json", "w"))
 PY
   m1_row "$c" "test=R" "direction=Linux->Linux (reference)" "options=$opts" "impairment=$netem" \
     "bytes_n=$bytes_n" "peer_sysctls=$(m1_peer_sysctls)" "cpus=$tb_cpus" \
@@ -119,4 +165,5 @@ while read -r c; do
   done
 done < <(all_cases)
 m1_netem N0 >/dev/null
+ref_down
 exit "$status"
