@@ -56,8 +56,12 @@ TEST(TcpListenSim, ConnectToClosedPortIsRefused) {
   EXPECT_GT(retried, 0);
 }
 
-// §4.3: 1000 connections through one listener (backlog 128), started 1 ms
-// apart, each carrying a little data both ways under loss and reordering.
+// §4.3 (m1-tcp-core test 6): 1000 connections through one listener (backlog
+// 128) at the same time. The clients start within 2 ms, so SYNs beyond the
+// backlog are dropped and retried; each server reader pauses for 30 s before
+// it reads EOF, so every connection stays open until all have connected.
+// A tap samples the server's slot count: all 1000 children (and the
+// listener) are open at once. Under loss and reordering every byte arrives.
 TEST(TcpListenSim, ThousandConnectionsThroughOneListener) {
   Scenario s = two_node_scenario(8200, impaired(5ms, 10'000), impaired(5ms, 10'000));
   std::uint64_t total = 0;
@@ -65,19 +69,33 @@ TEST(TcpListenSim, ThousandConnectionsThroughOneListener) {
     ConnSpec c = bulk(2000 + i, 1000 + i);
     c.client_port = static_cast<std::uint16_t>(20000 + i);
     c.backlog = 128;
-    c.start = 1ms + i * 1ms;
+    c.start = 1ms + i * 2us;
     c.write_max_c = c.write_max_s = 1500;
+    c.pause_every_s = c.bytes_c2s;  // once, after the last byte and before EOF
+    c.pause_s = 30s;
     total += c.bytes_c2s + c.bytes_s2c;
     s.conn.push_back(c);
   }
+  std::uint32_t peak = 0;
   RunSpec spec;
   spec.keep_wire = false;
   spec.keep_trace = false;
+  spec.setup = [&](std::vector<Tap*>& taps) {
+    taps[1]->egress = [&](Tap& tap, Time, std::span<const std::byte>) {
+      peak = std::max(peak, tap.stack().debug_usage().tcp_slots);
+      return true;
+    };
+  };
   const Outcome o = run_sim(s, spec);
   ASSERT_TRUE(o.ok()) << o.violations();
   EXPECT_EQ(o.counts[0].tcp_bytes_received + o.counts[1].tcp_bytes_received, total);
   EXPECT_EQ(o.stats[0].TcpActiveOpens, 1000u);
   EXPECT_GE(o.stats[1].TcpPassiveOpens, 1000u);
+  EXPECT_EQ(peak, 1001u);  // every child and the listener
+  // 1000 SYNs within 2 ms against a backlog of 128: the SYN queue overflows.
+  EXPECT_GT(o.stats[1].TcpExtListenDrops, 0u);
+  EXPECT_GT(o.stats[0].TcpExtTCPSynRetrans, 0u);
+  EXPECT_EQ(o.counts[0].tcp_errors + o.counts[1].tcp_errors, 0u);
   EXPECT_GT(o.stats[0].TcpRetransSegs + o.stats[1].TcpRetransSegs, 0u);
 }
 

@@ -1111,7 +1111,7 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
   up to 5 %; bitflip up to 2 %; garbage in 5 % of seeds; rate 1 Mbit/s-10 Gbit/s or unlimited; queue 2-2000
   packets; MTU 576-1500; per side: profile, SACK/TS/WS on/off independently, buffers 4 KiB-8 MiB, nodelay,
   `test_isn` near 2^32 in 10 %, a reneging receiver (`test_renege_ppm`) in 5 %; `tx_queue_packets`/`pool_buffers`
-  down to 8/16 and a host drain limit in 5 %. Workloads: 1-8 connections, bytes per direction 0-4 MiB
+  down to 8/16 and a host drain limit in 5 %, half of those also with a `chunk_limit` of 16-128 chunks. Workloads: 1-8 connections, bytes per direction 0-4 MiB
   log-uniform, write sizes 1 B-64 KiB, readers that pause (zero windows), close modes {both close, half-close then reverse transfer,
   client abort at a random point, connect to a closed port, simultaneous open}, backlog limits.
 - Data bytes are a function of `(seed, conn, direction, offset)`; receivers check every byte without storing it.

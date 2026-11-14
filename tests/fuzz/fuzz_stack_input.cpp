@@ -2,8 +2,10 @@
 // m1-tcp-robust test 8). Each input starts a fresh Stack (10.0.0.2) with a
 // listener on port 80, one connection it opened to 10.0.0.1:1000 and one
 // child it accepted from 10.0.0.1:2000, both established by a scripted peer
-// whose options the first input byte chooses. The rest of the input is a
-// list of operations:
+// whose options the first input byte chooses. The second byte may shrink
+// the ChunkPool (4-32 chunks), the transmit queue (4-8 packets) and the
+// packet pool, so pool, queue and chunk exhaustion are reached. The rest of
+// the input is a list of operations:
 //
 //   raw datagram bytes; an IPv4 header (valid checksum) around fuzz bytes of
 //   any protocol with the transport checksum fixed; a TCP segment aimed at a
@@ -11,10 +13,12 @@
 //   the stack last sent and received, so the in-window paths are reached in a
 //   few bytes; a SYN to the listener or to a closed port; an ICMP error
 //   quoting a segment the stack sent; time steps; socket calls (send, recv,
-//   shutdown, close, abort, options, a new connect).
+//   shutdown, close, abort, options, a new connect, tcp_accept on the
+//   listener); a hold that leaves the transmit queue and events undrained
+//   for the next 1-32 operations, so the queue fills and connections block.
 //
-// After every operation the stack's transmit queue and events are drained
-// and Stack::debug_check() runs. At the end every socket is closed and the
+// After every operation (but those under a hold) the stack's transmit queue
+// and events are drained; Stack::debug_check() runs after every one. At the end every socket is closed and the
 // clock jumps from deadline to deadline with no peer answering, until no
 // connection timer is armed; then debug_usage() must show a quiescent stack
 // (no live slot, TIME_WAIT entry, queued packet, event or echo reply,
@@ -104,7 +108,7 @@ struct PeerOptions {
 
 class Run {
 public:
-  explicit Run(std::uint8_t cfg) : stack_(config(cfg)) {
+  Run(std::uint8_t cfg, std::uint8_t res) : stack_(config(cfg, res)) {
     stack_.advance(now_);
     peer_opt_.ws = (cfg & 0x10) != 0;
     peer_opt_.sack = (cfg & 0x20) != 0;
@@ -115,7 +119,7 @@ public:
 
   void op(Input& in) {
     const std::uint8_t code = in.u8();
-    switch (code % 12) {
+    switch (code % 14) {
       case 0: raw(in); break;
       case 1: framed(in); break;
       case 2:
@@ -127,9 +131,16 @@ public:
       case 8:
       case 9: app(in); break;
       case 10: connect(in); break;
-      default: to_deadline(); break;
+      case 11: to_deadline(); break;
+      case 12: hold_ = 1 + in.u8() % 32; break;
+      default: accept(); break;
     }
-    drain();
+    if (hold_ > 0) {
+      --hold_;
+      stack_.debug_check();
+    } else {
+      drain();
+    }
   }
 
   // Closes every socket and lets every timer run out; the stack must then be
@@ -141,6 +152,10 @@ public:
         c.h.reset();
       }
     }
+    for (const Handle& a : accepted_) {
+      static_cast<void>(stack_.tcp_close(a));
+    }
+    accepted_.clear();
     for (const Handle& l : listeners_) {
       static_cast<void>(stack_.tcp_close(l));
     }
@@ -172,7 +187,7 @@ public:
   }
 
 private:
-  static utcp::StackConfig config(std::uint8_t cfg) {
+  static utcp::StackConfig config(std::uint8_t cfg, std::uint8_t res) {
     utcp::StackConfig c;
     c.local_addr = us;
     c.seed = utcp::Seed::from_u64(cfg);
@@ -180,8 +195,11 @@ private:
     c.tcp.sack = (cfg & 2) == 0;
     c.tcp.timestamps = (cfg & 4) == 0;
     c.tcp.window_scaling = (cfg & 8) == 0;
-    c.pool_buffers = 128;  // small: each input builds a new stack
-    c.tx_queue_packets = 64;
+    c.pool_buffers = (res & 4) != 0 ? 24 : 128;  // small: each input builds a new stack
+    c.tx_queue_packets = (res & 2) != 0 ? 4u + (res >> 5) % 5u : 64u;
+    if ((res & 1) != 0) {
+      c.chunk_limit = 4u + (res >> 3) % 29u;  // 4 KiB chunks, shared by every connection
+    }
     c.assert_time_monotonic = true;
     return c;
   }
@@ -480,6 +498,7 @@ private:
         hs.push_back(*c.h);
       }
     }
+    hs.insert(hs.end(), accepted_.begin(), accepted_.end());
     if (hs.empty()) {
       return;
     }
@@ -491,6 +510,7 @@ private:
           c.h.reset();
         }
       }
+      std::erase(accepted_, h);
     };
     switch ((sel >> 4) % 8) {
       case 0:
@@ -539,6 +559,18 @@ private:
         static_cast<void>(stack_.tcp_info(h));
         static_cast<void>(stack_.tcp_readiness(h));
         break;
+    }
+  }
+
+  // tcp_accept on the listener. The child's handle joins the application's
+  // (socket calls reach it, finish() closes it); which Conn it is does not
+  // matter, the peer side is driven through its Conn entry either way.
+  void accept() {
+    if (listeners_.empty() || accepted_.size() >= 16) {
+      return;
+    }
+    if (const auto a = stack_.tcp_accept(listeners_[0])) {
+      accepted_.push_back(*a);
     }
   }
 
@@ -592,14 +624,17 @@ private:
   PeerOptions peer_opt_;
   std::vector<Conn> conns_;
   std::vector<Handle> listeners_;
+  std::vector<Handle> accepted_;  // children taken by accept()
   std::vector<std::byte> last_sent_;
+  int hold_ = 0;  // operations left before the next drain
 };
 
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
   Input in(data, size);
-  Run run(in.u8());
+  const std::uint8_t cfg = in.u8();
+  Run run(cfg, in.u8());
   for (int ops = 0; !in.empty() && ops < 400; ++ops) {
     run.op(in);
   }

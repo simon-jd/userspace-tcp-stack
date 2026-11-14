@@ -154,6 +154,9 @@ NodeSpec generate_node(const Seed& master, std::uint32_t index) {
     n.pool_buffers = 16 + r.below(113);
     n.host_drain_max = 1 + r.below(8);
     n.host_delay = ns(log_uniform(r, 1000, 1'000'000));
+    if (r.below(2) == 0) {  // ChunkPool exhaustion: 64 KiB-512 KiB of buffer for all connections
+      n.chunk_limit = 16 + r.below(113);
+    }
   }
   return n;
 }
@@ -627,6 +630,7 @@ void visit(V& v, Scenario& s) {
     v.enumeration(p + "test_fault", n.test_fault, test_faults);
     v.field(p + "tx_queue_packets", n.tx_queue_packets);
     v.field(p + "pool_buffers", n.pool_buffers);
+    v.field(p + "chunk_limit", n.chunk_limit);
     v.field(p + "host_drain_max", n.host_drain_max);
     v.field(p + "host_delay_ns", n.host_delay);
   });

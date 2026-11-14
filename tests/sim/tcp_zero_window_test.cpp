@@ -84,6 +84,52 @@ TEST(TcpZeroWindowSim, PausedReaderIsProbed) {
   }
 }
 
+// §4.8, P5: a reader that pauses three times for 1000 s, longer than
+// data_retries probes take (the pause stays below the ProgressChecker bound,
+// about 1100 s). The answered probes reset the probe count (Linux tcp_ack
+// clears icsk_probes_out), so within one pause the sender probes on past
+// data_retries without aborting, under loss and reordering, and the
+// transfer completes.
+TEST(TcpZeroWindowSim, AnsweredProbesNeverAbortPastTheRetryLimit) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(static_cast<int>(profile));
+    Scenario s = two_node_scenario(9400 + static_cast<std::uint64_t>(profile),
+                                   impaired(5ms, 20'000), impaired(5ms, 20'000));
+    for (NodeSpec& n : s.node) {
+      n.profile = profile;
+    }
+    s.app_idle_timeout = 3000s;
+    s.node[1].rcv_buf = 64 * 1024;
+    ConnSpec c = bulk(1'000'000, 0);
+    c.pause_every_s = 300'000;
+    c.pause_s = 1000s;
+    s.conn.push_back(c);
+    RunSpec spec;
+    spec.keep_wire = false;
+    const Outcome o = run_sim(s, spec);
+    ASSERT_TRUE(o.ok()) << o.violations();
+    EXPECT_EQ(o.counts[1].tcp_bytes_received, 1'000'000u);
+    // The longest run of probes with no data sent in between.
+    std::uint32_t run = 0, longest = 0;
+    for (const Rec& r : o.trace) {
+      if (r.node != 0 || r.e.kind != TraceKind::tx || r.e.tuple.remote.port != 5000) {
+        continue;
+      }
+      if (r.e.tx == TxKind::zwp) {
+        longest = std::max(longest, ++run);
+      } else if (r.e.tx != TxKind::ack) {
+        run = 0;
+      }
+    }
+    EXPECT_GT(longest, tcp_config(profile).data_retries);
+    EXPECT_EQ(o.stats[0].TcpExtTCPAbortOnTimeout, 0u);
+    for (const CloseCause cause : o.closes(0)) {
+      EXPECT_NE(cause, CloseCause::timed_out);
+    }
+    EXPECT_EQ(o.counts[0].tcp_errors + o.counts[1].tcp_errors, 0u);
+  }
+}
+
 // §4.8, P5: once b has advertised a zero window, nothing b sends arrives.
 // a's probes go unanswered; after data_retries of them (Linux
 // tcp_probe_timer, tcp_retries2) a sends RST and ends with timed_out.

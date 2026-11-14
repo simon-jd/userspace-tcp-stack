@@ -27,7 +27,8 @@ namespace utcp::sim {
 
 // Bumped whenever generate_scenario() changes what a seed produces.
 // 2: shared listeners (backlog limits).
-inline constexpr std::uint32_t gen_version = 2;
+// 3: a small ChunkPool (NodeSpec::chunk_limit) in half of the small-queue seeds.
+inline constexpr std::uint32_t gen_version = 3;
 
 enum class NodeKind : std::uint8_t {
   stack,      // StackNode: a Stack running the scripted workload
@@ -65,6 +66,7 @@ struct NodeSpec {
   TestFault test_fault = TestFault::none;  // TcpConfig::test_fault (planted bug)
   std::uint32_t tx_queue_packets = 1024;
   std::uint32_t pool_buffers = 4096;
+  std::uint32_t chunk_limit = 1u << 20;  // StackConfig::chunk_limit (4 KiB chunks)
   std::uint32_t host_drain_max = 0;  // datagrams the host drains per wake-up; 0 = all
   Duration host_delay{};             // when the host drains the rest
 

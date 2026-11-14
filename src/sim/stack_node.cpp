@@ -28,6 +28,7 @@ StackConfig stack_config(const Scenario& s, std::uint32_t index) {
   c.tcp.test_renege_ppm = n.renege_ppm;
   c.tcp.test_fault = n.test_fault;
   c.pool_buffers = n.pool_buffers;
+  c.chunk_limit = n.chunk_limit;
   c.tx_queue_packets = n.tx_queue_packets;
   c.trace_mask = trace_mask_all;
   c.assert_time_monotonic = true;

@@ -4,6 +4,8 @@
 // receiver, and connections blocked on a small transmit queue. The
 // StreamChecker compares every byte read with the byte written at its
 // offset and the length at EOF, so a passing run has equal data both ways.
+#include <array>
+
 #include "tcp_sim_util.hpp"
 
 namespace utcp::sim {
@@ -109,7 +111,11 @@ TEST(TcpTransferSim, RenegingReceiver) {
 // §3.4, D12 (m1-tcp-core test 6): with an 8-packet transmit queue, a small
 // packet pool and a host that drains two datagrams per wake-up, connections
 // block on transmit space and resume when the host drains; four
-// connections both ways complete under loss and reordering.
+// connections both ways complete under loss and reordering. The taps sample
+// each stack's blocked FIFO at every datagram the host takes: connections
+// must have waited in it, and it must have shrunk while the same
+// connections were open, which only resume_blocked does (ACKs and timers
+// send without leaving the FIFO; a freed connection changes tcp_slots).
 TEST(TcpTransferSim, BlockedConnectionsResumeWhenTheHostDrains) {
   Scenario s = two_node_scenario(4300, impaired(3ms, 10'000), impaired(3ms, 10'000));
   for (NodeSpec& n : s.node) {
@@ -125,12 +131,34 @@ TEST(TcpTransferSim, BlockedConnectionsResumeWhenTheHostDrains) {
     c.start = 1ms + i * 100us;
     s.conn.push_back(c);
   }
+  struct Sample {
+    std::uint32_t blocked = 0, slots = 0;
+  };
+  std::array<Sample, 2> last{};
+  std::array<std::uint32_t, 2> max_blocked{}, resumed{};
   RunSpec spec;
   spec.keep_wire = false;
+  spec.setup = [&](std::vector<Tap*>& taps) {
+    for (std::uint32_t n = 0; n < 2; ++n) {
+      taps[n]->egress = [&, n](Tap& tap, Time, std::span<const std::byte>) {
+        const StackUsage u = tap.stack().debug_usage();
+        max_blocked[n] = std::max(max_blocked[n], u.blocked_conns);
+        if (u.blocked_conns < last[n].blocked && u.tcp_slots == last[n].slots) {
+          ++resumed[n];
+        }
+        last[n] = Sample{u.blocked_conns, u.tcp_slots};
+        return true;
+      };
+    }
+  };
   const Outcome o = run_sim(s, spec);
   ASSERT_TRUE(o.ok()) << o.violations();
   EXPECT_EQ(o.counts[0].tcp_bytes_received + o.counts[1].tcp_bytes_received,
             2 * (300'000u + 200'000u) * 2 + 2 * (0 + 1 + 2 + 3));
+  for (std::uint32_t n = 0; n < 2; ++n) {
+    EXPECT_GT(max_blocked[n], 1u) << n;
+    EXPECT_GT(resumed[n], 0u) << n;
+  }
 }
 
 }  // namespace

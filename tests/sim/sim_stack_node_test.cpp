@@ -48,11 +48,14 @@ TEST(SimStackNode, ConfigFollowsTheScenario) {
   s.node[1].sack = false;
   s.node[1].test_isn = 0xffff'fff0u;
   s.node[1].pool_buffers = 32;
+  s.node[1].chunk_limit = 20;
   const StackConfig c = stack_config(s, 1);
   EXPECT_EQ(c.local_addr, node_addr(1));
   EXPECT_FALSE(c.tcp.sack);
   EXPECT_EQ(c.tcp.test_isn, std::optional<std::uint32_t>{0xffff'fff0u});
   EXPECT_EQ(c.pool_buffers, 32u);
+  EXPECT_EQ(c.chunk_limit, 20u);
+  EXPECT_EQ(stack_config(s, 0).chunk_limit, StackConfig{}.chunk_limit);
   EXPECT_EQ(c.trace_mask, trace_mask_all);
   EXPECT_TRUE(c.assert_time_monotonic);
   EXPECT_NE(stack_config(s, 0).seed, c.seed);
