@@ -179,6 +179,7 @@ private:
   void negotiate(Tcb& t, const wire::TcpOptions& peer);
   void handshake_done(Tcb& t, const InSeg& s);
   [[nodiscard]] bool paws_reject(const Tcb& t, const InSeg& s) const;
+  void update_ts_recent(Tcb& t, const InSeg& s);
   // RFC 5961 §7 / Linux tcp_oow_rate_limited: false (and `skipped` counted)
   // within oow_ack_interval of the last such ACK; segments with data or FIN
   // and no SYN are never limited.
@@ -190,6 +191,12 @@ private:
   [[nodiscard]] bool data_input(Tcb& t, const InSeg& s);
   [[nodiscard]] bool fin_check(Tcb& t, Time now);
   void window_writable(Tcb& t, Time now);
+  // tcp_send was refused or short because the ChunkPool had no chunk: the
+  // connection waits in chunk_waiters_ and gets ev_writable once chunks are
+  // free again (wake_chunk_waiters, after every entry point that frees
+  // chunks).
+  void wait_for_chunks(Tcb& t);
+  void wake_chunk_waiters();
   [[nodiscard]] bool alive(std::uint32_t slot, std::uint32_t gen) const;
 
   // --- tcp_output.cpp (§4.9).
@@ -220,6 +227,9 @@ private:
   void on_syn_timeout(Tcb& t, Time now);
   void on_rto(Tcb& t, Time now);
   void on_persist(Tcb& t, Time now);
+  // The retry count that bounds an orphan (Linux tcp_orphan_retries), or
+  // data_retries.
+  [[nodiscard]] std::uint8_t retry_limit(const Tcb& t) const;
   void abort_timed_out(Tcb& t, Time now);
   void on_time_wait_expiry(std::uint32_t index);
   void trace_tw_state(const TimeWaitEntry& e, CloseCause cause);
@@ -231,6 +241,7 @@ private:
   ConnTable conns_;
   TimeWaitTable tw_;
   std::vector<std::pair<std::uint16_t, std::uint32_t>> listeners_;  // (port, slot), sorted
+  std::vector<Handle> chunk_waiters_;  // in the order they were refused
   std::uint32_t next_conn_id_ = 1;
   std::uint32_t live_ = 0;  // slots holding a TCB
 };

@@ -17,3 +17,8 @@ UTCP_TCP_KNOB(std::uint32_t, test_renege_ppm, 0, 0,
 // Planted bug for checker tests (DESIGN §7.3).
 UTCP_TCP_KNOB(TestFault, test_fault, TestFault::none, TestFault::none,
               "planted fault for checker tests (DESIGN 7.3)")
+// Retry count for orphans (DESIGN §3.9, §4.8): nullopt uses data_retries;
+// a value follows Linux tcp_orphan_retries with that sysctl (0: 8 retries
+// while the backed-off RTO is below rto_max, else none).
+UTCP_TCP_KNOB(std::optional<std::uint8_t>, orphan_retries, std::nullopt, 0,
+              "retries of an orphaned connection, as tcp_orphan_retries (DESIGN 3.9)")

@@ -16,6 +16,7 @@
 #include "core/wire/tcp.hpp"
 #include "support/packet_builder.hpp"
 #include "support/tcp_harness.hpp"
+#include "tcp_test_util.hpp"
 #include "utcp/checksum.hpp"
 #include "utcp/config.hpp"
 #include "utcp/stack.hpp"
@@ -218,6 +219,31 @@ std::optional<Parsed> last_from(const t::TcpHarness& h, Side from, t::Bytes& kee
   return std::nullopt;
 }
 
+// The datagrams `from` sent after log entry `start`.
+std::vector<t::Bytes> sent_since(const t::TcpHarness& h, Side from, std::size_t start) {
+  std::vector<t::Bytes> out;
+  for (std::size_t i = start; i < h.log().size(); ++i) {
+    if (h.log()[i].from == from) {
+      out.push_back(h.log()[i].bytes);
+    }
+  }
+  return out;
+}
+
+// Exactly one segment from `from` since `start`: a pure ACK of `ack` without
+// SACK blocks.
+void expect_one_plain_ack(const t::TcpHarness& h, Side from, std::size_t start, Seq32 ack) {
+  const auto sent = sent_since(h, from, start);
+  ASSERT_EQ(sent.size(), 1u);
+  const auto q = parse(sent[0]);
+  ASSERT_TRUE(q);
+  EXPECT_EQ(q->v.h.flags & (w::tcp_syn | w::tcp_fin | w::tcp_rst), 0);
+  EXPECT_TRUE(has(q->v, w::tcp_ack));
+  EXPECT_TRUE(q->v.payload.empty());
+  EXPECT_EQ(q->v.h.ack, ack);
+  EXPECT_EQ(q->v.opt.sack_count, 0);
+}
+
 // RFC 2883 §4 covers payload only (§3.2): a retransmitted FIN, a
 // retransmitted SYN-ACK reaching an established client and a zero-length
 // segment at RCV.NXT - 1 are ACKed without a D-SACK block. Duplicate data
@@ -259,14 +285,13 @@ TEST(TcpTransfer, DsackOnlyForPayload) {
   ASSERT_EQ(r->v.opt.sack_count, 1);
   EXPECT_EQ(r->v.opt.sack[0].second - r->v.opt.sack[0].first, 1000u);
   EXPECT_EQ(r->v.opt.sack[0].second, r->v.h.ack);
-  // The retransmitted SYN-ACK at the established client.
+  // The retransmitted SYN-ACK at the established client: one plain ACK.
   h.run_for(1s);
+  const Seq32 a_rcv_nxt = parse(synack)->v.h.seq + 1;
+  std::size_t start = h.log().size();
   h.a().receive(h.now(), synack);
   h.settle();
-  r = last_from(h, Side::a, keep);
-  ASSERT_TRUE(r);
-  EXPECT_FALSE(has(r->v, w::tcp_syn));
-  EXPECT_EQ(r->v.opt.sack_count, 0);
+  expect_one_plain_ack(h, Side::a, start, a_rcv_nxt);
   // A zero-length segment at RCV.NXT - 1 (a keepalive probe).
   h.run_for(1s);
   {
@@ -281,12 +306,10 @@ TEST(TcpTransfer, DsackOnlyForPayload) {
     probe[off + 2] = static_cast<std::byte>(seq >> 8);
     probe[off + 3] = static_cast<std::byte>(seq);
     t::fix_checksums(probe);
+    start = h.log().size();
     h.b().receive(h.now(), probe);
     h.settle();
-    r = last_from(h, Side::b, keep);
-    ASSERT_TRUE(r);
-    EXPECT_EQ(r->v.opt.sack_count, 0);
-    EXPECT_TRUE(r->v.payload.empty());
+    expect_one_plain_ack(h, Side::b, start, Seq32{seq + 1});
   }
   // The retransmitted FIN.
   ASSERT_TRUE(h.a().tcp_shutdown(p->client, utcp::Shutdown::write));
@@ -301,12 +324,10 @@ TEST(TcpTransfer, DsackOnlyForPayload) {
   ASSERT_FALSE(fin.empty());
   EXPECT_EQ(h.b().tcp_info(p->server)->state, TcpState::close_wait);
   h.run_for(1s);
+  start = h.log().size();
   h.b().receive(h.now(), fin);
   h.settle();
-  r = last_from(h, Side::b, keep);
-  ASSERT_TRUE(r);
-  EXPECT_FALSE(has(r->v, w::tcp_fin));
-  EXPECT_EQ(r->v.opt.sack_count, 0);
+  expect_one_plain_ack(h, Side::b, start, parse(fin)->v.h.seq + 1);
   h.a().debug_check();
   h.b().debug_check();
 }
@@ -359,6 +380,10 @@ TEST(TcpTransfer, AckAndSackCoveringFinAreClipped) {
   h.a().receive(h.now(), t::tcp_datagram(sack));
   h.a().debug_check();
   EXPECT_EQ(h.a().tcp_info(p->client)->state, TcpState::fin_wait_1);
+  // The block was taken, clipped to the payload end: the last data segment
+  // (offsets 2920..3000) is SACKed, nothing was discarded.
+  EXPECT_EQ(h.a().tcp_info(p->client)->sacked, 1u);
+  EXPECT_EQ(h.a().stats().TcpExtTCPSACKDiscard, 0u);
   // The cumulative ACK of everything, FIN included.
   t::TcpSpec ack = sack;
   ack.ack = fin_seq + 1;
@@ -369,6 +394,76 @@ TEST(TcpTransfer, AckAndSackCoveringFinAreClipped) {
   EXPECT_EQ(ia->state, TcpState::fin_wait_2);
   EXPECT_EQ(ia->bytes_acked, 3000u);
   EXPECT_EQ(ia->unacked, 0u);
+}
+
+// Linux tcp_ack (old_ack): an ACK below SND.UNA, reordered behind a newer
+// one, moves nothing but still has its D-SACK counted and its SACK blocks
+// tagged.
+TEST(TcpTransfer, OldAckKeepsSackAndDsack) {
+  namespace tc = utcp::test::tcpt;
+  tc::Scripted c;
+  ASSERT_TRUE(c.accept());
+  const std::uint32_t mss = c.stack().tcp_info(c.h)->snd_mss;
+  ASSERT_TRUE(c.stack().tcp_send(c.h, t::pattern(6 * std::size_t{mss})));
+  ASSERT_EQ(c.out().size(), 6u);
+  const Seq32 una = c.their;
+  t::TcpSpec newer = c.spec(w::tcp_ack);
+  newer.ack = una + 2 * mss;
+  c.send(newer);
+  t::TcpSpec old = c.spec(w::tcp_ack);
+  old.ack = una + mss;
+  old.opt.sack[0] = {una, una + 100};  // D-SACK: below its SEG.ACK
+  old.opt.sack[1] = {una + 4 * mss, una + 5 * mss};
+  old.opt.sack_count = 2;
+  c.send(old);
+  const auto i = c.stack().tcp_info(c.h);
+  EXPECT_EQ(c.stack().stats().TcpExtTCPDSACKRecv, 1u);
+  EXPECT_EQ(i->dsack_dups, 1u);
+  EXPECT_EQ(i->sacked, 1u);
+  EXPECT_EQ(i->unacked, 4u);
+  EXPECT_EQ(i->bytes_acked, 2u * mss);
+  c.stack().debug_check();
+}
+
+// An ACK that advances SND.UNA takes its window even when its SEQ is below
+// SND.WL1, as from a repacketized retransmission by the peer (Linux
+// tcp_may_update_window); the stack then sends nothing past SND.UNA + that
+// window (simulator seed 5 sent 1424 bytes past it).
+TEST(TcpTransfer, AdvancingAckWithOlderSeqTakesItsWindow) {
+  namespace tc = utcp::test::tcpt;
+  tc::Scripted c;  // peer window scale 7
+  ASSERT_TRUE(c.accept(Seq32{10'000}, 1000));  // 1000 << 7 bytes
+  const Seq32 p0 = c.nxt;
+  c.send_data(100);
+  c.send_data(100);  // SND.WL1 = p0 + 100
+  c.d().run_for(1s);
+  (void)c.out();
+  const std::uint32_t mss = c.stack().tcp_info(c.h)->snd_mss;
+  ASSERT_TRUE(c.stack().tcp_send(c.h, t::pattern(3 * std::size_t{mss})));
+  ASSERT_EQ(c.out().size(), 3u);
+  const Seq32 una = c.their;
+  // The peer resends from p0 (below SND.WL1) with 100 new bytes, ACKs one
+  // segment and offers 2 << 7 = 256 bytes.
+  t::TcpSpec re = c.spec(w::tcp_ack | w::tcp_psh);
+  re.seq = p0;
+  re.ack = una + mss;
+  re.window = 2;
+  re.payload = t::pattern(300);
+  c.nxt = p0 + 300;
+  c.send(re);
+  EXPECT_EQ(c.stack().tcp_info(c.h)->snd_wnd, 256u);
+  ASSERT_TRUE(c.stack().tcp_send(c.h, t::pattern(4 * std::size_t{mss})));
+  c.d().run_for(10ms);
+  const Seq32 right = una + mss + 256;
+  for (const tc::Parsed& q : c.out()) {
+    if (q.v.payload.empty()) {
+      continue;  // the ACK of the peer's segment
+    }
+    const Seq32 end = q.v.h.seq + static_cast<std::uint32_t>(q.v.payload.size());
+    EXPECT_FALSE(after(end, right)) << "data ends " << (end - right) << " past the window";
+  }
+  EXPECT_EQ(tc::drain(c.stack(), c.h).size(), 300u);
+  c.stack().debug_check();
 }
 
 }  // namespace

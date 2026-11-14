@@ -39,6 +39,10 @@ struct AckInput {
   std::optional<Range> dsack;  // a D-SACK block (RFC 2883 §4), if the ACK had one
   bool window_update = false;  // the ACK changed SND.WND
   bool dupack = false;         // RFC 5681 §2 duplicate ACK (or SACK of new data, RFC 6675 §2)
+  // SEG.ACK below SND.UNA (new_una = prior_una): only the SACK and D-SACK
+  // blocks and loss recovery run, without RTT samples or CC (Linux tcp_ack,
+  // old_ack).
+  bool old_ack = false;
 };
 
 // AckOutcome::flags bits (Linux FLAG_*).

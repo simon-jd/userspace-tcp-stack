@@ -109,6 +109,7 @@ void TcpEngine::free_tcb(Tcb& t) {
   std::push_heap(free_slots_.begin(), free_slots_.end(), std::greater<>{});
   core_.release_slot();
   --live_;
+  wake_chunk_waiters();  // its buffers went back to the pool
 }
 
 // --- Listeners (§4.3): a sorted vector of (port, slot).
@@ -426,6 +427,37 @@ void TcpEngine::on_tx_space(Time now, std::uint32_t slot) {
     return;
   }
   transmit(t, now);
+}
+
+// §3.5 ev_writable for a tcp_send the ChunkPool refused (Linux
+// sk_stream_wait_memory / sk_stream_write_space): the connection may have
+// nothing in flight, so no ACK would wake it.
+void TcpEngine::wait_for_chunks(Tcb& t) {
+  if (std::ranges::find(chunk_waiters_, t.self) == chunk_waiters_.end()) {
+    chunk_waiters_.push_back(t.self);
+  }
+}
+
+void TcpEngine::wake_chunk_waiters() {
+  if (chunk_waiters_.empty()) {
+    return;
+  }
+  const ChunkPool& pool = core_.chunks();
+  if (pool.in_use() >= pool.limit()) {
+    return;
+  }
+  std::vector<Handle> waiters;
+  waiters.swap(chunk_waiters_);
+  for (const Handle h : waiters) {
+    Tcb* t = find(h);
+    if (t == nullptr || !t->send_blocked || t->app_write_shut || t->fin_queued ||
+        t->state == TcpState::closed || t->state == TcpState::time_wait ||
+        t->sndq.free_space() == 0) {
+      continue;
+    }
+    t->send_blocked = false;
+    raise(*t, ev_writable);
+  }
 }
 
 // --- Checks.

@@ -193,6 +193,40 @@ TEST(TcpTimeWait, RstPerKnob) {
   }
 }
 
+// Linux tcp_timewait_state_process with tcp_paws_reject (window 0): an RST
+// with a TSval older than TS.Recent is dropped while TS.Recent is younger
+// than TCP_PAWS_MSL (60 s), even under rst_in_time_wait = accept, so an old
+// duplicate RST cannot end TIME-WAIT; one with the current TSval does. A
+// bare ACK one tick older also fails PAWS (counted, the timer restarts).
+TEST(TcpTimeWait, RstWithOldTsvalKeepsTimeWait) {
+  Tw tw;  // linux_compat: rst_in_time_wait = accept
+  auto c = tw.connect(40150, true);
+  ASSERT_TRUE(c);
+  ASSERT_TRUE(tw.to_time_wait(*c));
+  tw.d().run_for(1s);
+  t::TcpSpec rst(Driven::peer(c->peer_port), tw.d().local());
+  rst.seq = c->nxt;  // RCV.NXT
+  rst.flags = w::tcp_rst;
+  rst.opt.ts = w::Timestamps{c->tsval - 1000, 0};
+  tw.d().send(rst);
+  EXPECT_TRUE(tw.d().out().empty());
+  EXPECT_EQ(tw.stack().debug_usage().time_wait_entries, 1u);
+  EXPECT_EQ(tw.stack().stats().TcpExtPAWSEstab, 1u);
+  t::TcpSpec ack = tw.spec(*c, w::tcp_ack);
+  ack.opt.ts = w::Timestamps{c->tsval - 1, c->their_ts};
+  tw.d().send(ack);
+  EXPECT_EQ(tw.stack().stats().TcpExtPAWSEstab, 2u);
+  const auto reply = tw.out(*c);
+  ASSERT_EQ(reply.size(), 1u);  // the TIME-WAIT ACK
+  EXPECT_TRUE(is_pure_ack(reply[0].v));
+  EXPECT_EQ(tw.stack().debug_usage().time_wait_entries, 1u);
+  rst.opt.ts = w::Timestamps{c->tsval, 0};
+  tw.d().send(rst);
+  EXPECT_TRUE(tw.d().out().empty());
+  EXPECT_EQ(tw.stack().debug_usage().time_wait_entries, 0u);
+  tw.stack().debug_check();
+}
+
 // RFC 6191 / Linux tcp_timewait_state_process: a SYN with a newer TSval, or
 // (equal TSval or no timestamps) a higher SEQ, reopens the tuple through the
 // listener with ISS = old SND.NXT + 65537; an older one gets the TIME-WAIT

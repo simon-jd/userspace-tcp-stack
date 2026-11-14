@@ -15,6 +15,7 @@ namespace {
 using namespace wire;
 
 constexpr Duration paws_24days = std::chrono::hours{24 * 24};
+constexpr Duration paws_msl = std::chrono::seconds{60};  // Linux TCP_PAWS_MSL
 
 // RFC 7323 §2.3: a shift above 14 is used as 14.
 std::uint8_t clamp_wscale(std::uint8_t s) { return std::min<std::uint8_t>(s, max_wscale); }
@@ -62,6 +63,7 @@ void TcpEngine::on_segment(Time now, const wire::Ipv4Header& ip, const wire::Tcp
     } else {
       sync_input(t, s);
     }
+    wake_chunk_waiters();  // ACKed or discarded data freed chunks
     return;
   }
   if (const auto index = tw_.find(tuple)) {
@@ -95,6 +97,11 @@ void TcpEngine::listen_input(Tcb& l, const FourTuple& tuple, const InSeg& s,
     return;
   }
   if (!s.has(tcp_syn)) {
+    return;
+  }
+  // Linux tcp_rcv_state_process (TCP_LISTEN): a SYN that also carries FIN is
+  // dropped (SKB_DROP_REASON_TCP_FLAGS), before the queue checks.
+  if (s.has(tcp_fin)) {
     return;
   }
   ListenState& ls = *l.listen;
@@ -362,24 +369,28 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
   const Time now = s.now;
   const std::uint32_t slot = t.self.slot, gen = t.self.gen;
   StackStats& st = core_.stats();
-  bool crossing = false;
+  bool crossing = false, syn_rexmit = false;
   // Step 0 (§4.4): SYN-RECEIVED.
   if (t.state == TcpState::syn_received && !s.has(tcp_rst)) {
-    if (t.passive && s.has(tcp_syn) && !s.has(tcp_ack) && s.seq == t.irs) {
-      // The peer retransmitted its SYN: our SYN-ACK was lost (Linux
-      // tcp_check_req, inet_rtx_syn_ack), rate-limited.
-      if (oow_allowed(t.last_oow_ack, s, st.TcpExtTCPACKSkippedSynRecv)) {
-        send_syn(t, now);
-      }
-      return;
-    }
+    // The peer retransmitted its SYN: our SYN-ACK was lost.
+    syn_rexmit = t.passive && s.has(tcp_syn) && !s.has(tcp_ack) && s.seq == t.irs;
     // Crossing SYN-ACKs of a simultaneous open (Linux tcp_validate_incoming):
     // the peer's SYN-ACK repeats its SYN and acknowledges ours.
     crossing = !t.passive && s.has(tcp_syn) && s.has(tcp_ack) && s.seq == t.irs &&
                s.ack == t.snd_nxt();
   }
+  const bool paws = !crossing && paws_reject(t, s);
+  if (syn_rexmit && !paws) {
+    // Only a SYN passing PAWS resends the SYN-ACK (Linux tcp_check_req,
+    // inet_rtx_syn_ack), rate-limited; an older duplicate takes the PAWS
+    // path below.
+    if (oow_allowed(t.last_oow_ack, s, st.TcpExtTCPACKSkippedSynRecv)) {
+      send_syn(t, now);
+    }
+    return;
+  }
   // Step 1 (RFC 7323 §5.3 R1): PAWS.
-  if (!crossing && paws_reject(t, s)) {
+  if (paws) {
     ++st.TcpExtPAWSEstab;
     ++t.ctr.paws_drops;
     trace_drop(&t, s);
@@ -421,14 +432,8 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
     transmit(t, now);
     return;
   }
-  // RFC 7323 §4.3 (2): TS.Recent.
-  if (t.ts_ok && s.v->opt.ts && !s.has(tcp_rst) && before_eq(s.seq, t.last_ack_sent) &&
-      (!t.ts_recent_valid || static_cast<std::int32_t>(s.v->opt.ts->val - t.ts_recent) >= 0 ||
-       s.now - t.ts_recent_stamp > paws_24days)) {
-    t.ts_recent = s.v->opt.ts->val;
-    t.ts_recent_stamp = now;
-    t.ts_recent_valid = true;
-  }
+  // R3 (TS.Recent) waits for step 6: a segment that steps 3, 5 or 6 reject
+  // must not move it (update_ts_recent).
   // Step 3 (RFC 5961 §3.2): RST.
   if (s.has(tcp_rst)) {
     if (s.seq != rcv_nxt) {
@@ -471,6 +476,7 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
       trace_drop(&t, s);
       return;
     }
+    update_ts_recent(t, s);  // as Linux tcp_check_req, before the queue check
     // Linux tcp_v4_syn_recv_sock / tcp_check_req (tcp_abort_on_overflow =
     // 0): with the accept queue full (more than backlog) the completing ACK
     // is dropped; the child stays in SYN-RECEIVED and its SYN-ACK schedule
@@ -514,6 +520,18 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
   transmit(t, now);
 }
 
+// RFC 7323 §4.3 (2), §5.3 R3: TS.Recent, for a segment that passed every
+// check (sync_input calls it once the ACK is accepted).
+void TcpEngine::update_ts_recent(Tcb& t, const InSeg& s) {
+  if (t.ts_ok && s.v->opt.ts && !s.has(tcp_rst) && before_eq(s.seq, t.last_ack_sent) &&
+      (!t.ts_recent_valid || static_cast<std::int32_t>(s.v->opt.ts->val - t.ts_recent) >= 0 ||
+       s.now - t.ts_recent_stamp > paws_24days)) {
+    t.ts_recent = s.v->opt.ts->val;
+    t.ts_recent_stamp = s.now;
+    t.ts_recent_valid = true;
+  }
+}
+
 // Step 6 for synchronized states: the ACK pipeline (§5.1) and the window.
 bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   const Time now = s.now;
@@ -528,6 +546,13 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   }
   t.last_ack_recv = now;
   t.probes_out = 0;
+  const bool old_ack = before(s.ack, una);
+  if (!old_ack) {
+    // R3 (RFC 7323 §4.3, §5.3) only now that the ACK is accepted, as Linux
+    // (tcp_ack, FLAG_UPDATE_TS_RECENT): an in-window SYN or an ACK above
+    // SND.NXT must not move TS.Recent. Linux skips it for an old ACK too.
+    update_ts_recent(t, s);
+  }
   // MUST-20 (RFC 9293 §3.10.7.4): window update. As Linux
   // tcp_may_update_window, an ACK that advances SND.UNA always takes the
   // window: the usable window is computed from SND.UNA (SND.UNA + SND.WND,
@@ -538,9 +563,8 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
                                  ? s.v->h.window
                                  : static_cast<std::uint32_t>(s.v->h.window) << t.snd_wscale;
   bool window_update = false;
-  if (before_eq(una, s.ack) &&
-      (after(s.ack, una) || before(t.snd_wl1, s.seq) ||
-       (t.snd_wl1 == s.seq && before_eq(t.snd_wl2, s.ack)))) {
+  if (!old_ack && (after(s.ack, una) || before(t.snd_wl1, s.seq) ||
+                   (t.snd_wl1 == s.seq && before_eq(t.snd_wl2, s.ack)))) {
     window_update = nwin != t.snd_wnd;
     t.snd_wnd = nwin;
     t.snd_wl1 = s.seq;
@@ -548,10 +572,6 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
     t.max_snd_wnd = std::max(t.max_snd_wnd, nwin);
   }
   const bool advanced = after(s.ack, una);
-  // Below SND.UNA (inside MAX.SND.WND): an old ACK; only the window counts.
-  if (before(s.ack, una)) {
-    return true;
-  }
   // SACK blocks to offsets (§3.2), validated as Linux tcp_sacktag_write_queue.
   const std::uint64_t prior_una = t.sndq.una();
   const std::uint64_t nxt_off = t.sndq.nxt_with_fin();
@@ -589,10 +609,18 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
       blocks[nblocks++] = Range{static_cast<std::uint64_t>(b), static_cast<std::uint64_t>(e)};
     }
   }
+  // Below SND.UNA (inside MAX.SND.WND): an old ACK, reordered behind a newer
+  // one. Neither the window nor SND.UNA moves, but its SACK and D-SACK
+  // blocks still count (Linux tcp_ack, old_ack: tcp_sacktag_write_queue and
+  // tcp_fastretrans_alert, no RTT sample and no CC).
+  if (old_ack && nblocks == 0 && !dsack) {
+    return true;
+  }
   AckInput in;
   in.now = now;
   in.prior_una = prior_una;
-  in.new_una = static_cast<std::uint64_t>(unwrap(s.ack, t.snd_base(), prior_una));
+  in.new_una = old_ack ? prior_una
+                       : static_cast<std::uint64_t>(unwrap(s.ack, t.snd_base(), prior_una));
   if (o.ts && t.ts_ok) {
     in.tsecr = o.ts->ecr;
   }
@@ -600,11 +628,24 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   in.sack = std::span<const Range>(blocks.data(), nblocks);
   in.dsack = dsack;
   in.window_update = window_update;
-  in.dupack = !advanced && s.len == 0 && !window_update;
+  in.dupack = !old_ack && !advanced && s.len == 0 && !window_update;
+  in.old_ack = old_ack;
   refresh_cc(t, now);
+  const std::uint32_t prior_packets = t.sndq.counters().packets_out;
   AckContext c{t.sndq,  t.recovery, t.rtt,     t.cc_conn, t.algo(),  t.rate,      cfg_,
                st,      t.ctr,      t.snd_wnd, t.sack_ok, t.backoff, t.rto_count};
   const AckOutcome out = process_ack(c, in);
+  if (old_ack) {
+    return true;
+  }
+  // Linux tcp_ack_probe: nothing was in flight and the window now takes the
+  // next segment, so the backoff that zero-window probing built up ends
+  // (else the first segment after the window opens would wait for the
+  // backed-off RTO).
+  if (prior_packets == 0 && t.sndq.end() > t.sndq.nxt() &&
+      t.snd_wnd >= std::min<std::uint64_t>(t.sndq.end() - t.sndq.nxt(), t.mss_cache)) {
+    t.backoff = 0;
+  }
   if (out.seq_rtt >= Duration::zero()) {
     t.backoff = 0;  // RFC 6298 §5.7
   }
@@ -836,11 +877,14 @@ void TcpEngine::time_wait_input(std::uint32_t index, const InSeg& s) {
   TimeWaitEntry& e = tw_.entry(index);
   StackStats& st = core_.stats();
   const Time now = s.now;
+  // Linux tcp_paws_reject (window 0): any TSval older than TS.Recent is
+  // rejected; an RST only while TS.Recent is younger than TCP_PAWS_MSL, so an
+  // old duplicate RST cannot end TIME-WAIT (the RFC 1337 hazard).
   bool paws = false;
   const auto& ts = s.v->opt.ts;
-  if (e.ts_ok && ts && !s.has(tcp_rst) && now - e.ts_recent_stamp <= paws_24days &&
-      static_cast<std::int32_t>(e.ts_recent - ts->val) > 1) {
-    paws = true;
+  if (e.ts_ok && ts && now - e.ts_recent_stamp <= paws_24days &&
+      static_cast<std::int32_t>(e.ts_recent - ts->val) > 0) {
+    paws = !s.has(tcp_rst) || now - e.ts_recent_stamp < paws_msl;
   }
   const Time expiry = now + cfg_.time_wait;
   // In window: only an RST or a bare ACK.

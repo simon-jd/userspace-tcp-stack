@@ -179,15 +179,27 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
   if (core_.tracing(TraceKind::rto)) {
     core_.trace(trace_base(t, TraceKind::rto));
   }
-  // §4.8 (Linux retransmits_timed_out): retries counted in time from the
-  // first retransmission.
-  if (t.rto_count > 0 && t.retrans_stamp &&
-      now - *t.retrans_stamp >= retry_abort_time(cfg_.data_retries, cfg_.rto_min, cfg_.rto_max)) {
-    abort_timed_out(t, now);
-    return;
-  }
   if (t.sndq.segs().empty()) {
     sync_timers(t, now);
+    return;
+  }
+  if (t.snd_wnd == 0 && !t.orphan) {
+    // The peer shrank its window to zero under our data (Linux
+    // tcp_retransmit_timer, tcp_rtx_probe0_timed_out): the retransmissions
+    // act as zero-window probes, so the retry bound does not apply while
+    // the peer answers; abort only after 2 * rto_max without an ACK and
+    // without progress.
+    const Time since = t.retrans_stamp ? *t.retrans_stamp : t.sndq.segs().front().last_tx;
+    if (now - t.last_ack_recv > 2 * cfg_.rto_max && now - since > 2 * cfg_.rto_max) {
+      abort_timed_out(t, now);
+      return;
+    }
+  } else if (t.rto_count > 0 && t.retrans_stamp &&
+             now - *t.retrans_stamp >=
+                 retry_abort_time(retry_limit(t), cfg_.rto_min, cfg_.rto_max)) {
+    // §4.8 (Linux retransmits_timed_out): retries counted in time from the
+    // first retransmission.
+    abort_timed_out(t, now);
     return;
   }
   RecoveryCtx c = rctx(t, now);
@@ -210,11 +222,19 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
 void TcpEngine::on_persist(Tcb& t, Time now) {
   const Counters& k = t.sndq.counters();
   if (k.packets_out != 0 || t.sndq.nxt() == t.sndq.end()) {
+    // Linux tcp_send_probe0: the probe timer is not needed any more; the
+    // probing backoff ends with it.
     t.probes_out = 0;
+    t.backoff = 0;
     sync_timers(t, now);
     return;
   }
-  if (t.probes_out >= cfg_.data_retries) {
+  // Linux tcp_probe_timer: an orphan whose backed-off RTO reached rto_max
+  // gives up once backoff reaches its retry limit.
+  const std::uint8_t limit = retry_limit(t);
+  if (t.probes_out >= limit ||
+      (t.orphan && cfg_.orphan_retries && t.rtt.rto_backed_off(t.backoff) >= cfg_.rto_max &&
+       t.backoff >= limit)) {
     abort_timed_out(t, now);
     return;
   }
@@ -249,6 +269,25 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
   RecoveryCtx c2 = rctx(t, now);
   t.recovery.on_burst_end(c2);
   sync_timers(t, now);
+}
+
+// §4.8: data_retries, or for an orphan (closed by the application) the
+// orphan_retries rule of Linux tcp_orphan_retries: the configured count; 0
+// if a soft error is pending and the backed-off RTO reached rto_max; then 0
+// becomes 8 while the RTO is below rto_max ("alive").
+std::uint8_t TcpEngine::retry_limit(const Tcb& t) const {
+  if (!t.orphan || !cfg_.orphan_retries) {
+    return cfg_.data_retries;
+  }
+  const bool alive = t.rtt.rto_backed_off(t.backoff) < cfg_.rto_max;
+  std::uint8_t r = *cfg_.orphan_retries;
+  if (t.soft_error && !alive) {
+    r = 0;
+  }
+  if (r == 0 && alive) {
+    r = 8;
+  }
+  return r;
 }
 
 // Retries exhausted (§4.8): RST if synchronized, then CLOSED with the soft

@@ -164,6 +164,9 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   if (seq_rtt < Duration::zero()) {
     seq_rtt = sack_rtt;
   }
+  if (in.old_ack) {
+    seq_rtt = ca_rtt = Duration{-1};  // the old_ack path takes no RTT sample
+  }
   if (seq_rtt < Duration::zero() && in.tsecr && *in.tsecr != 0 && acked.pkts > 0) {
     // RFC 7323 §4 (Linux tcp_rtt_tsopt_us), 1 ms TS ticks.
     const std::uint32_t delta = in.now_ts - *in.tsecr;
@@ -180,7 +183,7 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   out.ca_rtt = ca_rtt;
 
   refresh_views(c, now);
-  if (prior_packets > 0) {
+  if (prior_packets > 0 && !in.old_ack) {
     AckSample sample;
     sample.pkts_acked = acked.pkts;
     sample.rtt = ca_rtt;
@@ -196,6 +199,9 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   out.in_flight = packets_in_flight(q.counters());
   c.stats.TcpExtTCPDelivered += out.delivered;
 
+  if (in.old_ack) {
+    return out;  // Linux old_ack: tcp_newly_delivered only, no rate sample, no CC
+  }
   const RateSample rs = rate_gen(c.rate, rack, out.delivered, out.newly_lost, out.prior_in_flight,
                                  prior_sack_reneg, c.rtt.min_rtt(), now);
 

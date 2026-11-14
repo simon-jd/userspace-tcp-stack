@@ -172,4 +172,112 @@ private:
   Time now_{1'000'000'000};
 };
 
+// The options of a scripted peer's SYN.
+struct PeerOpts {
+  bool ts = false;
+  bool sack = true;
+  std::optional<std::uint8_t> wscale = 7;
+  std::uint16_t mss = 1460;
+  std::uint16_t window = 65535;  // of the SYN and later segments (scaled by wscale after it)
+};
+
+// A Driven stack listening on `port` and one connection to a scripted peer,
+// with the peer's view of both sequence spaces.
+class Scripted {
+public:
+  explicit Scripted(ProfileId profile = ProfileId::linux_compat) : d_(profile) {}
+  explicit Scripted(const StackConfig& cfg) : d_(cfg) {}
+
+  Driven& d() { return d_; }
+  Stack& stack() { return d_.stack(); }
+
+  std::uint16_t peer_port = 40000;
+  PeerOpts po;
+  Handle listener, h;
+  Seq32 nxt;                    // the peer's next sequence number
+  Seq32 their;                  // the peer's RCV.NXT (the stack's sequence space)
+  std::uint32_t tsval = 5000;   // the peer's TSval, sent as is
+  std::uint32_t their_ts = 0;   // the stack's last TSval
+  std::uint16_t window = 65535;  // window field of the peer's segments
+
+  // A segment from the peer: SEQ = nxt, ACK = their, the window, TS.
+  [[nodiscard]] TcpSpec spec(std::uint16_t flags) const {
+    TcpSpec s(Driven::peer(peer_port), d_.local());
+    s.seq = nxt;
+    s.ack = their;
+    s.flags = flags;
+    s.window = window;
+    if (po.ts) {
+      s.opt.ts = wire::Timestamps{tsval, their_ts};
+    }
+    return s;
+  }
+  void send(const TcpSpec& s) { d_.send(s); }
+  // Payload `n` bytes at nxt; advances nxt.
+  void send_data(std::size_t n, std::uint16_t flags = wire::tcp_ack | wire::tcp_psh) {
+    TcpSpec s = spec(flags);
+    s.payload = pattern(n);
+    nxt = nxt + static_cast<std::uint32_t>(n);
+    d_.send(s);
+  }
+  // The stack's output since the last call, parsed (views into kept bytes);
+  // remembers the stack's last TSval.
+  std::vector<Parsed> out() {
+    kept_.clear();
+    for (Bytes& b : d_.out()) {
+      kept_.push_back(std::move(b));
+    }
+    std::vector<Parsed> v;
+    for (const Bytes& b : kept_) {
+      if (const auto p = parse(b)) {
+        if (p->v.opt.ts) {
+          their_ts = p->v.opt.ts->val;
+        }
+        v.push_back(*p);
+      }
+    }
+    return v;
+  }
+
+  // Listens (backlog 16), takes the peer's SYN with `po`, ACKs the SYN-ACK
+  // with window `ack_window`, and accepts. False on any surprise.
+  bool accept(Seq32 isn = Seq32{10'000}, std::uint16_t ack_window = 65535) {
+    const auto l = stack().tcp_listen(Endpoint{{}, port}, 16, {});
+    if (!l) {
+      return false;
+    }
+    listener = *l;
+    nxt = isn;
+    window = po.window;
+    TcpSpec syn = spec(wire::tcp_syn);
+    syn.ack = Seq32{};
+    syn.opt.mss = po.mss;
+    syn.opt.wscale = po.wscale;
+    syn.opt.sack_permitted = po.sack;
+    if (po.ts) {
+      syn.opt.ts = wire::Timestamps{tsval, 0};
+    }
+    d_.send(syn);
+    const auto sa = out();
+    if (sa.size() != 1 || !is_synack(sa[0].v)) {
+      return false;
+    }
+    nxt = isn + 1;
+    their = sa[0].v.h.seq + 1;
+    ++tsval;
+    window = ack_window;
+    d_.send(spec(wire::tcp_ack));
+    const auto a = stack().tcp_accept(listener);
+    if (!a) {
+      return false;
+    }
+    h = *a;
+    return out().empty();
+  }
+
+private:
+  Driven d_;
+  std::vector<Bytes> kept_;
+};
+
 }  // namespace utcp::test::tcpt

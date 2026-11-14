@@ -239,4 +239,32 @@ TEST(TcpClose, RstInSimultaneousOpenSynReceivedRefuses) {
   d.stack().debug_check();
 }
 
+// A connection reset while the application still holds it reaches CLOSED
+// with every timer stopped: with data outstanding, no RTO fires later and
+// nothing more is sent; tcp_close then frees it.
+TEST(TcpClose, RstWithDataOutstandingStopsTimers) {
+  t::TcpHarness h;
+  const auto p = open(h);
+  ASSERT_TRUE(p);
+  h.set_hook([](Side from, t::Bytes&) {
+    return from == Side::b ? t::Verdict::drop : t::Verdict::deliver;  // b's ACKs lost
+  });
+  ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(16'000)));
+  h.settle();
+  EXPECT_GT(h.a().tcp_info(p->client)->unacked, 0u);
+  h.set_hook(nullptr);
+  ASSERT_TRUE(h.b().tcp_abort(p->server));  // RST <SEQ=SND.NXT> = a's RCV.NXT
+  h.settle();
+  EXPECT_EQ(state(h.a(), p->client), TcpState::closed);
+  EXPECT_EQ(h.a().take_error(p->client), Error::connection_reset);
+  EXPECT_EQ(h.a().debug_usage().conn_timers_armed, 0u);
+  h.clear_log();
+  h.run_for(10s);
+  EXPECT_TRUE(find(h, Side::a, [](const w::TcpView&) { return true; }).empty());
+  ASSERT_TRUE(h.a().tcp_close(p->client));
+  EXPECT_EQ(h.a().debug_usage().tcp_slots, 0u);
+  EXPECT_EQ(h.a().debug_usage().conn_timers_armed, 0u);
+  h.a().debug_check();
+}
+
 }  // namespace

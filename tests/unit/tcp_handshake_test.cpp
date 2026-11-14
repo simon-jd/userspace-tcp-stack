@@ -482,4 +482,35 @@ TEST(TcpHandshake, InitialWindowAfterSynLoss) {
   }
 }
 
+// §3.5 tcp_send: allowed in SYN-SENT, the data is queued and sent once the
+// handshake completes (never on the SYN).
+TEST(TcpHandshake, SendInSynSentIsQueued) {
+  t::TcpHarness h;
+  h.set_delay(Side::a, 10ms);
+  h.set_delay(Side::b, 10ms);
+  const auto l = h.b().tcp_listen(Endpoint{{}, 80}, 4, {});
+  ASSERT_TRUE(l);
+  const auto c = h.a().tcp_connect(Endpoint{h.addr(Side::b), 80}, {});
+  ASSERT_TRUE(c);
+  const t::Bytes data = t::pattern(3000, 5);
+  const auto n = h.a().tcp_send(*c, data);
+  ASSERT_TRUE(n);
+  EXPECT_EQ(*n, data.size());
+  const Time t0 = h.now();
+  h.run_for(100ms);
+  const auto syn = find(h, Side::a, is_syn);
+  ASSERT_EQ(syn.size(), 1u);
+  EXPECT_TRUE(parse(syn[0]->bytes)->v.payload.empty());
+  const auto segs = find(h, Side::a, [](const w::TcpView& v) { return !v.payload.empty(); });
+  ASSERT_FALSE(segs.empty());
+  EXPECT_EQ(segs[0]->t - t0, 20ms);  // with the ACK of the SYN-ACK
+  const auto s = h.b().tcp_accept(*l);
+  ASSERT_TRUE(s);
+  t::Bytes got(data.size());
+  const auto r = h.b().tcp_recv(*s, got);
+  ASSERT_TRUE(r);
+  EXPECT_EQ(*r, data.size());
+  EXPECT_EQ(got, data);
+}
+
 }  // namespace

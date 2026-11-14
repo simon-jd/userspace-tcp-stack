@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -394,6 +395,143 @@ TEST(TcpTimer, DataRetryExhaustionSendsRst) {
     EXPECT_EQ(state(h.a(), p->client), TcpState::closed);
     EXPECT_EQ(h.a().take_error(p->client), Error::timed_out);
     EXPECT_EQ(h.a().stats().TcpExtTCPAbortOnTimeout, 1u);
+  }
+}
+
+// Linux tcp_ack_probe / tcp_send_probe0: the backoff that zero-window
+// probing built up ends when the window opens with nothing in flight, so the
+// first segment sent then is protected by the base RTO, not by the
+// backed-off one (up to rto_max).
+TEST(TcpTimer, WindowOpeningEndsProbeBackoff) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    Scripted c(profile);
+    ASSERT_TRUE(c.accept(Seq32{10'000}, 0));  // the completing ACK closes the window
+    const Duration rto0 = c.stack().tcp_info(c.h)->rto;
+    ASSERT_TRUE(c.stack().tcp_send(c.h, t::pattern(1000)));
+    EXPECT_TRUE(c.out().empty());
+    // 70 s of zero-window probes, each answered with window 0.
+    int probes = 0;
+    for (int ms = 0; ms < 70'000; ms += 10) {
+      c.d().run_for(10ms);
+      for (const Parsed& p : c.out()) {
+        ASSERT_TRUE(is_pure_ack(p.v));
+        EXPECT_EQ(p.v.h.seq, c.their - 1);  // <SEQ=SND.UNA-1>
+        ++probes;
+        c.send(c.spec(w::tcp_ack));
+      }
+    }
+    EXPECT_GE(probes, 6);
+    EXPECT_GE(c.stack().tcp_info(c.h)->rto, 32 * rto0);
+    // The window opens: the data goes out and is lost.
+    c.window = 65535;
+    c.send(c.spec(w::tcp_ack));
+    const auto sent = c.out();
+    ASSERT_EQ(sent.size(), 1u);
+    ASSERT_TRUE(is_data(sent[0].v));
+    EXPECT_EQ(c.stack().tcp_info(c.h)->rto, rto0);
+    const Time t1 = c.d().now();
+    std::optional<Duration> gap;
+    for (int ms = 0; ms < 5000 && !gap; ++ms) {
+      c.d().run_for(1ms);
+      for (const Parsed& p : c.out()) {
+        if (is_data(p.v)) {
+          gap = c.d().now() - t1;
+        }
+      }
+    }
+    ASSERT_TRUE(gap.has_value());
+    EXPECT_EQ(*gap, rto0);
+    c.stack().debug_check();
+  }
+}
+
+// Linux tcp_write_timeout with SOCK_DEAD: an orphan retries
+// tcp_orphan_retries times; the server's sysctl is 0, which means 8 while
+// the backed-off RTO is below rto_max (§3.9 orphan_retries). So under
+// linux_compat an orphan to a dead peer gives up at the first RTO expiry past
+// retry_abort_time(8, ...), about 204 s here, not after 1044 s; under rfc it
+// keeps data_retries (722 s).
+TEST(TcpTimer, OrphanRetryLimit) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    const StackConfig ca = config(Side::a, profile);
+    t::TcpHarness h(ca, config(Side::b, profile));
+    const auto p = open(h);
+    ASSERT_TRUE(p);
+    h.set_hook([](Side from, t::Bytes&) {
+      return from == Side::a ? t::Verdict::drop : t::Verdict::deliver;
+    });
+    h.clear_log();
+    const Time t0 = h.now();
+    ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(1000)));
+    ASSERT_TRUE(h.a().tcp_close(p->client));
+    h.run_for(1200s);
+    const auto tx = times(h, Side::a, t0, is_data);
+    const auto rst = times(h, Side::a, t0, is_rst);
+    ASSERT_GE(tx.size(), 3u);
+    ASSERT_EQ(rst.size(), 1u);
+    const std::uint8_t retries = profile == ProfileId::rfc ? ca.tcp.data_retries : 8;
+    const Duration bound = utcp::retry_abort_time(retries, ca.tcp.rto_min, ca.tcp.rto_max);
+    const Duration first = tx[1];
+    const Duration abort = rst[0] - first;
+    EXPECT_GE(abort, bound);
+    EXPECT_LT(tx.back() - first, bound);
+    if (profile == ProfileId::rfc) {
+      EXPECT_EQ(abort, 722s);
+    } else {
+      EXPECT_EQ(abort, 204'400ms);  // expiries 0.4, 1.2, ..., 102.0, 204.4 s
+    }
+    EXPECT_EQ(h.a().stats().TcpExtTCPAbortOnTimeout, 1u);
+    EXPECT_EQ(h.a().debug_usage().tcp_slots, 0u);
+    h.a().debug_check();
+  }
+}
+
+// RFC 1122 §4.2.2.17 (Linux tcp_retransmit_timer, tcp_rtx_probe0_timed_out):
+// a peer that shrinks its window to zero under our data and answers every
+// retransmission keeps the connection open past the data retry bound; once
+// it falls silent the connection aborts at the first RTO expiry more than
+// 2 * rto_max after its last ACK.
+TEST(TcpTimer, ZeroWindowRetractionKeepsConnection) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    Scripted c(profile);
+    ASSERT_TRUE(c.accept());
+    const StackConfig cfg = c.stack().config();
+    ASSERT_TRUE(c.stack().tcp_send(c.h, t::pattern(1000)));
+    ASSERT_EQ(c.out().size(), 1u);
+    c.window = 0;  // retracted: nothing acknowledged
+    c.send(c.spec(w::tcp_ack));
+    Time last = c.d().now();
+    int answers = 0;
+    for (int i = 0; i < 15'000; ++i) {  // 1500 s, past every retry bound
+      c.d().run_for(100ms);
+      for (const Parsed& p : c.out()) {
+        ASSERT_FALSE(is_rst(p.v));
+        if (is_data(p.v)) {
+          c.send(c.spec(w::tcp_ack));
+          last = c.d().now();
+          ++answers;
+        }
+      }
+    }
+    EXPECT_GE(answers, 10);
+    EXPECT_EQ(state(c.stack(), c.h), TcpState::established);
+    // The peer falls silent.
+    std::optional<Time> rst;
+    for (int i = 0; i < 6'000 && !rst; ++i) {
+      c.d().run_for(100ms);
+      for (const Parsed& p : c.out()) {
+        if (is_rst(p.v)) {
+          rst = c.d().now();
+        }
+      }
+    }
+    ASSERT_TRUE(rst.has_value());
+    EXPECT_GT(*rst - last, 2 * cfg.tcp.rto_max);
+    EXPECT_LE(*rst - last, 3 * cfg.tcp.rto_max + 100ms);
+    EXPECT_EQ(c.stack().take_error(c.h), Error::timed_out);
   }
 }
 

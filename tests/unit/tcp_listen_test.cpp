@@ -2,9 +2,11 @@
 // connections, and blocked connections resuming (DESIGN §3.4, §3.5, §4.3).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tcp_test_util.hpp"
@@ -242,6 +244,141 @@ TEST(TcpListen, BlockedConnectionsResumeWhenTheHostDrains) {
   EXPECT_EQ(h.a().debug_usage().blocked_conns, 0u);
   h.a().debug_check();
   h.b().debug_check();
+}
+
+// Linux tcp_rcv_state_process (TCP_LISTEN): a SYN with FIN is dropped; no
+// SYN-ACK, no child.
+TEST(TcpListen, SynFinDropped) {
+  Driven d;
+  ASSERT_TRUE(d.stack().tcp_listen(Endpoint{{}, port}, 4, {}));
+  t::TcpSpec syn(Driven::peer(40000), d.local());
+  syn.seq = utcp::Seq32{1000};
+  syn.flags = w::tcp_syn | w::tcp_fin;
+  syn.opt.mss = 1460;
+  d.send(syn);
+  EXPECT_TRUE(d.out().empty());
+  EXPECT_EQ(d.stack().debug_usage().tcp_slots, 1u);
+  syn.flags = w::tcp_syn;
+  d.send(syn);
+  const auto out = d.out();
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(is_synack(parse(out[0])->v));
+}
+
+// §4.4 LISTEN: at most `backlog` children in SYN-RECEIVED (no SYN cookies),
+// the only bound on half-open children under a SYN flood. Further SYNs are
+// dropped silently and counted; the children go after their SYN-ACK
+// retries.
+TEST(TcpListen, SynQueueBoundedByBacklog) {
+  Driven d;
+  ASSERT_TRUE(d.stack().tcp_listen(Endpoint{{}, port}, 4, {}));
+  for (std::uint16_t i = 0; i < 5; ++i) {
+    t::TcpSpec syn(Driven::peer(static_cast<std::uint16_t>(41000 + i)), d.local());
+    syn.seq = utcp::Seq32{1000u * (i + 1u)};
+    syn.flags = w::tcp_syn;
+    syn.opt.mss = 1460;
+    d.send(syn);
+  }
+  std::size_t synacks = 0, rsts = 0;
+  for (const t::Bytes& b : d.out()) {
+    const auto q = parse(b);
+    ASSERT_TRUE(q);
+    synacks += is_synack(q->v) ? 1 : 0;
+    rsts += is_rst(q->v) ? 1 : 0;
+  }
+  EXPECT_EQ(synacks, 4u);
+  EXPECT_EQ(rsts, 0u);
+  EXPECT_EQ(d.stack().stats().TcpExtListenDrops, 1u);
+  EXPECT_EQ(d.stack().stats().TcpExtListenOverflows, 0u);
+  EXPECT_EQ(d.stack().debug_usage().tcp_slots, 5u);  // the listener and 4 children
+  d.run_for(70s);
+  EXPECT_EQ(d.stack().debug_usage().tcp_slots, 1u);
+  d.stack().debug_check();
+}
+
+// §3.5 tcp_close on a listener (Linux inet_csk_listen_stop): established
+// children not accepted get an RST <SEQ=SND.NXT>, a child in SYN-RECEIVED
+// goes silently, and nothing of the listener remains.
+TEST(TcpListen, ClosingListenerResetsUnacceptedChildren) {
+  t::TcpHarness h;
+  const auto l = h.b().tcp_listen(Endpoint{{}, port}, 16, {});
+  ASSERT_TRUE(l);
+  std::vector<Handle> clients;
+  for (int i = 0; i < 2; ++i) {
+    const auto c = h.a().tcp_connect(Endpoint{h.addr(Side::b), port}, {});
+    ASSERT_TRUE(c);
+    clients.push_back(*c);
+  }
+  h.run_for(100ms);
+  // The third client's completing ACK is lost: its child stays in
+  // SYN-RECEIVED (the client is established).
+  h.set_hook([](Side from, t::Bytes& d) {
+    const auto q = parse(d);
+    return from == Side::a && q && is_pure_ack(q->v) ? t::Verdict::drop : t::Verdict::deliver;
+  });
+  const auto c3 = h.a().tcp_connect(Endpoint{h.addr(Side::b), port}, {});
+  ASSERT_TRUE(c3);
+  h.run_for(100ms);
+  h.set_hook(nullptr);
+  EXPECT_EQ(state(h.a(), *c3), TcpState::established);
+  EXPECT_EQ(h.b().debug_usage().tcp_slots, 4u);
+  // Each child's SND.NXT is its ISS + 1 (no data sent), by client port.
+  std::vector<std::pair<std::uint16_t, utcp::Seq32>> snd_nxt;
+  for (const t::Sent* s : find(h, Side::b, is_synack)) {
+    const auto q = parse(s->bytes);
+    snd_nxt.emplace_back(q->v.h.dport, q->v.h.seq + 1);
+  }
+  h.clear_log();
+  ASSERT_TRUE(h.b().tcp_close(*l));
+  h.settle();
+  const auto rst = find(h, Side::b, is_rst);
+  ASSERT_EQ(rst.size(), 2u);
+  for (std::size_t i = 0; i < 2; ++i) {
+    // The clients take an RST only at SEQ = RCV.NXT (RFC 5961 §3.2).
+    EXPECT_EQ(state(h.a(), clients[i]), TcpState::closed) << i;
+    EXPECT_EQ(h.a().take_error(clients[i]), Error::connection_reset) << i;
+  }
+  for (const t::Sent* s : rst) {
+    const auto q = parse(s->bytes);
+    const auto it = std::ranges::find(snd_nxt, q->v.h.dport,
+                                      &std::pair<std::uint16_t, utcp::Seq32>::first);
+    ASSERT_NE(it, snd_nxt.end());
+    EXPECT_EQ(q->v.h.seq, it->second);  // <SEQ=SND.NXT>
+  }
+  EXPECT_EQ(state(h.a(), *c3), TcpState::established);
+  EXPECT_EQ(h.b().debug_usage().tcp_slots, 0u);
+  EXPECT_FALSE(h.b().tcp_accept(*l));
+  h.b().debug_check();
+}
+
+// §3.5: when the ChunkPool runs out, tcp_send refuses and readiness says not
+// writable; once chunks are freed (here by reading another connection) the
+// refused connection gets ev_writable, even with nothing in flight.
+TEST(TcpListen, ChunkPoolExhaustionResumesWriters) {
+  StackConfig ca = config(Side::a);
+  ca.chunk_limit = 4;
+  t::TcpHarness h(ca, config(Side::b));
+  const auto l = h.b().tcp_listen(Endpoint{{}, port}, 4, {});
+  ASSERT_TRUE(l);
+  const auto c1 = h.a().tcp_connect(Endpoint{h.addr(Side::b), port}, {});
+  const auto c2 = h.a().tcp_connect(Endpoint{h.addr(Side::b), port}, {});
+  ASSERT_TRUE(c1 && c2);
+  h.run_for(100ms);
+  const auto s1 = h.b().tcp_accept(*l);
+  ASSERT_TRUE(s1);
+  ASSERT_TRUE(h.b().tcp_send(*s1, t::pattern(16 * 1024)));
+  h.run_for(100ms);
+  EXPECT_EQ(h.a().debug_usage().chunks - h.a().debug_usage().chunks_free, 4u);
+  (void)events_of(h.a(), *c2);
+  const auto r = h.a().tcp_send(*c2, t::pattern(1000));
+  ASSERT_FALSE(r);
+  EXPECT_EQ(r.error(), Error::would_block);
+  EXPECT_FALSE(h.a().tcp_readiness(*c2).writable);
+  EXPECT_EQ(drain(h.a(), *c1).size(), 16u * 1024);
+  EXPECT_NE(events_of(h.a(), *c2) & utcp::ev_writable, 0);
+  EXPECT_TRUE(h.a().tcp_readiness(*c2).writable);
+  EXPECT_TRUE(h.a().tcp_send(*c2, t::pattern(1000)));
+  h.a().debug_check();
 }
 
 }  // namespace

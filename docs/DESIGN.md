@@ -266,7 +266,7 @@ std::optional<Error> take_error(Handle);                                        
 | `tcp_listen` | binds `local` (addr must be the stack address or 0); `addr_in_use` if another listener has the port. `backlog` bounds established-but-not-accepted children; SYNs beyond it (counting SYN-RECEIVED children) are dropped, as Linux does when the accept queue is full. |
 | `tcp_accept` | pops the oldest established child. Children inherit the listener's options. |
 | `tcp_connect` | allocates a port (§4.6), sends SYN; result via `connected` or `error` events. `addr_not_available` when no port is free. |
-| `tcp_send` | copies up to the free send-buffer space; `would_block` if none; `shut_down` after `shutdown(write)`; the pending connection error otherwise. Allowed in SYN-SENT (data is queued). |
+| `tcp_send` | copies up to the free send-buffer space; `would_block` if none; `shut_down` after `shutdown(write)`; the pending connection error otherwise. Allowed in SYN-SENT (data is queued). (As built: also in SYN-RECEIVED of a simultaneous open; queued data goes out once ESTABLISHED. When the ChunkPool has no chunk, `tcp_send` is short or `would_block` although the buffer has room, `tcp_readiness` reports not writable, and `ev_writable` follows once chunks are freed, by a read, an ACK or a freed connection, Linux `sk_stream_wait_memory`.) |
 | `tcp_recv` | returns in-order data; then 0 after the peer's FIN; then the connection error if any. Buffered data is returned before an error (after RST, data already received is still readable). |
 | `tcp_shutdown(write)` | queues FIN after buffered data (half-close, RFC 9293 §3.6). `shutdown(read)`: `tcp_recv` returns 0; later data is acknowledged and discarded. |
 | `tcp_close` | if unread data remains, sends RST (RFC 1122 §4.2.2.13) and frees; otherwise behaves as shutdown(both) and the connection lives on as an orphan until CLOSED/TIME_WAIT. Data arriving after close also triggers RST. On a listener: closes it and RSTs non-accepted children. (As built: data after close resets in FIN-WAIT-1/2, as Linux `tcp_rcv_state_process`; after `shutdown(read)` alone, ESTABLISHED acknowledges and discards it.) |
@@ -405,6 +405,7 @@ Linux limits count `skb->truesize`, so a Linux buffer of nominal size N holds le
 | `syn_retries` / `syn_linear_timeouts` | 7 / 0 (183 s ≥ 3 min) | 6 / 4 (10 retransmissions, 131 s) | RFC 1122 §4.2.3.5; `tcp_syn_retries`, `tcp_syn_linear_timeouts` (SYN-SENT only); count-based, §4.8 |
 | `synack_retries` | 5 | 5 | `tcp_synack_retries`; count-based |
 | `data_retries` | 15 (bound 663 s) | 15 (bound 924.6 s) | RFC 1122 R2 ≥ 100 s; `tcp_retries2`; abort at the first RTO expiry past the bound, §4.8 |
+| `orphan_retries` | unset: orphans use `data_retries` | 0 (`tcp_orphan_retries` as the server: 8 while the backed-off RTO is below `rto_max`, else 0; 102.2 s bound at a 200 ms RTO) | Linux `tcp_orphan_retries`; the server's sysctl is 0; §4.8 |
 | `time_wait` | 240 s (2·MSL, MSL 2 min) | 60 s (`TCP_TIMEWAIT_LEN`) | RFC 9293 §3.4.2 |
 | `rst_in_time_wait` | `ignore` | `accept` | RFC 1337; `tcp_rfc1337 = 0` |
 | `orphan_fin_wait2_timeout` | 240 s (implementation choice) | 60 s (`tcp_fin_timeout`) | not specified by RFC 9293 |
@@ -524,7 +525,8 @@ else `<SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>`.
 **LISTEN** (§3.10.7.2): RST: drop. ACK: send `<SEQ=SEG.ACK><CTL=RST>`. SYN: if backlog is exhausted drop;
 else create a child in SYN-RECEIVED, choose ISS (§4.6), record peer options, reply SYN-ACK with only the options
 the peer offered (WS only if the SYN had WS, RFC 7323 §2.2; TS only if the SYN had TS, §3.2; SACK-permitted only
-if offered). SYN data is not acknowledged (no TFO). Anything else: drop. As built, "backlog exhausted" is Linux's
+if offered). SYN data is not acknowledged (no TFO). Anything else: drop. (As built, as Linux `tcp_rcv_state_process`: a SYN
+that also has FIN is dropped before the queue checks.) As built, "backlog exhausted" is Linux's
 test: more than `backlog` children wait for `tcp_accept` (`sk_acceptq_is_full`, so backlog + 1 fit), or `backlog`
 children are in SYN-RECEIVED (no SYN cookies). An ACK completing a child while more than `backlog` wait is dropped
 and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its SYN-ACK schedule runs on (Linux
@@ -555,8 +557,10 @@ and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its S
    dropped; that ACK is rate-limited (§4.7) only if SEG.LEN = 0 or SYN is set. If it carries payload below RCV.NXT,
    the ACK has a D-SACK for those payload bytes (RFC 2883 §4); SYN/FIN sequence space and zero-length segments
    never produce a D-SACK (Linux `tcp_send_dupack`). Acceptable segments are trimmed to `rcv_adv`; data above
-   RCV.NXT is kept (out-of-order queue). R3 (RFC 7323 §4.3, §5.3): if acceptable, `SEG.TSval ≥ TS.Recent` and
-   `SEG.SEQ ≤ Last.ACK.sent`, update TS.Recent and its stamp.
+   RCV.NXT is kept (out-of-order queue). R3 (RFC 7323 §4.3, §5.3), `SEG.TSval ≥ TS.Recent` and `SEG.SEQ ≤
+   Last.ACK.sent` → update TS.Recent and its stamp, runs in step 6 once the ACK is accepted (as built, Linux
+   `tcp_ack` with `FLAG_UPDATE_TS_RECENT`): an in-window SYN (step 5) or an ACK above SND.NXT must not move it, or
+   every later segment would fail PAWS. As Linux, an ACK below SND.UNA does not update it either.
 3. RST (RFC 5961 §3.2): `SEG.SEQ == RCV.NXT`: reset. In SYN-RECEIVED of a passive open, free the child (back to
    LISTEN), of an active open fail with `connection_refused` (RFC 9293 §3.10.7.4); otherwise CLOSED with
    `connection_reset` (CLOSING/LAST-ACK/TIME-WAIT: close without error). In window but not exact: challenge ACK.
@@ -573,7 +577,10 @@ and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its S
      loss recovery, rate sample, CC. Window update if `SND.WL1 < SEG.SEQ` or
      (`SND.WL1 == SEG.SEQ` and `SND.WL2 ≤ SEG.ACK`) (MUST-20), or (as built, Linux `tcp_may_update_window`) if
      the ACK advances SND.UNA: the usable window is measured from SND.UNA, so a window kept from an older ACK
-     would let the sender pass the peer's right edge. Duplicate ACK as RFC 5681 §2 (same ACK, no data,
+     would let the sender pass the peer's right edge. An ACK below SND.UNA (within MAX.SND.WND) moves neither
+     SND.UNA nor the window, but its SACK and D-SACK blocks are processed, without RTT sample or CC (as built, Linux
+     `tcp_ack` `old_ack`). After an ACK with nothing in flight whose window now takes the next segment, `backoff`
+     is reset (Linux `tcp_ack_probe`), so data sent after zero-window probing has the base RTO. Duplicate ACK as RFC 5681 §2 (same ACK, no data,
      no SYN/FIN, same window, data outstanding) or, with SACK, an ACK whose SACK blocks cover new data
      (RFC 6675 §2).
    - FIN-WAIT-1: our FIN acked → FIN-WAIT-2 (orphans arm `fin_wait2`). CLOSING: FIN acked → TIME-WAIT.
@@ -593,7 +600,9 @@ TIME-WAIT receiving a SYN without ACK (RFC 6191, RFC 9293 §3.6.1; Linux `tcp_ti
 passes and `SEG.SEQ > RCV.NXT` or `TSval > TS.Recent` (so an equal TSval with a higher SEG.SEQ is accepted, as RFC
 6191), and a listener holds the port, the entry is freed and the listener takes the SYN with ISS = `old SND.NXT +
 65537`. Otherwise, also when no listener exists, ACK (oow rate limit) and drop: RFC 6191 says drop silently; the
-ACK is the Linux choice, used in both profiles.
+ACK is the Linux choice, used in both profiles. PAWS in TIME-WAIT is Linux `tcp_paws_reject`: any TSval below
+TS.Recent fails (no one-tick window), an RST too while TS.Recent is younger than 60 s (`TCP_PAWS_MSL`), so an old
+duplicate RST does not end TIME-WAIT under `rst_in_time_wait = accept`.
 
 ### 4.5 Options
 
@@ -680,7 +689,12 @@ Duration retry_abort_time(std::uint8_t retries, Duration rto_base, Duration rto_
   `synack_retries`. Synchronized states (Linux `retransmits_timed_out`): at an RTO expiry with `now − retrans_stamp
   ≥ retry_abort_time(data_retries, rto_min, rto_max)`; the bound is a model value, so the abort lands at the first
   expiry past it (`rfc` at a 1 s RTO: 722 s after the first retransmission). Send RST and fail with `timed_out` (or
-  the stored soft error). Unanswered zero-window probes count `probes_out` against `data_retries`.
+  the stored soft error). Unanswered zero-window probes count `probes_out` against `data_retries`. (As built:
+  an orphan, closed by the application, is bounded by `orphan_retries` (§3.9; Linux `tcp_write_timeout` and
+  `tcp_probe_timer` with `SOCK_DEAD`). A connection that is not an orphan and whose SND.WND is 0 at an RTO expiry
+  is not bounded by `data_retries`: the retransmissions act as probes, and it aborts only when both the last ACK
+  and `retrans_stamp` (or the head's last transmission) are more than 2·`rto_max` old (Linux
+  `tcp_rtx_probe0_timed_out`; RFC 1122 §4.2.2.17).)
 
 ### 4.9 Output: segmentation, Nagle, sender SWS, probes, pacing gate
 
@@ -713,7 +727,9 @@ Zero-window probing (RFC 9293 §3.8.6.1): with data queued, nothing in flight an
 as kind `persist` at `rto_backed_off`. On expiry send a zero-length `<SEQ=SND.UNA−1><ACK=RCV.NXT>` (Linux
 `tcp_xmit_probe_skb`; `TxKind::zwp`), `probes_out++`, and back off up to `rto_max`. The probe carries no data, so
 it never enters the send queue, in-flight count, RTO or recovery and causes no CC reaction; any acceptable ACK
-resets `probes_out` (Linux `icsk_probes_out = 0`), so answered probes never abort. With a window above zero but
+resets `probes_out` (Linux `icsk_probes_out = 0`), so answered probes never abort. The probe backoff ends when
+the window takes the next segment, or when the timer finds data in flight or nothing to send (Linux
+`tcp_ack_probe`, `tcp_send_probe0`). With a window above zero but
 below the sender SWS threshold, the same timer is the SWS override and sends min(D, U) bytes inside the window as
 ordinary data (RFC 9293 §3.8.6.2.1).
 

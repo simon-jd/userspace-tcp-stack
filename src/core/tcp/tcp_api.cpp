@@ -133,9 +133,7 @@ std::expected<std::size_t, Error> TcpEngine::tcp_send(Handle h, std::span<const 
   }
   switch (t.state) {
     case TcpState::syn_sent:
-    case TcpState::syn_received:
-      t.send_blocked = true;
-      return std::unexpected(Error::would_block);
+    case TcpState::syn_received:  // §3.5: queued, sent once ESTABLISHED
     case TcpState::established:
     case TcpState::close_wait:
       break;
@@ -147,20 +145,26 @@ std::expected<std::size_t, Error> TcpEngine::tcp_send(Handle h, std::span<const 
   }
   const Time now = core_.now();
   const Counters& k = t.sndq.counters();
-  // §5.4: the application-limited marker (Linux tcp_sendmsg_locked).
-  rate_check_app_limited(t.rate, t.sndq.end() - t.sndq.nxt(), t.mss_cache,
-                         core_.queued_for(t.self.slot) > 0, packets_in_flight(k), t.cc_conn.cwnd,
-                         k.lost_out, k.retrans_out);
-  // RFC 5681 §4.1 (Linux tcp_slow_start_after_idle_check from tcp_skb_entail).
-  if (k.packets_out == 0 && t.sndq.end() == t.sndq.nxt()) {
-    refresh_cc(t, now);
-    cwnd_restart(t.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
-                 t.rtt.rto_backed_off(t.backoff), initial_window(t));
+  if (t.syn_acked) {
+    // §5.4: the application-limited marker (Linux tcp_sendmsg_locked).
+    rate_check_app_limited(t.rate, t.sndq.end() - t.sndq.nxt(), t.mss_cache,
+                           core_.queued_for(t.self.slot) > 0, packets_in_flight(k),
+                           t.cc_conn.cwnd, k.lost_out, k.retrans_out);
+    // RFC 5681 §4.1 (Linux tcp_slow_start_after_idle_check from tcp_skb_entail).
+    if (k.packets_out == 0 && t.sndq.end() == t.sndq.nxt()) {
+      refresh_cc(t, now);
+      cwnd_restart(t.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
+                   t.rtt.rto_backed_off(t.backoff), initial_window(t));
+    }
   }
+  const std::uint64_t space = t.sndq.free_space();
   const std::size_t n = t.sndq.write(data);
   if (n < data.size()) {
     t.send_blocked = true;
     chrono_start(t, ChronoType::sndbuf_limited, now);
+    if (n < space) {
+      wait_for_chunks(t);  // the buffer had room, the ChunkPool did not
+    }
   }
   if (n == 0) {
     return std::unexpected(Error::would_block);
@@ -199,6 +203,7 @@ std::expected<std::size_t, Error> TcpEngine::tcp_recv(Handle h, std::span<std::b
       flush_ack(t, now);
       sync_timers(t, now);
     }
+    wake_chunk_waiters();
     return n;
   }
   if (t.fin_rcvd) {
@@ -228,6 +233,7 @@ std::expected<void, Error> TcpEngine::tcp_shutdown(Handle h, Shutdown how) {
     std::array<std::byte, 4096> sink{};
     while (t.rcvq.read(sink) > 0) {
     }
+    wake_chunk_waiters();
   }
   if ((how == Shutdown::write || how == Shutdown::both) && !t.app_write_shut) {
     t.app_write_shut = true;
@@ -363,8 +369,10 @@ Readiness TcpEngine::tcp_readiness(Handle h) const {
   r.write_closed = t.app_write_shut || t.fin_queued || ended;
   const std::uint64_t queued = t.sndq.end() - t.sndq.una();
   const bool open = t.state == TcpState::established || t.state == TcpState::close_wait;
+  // Not writable while the ChunkPool is exhausted, as tcp_send would refuse.
+  const ChunkPool& pool = core_.chunks();
   r.writable = (open && !r.write_closed && t.sndq.free_space() > 0 &&
-                t.sndq.free_space() >= queued / 2) ||
+                t.sndq.free_space() >= queued / 2 && pool.in_use() < pool.limit()) ||
                r.write_closed || r.has_error;
   return r;
 }
