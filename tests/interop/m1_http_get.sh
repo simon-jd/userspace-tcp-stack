@@ -207,7 +207,7 @@ public_case() {
     "check:extra['curl_http_code']==200" \
     "check:extra['sha_get_body']==extra['get_summary'].get('sha256')" \
     "check:extra['sha_get_body']==extra['sha_curl'] and extra['get_summary'].get('bytes')==extra['curl_size']" \
-    "check:pcap['utcp0']['by']['stack']['rst']==0"
+    "check:pcap['utcp0']['by']['stack']['rst_open']==0"
 }
 
 if [[ ${1:-} == list ]]; then

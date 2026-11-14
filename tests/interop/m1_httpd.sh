@@ -107,7 +107,7 @@ PY
     "check:extra['sha_file']!='' and extra['sha_file']==extra['sha_curl']" \
     "check:extra['http_code']==200 and extra['size_download']==$bytes_n" \
     "check:extra['metrics_before']==0" \
-    "check:pcap['peer']['by']['stack']['rst']==0 and pcap['peer']['by']['remote']['rst']==0" \
+    "check:pcap['peer']['by']['stack']['rst_open']==0 and pcap['peer']['by']['remote']['rst_open']==0" \
     "check:fin_ok('peer')" \
     "check:peer['TcpExtTCPSACKDiscard']==0 and peer['TcpExtTCPSACKReneging']==0"
 }

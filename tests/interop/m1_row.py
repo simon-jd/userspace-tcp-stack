@@ -23,7 +23,9 @@ and evaluates each check:EXPR as a Python expression over
   meta           the KEY=VALUE arguments (strings)
   sha_ok         both summaries ok, SHA-256 equal, bytes equal to meta["bytes_n"] if given
   fin_ok(NAME)   in capture NAME both sides sent a FIN, each FIN was
-                 acknowledged, and nobody sent an RST
+                 acknowledged, and nobody sent an RST other than the answer
+                 to a segment that arrived after the close (rst_open 0,
+                 m1_pcap_summary.py)
 Writes RESULTS/CASE/row.json and appends it to RESULTS/rows.jsonl. Exit
 status 0 if every check holds and none raised, else 1.
 """
@@ -154,8 +156,8 @@ def main():
     def fin_ok(name):
         by = pcap.get(name, {}).get("by", {})
         s, r = by.get("stack", {}), by.get("remote", {})
-        return s.get("fin", 0) >= 1 and r.get("fin", 0) >= 1 and s.get("rst", 0) == 0 \
-            and r.get("rst", 0) == 0 and s.get("fin_acked") is True and r.get("fin_acked") is True
+        return s.get("fin", 0) >= 1 and r.get("fin", 0) >= 1 and s.get("rst_open", 1) == 0 \
+            and r.get("rst_open", 1) == 0 and s.get("fin_acked") is True and r.get("fin_acked") is True
 
     env = {"send": send, "recv": recv, "peer": peer, "stack": stack, "tun": tund, "qdisc": qd,
            "pcap": pcap, "extra": extra, "meta": meta, "sha_ok": sha_ok, "fin_ok": fin_ok,

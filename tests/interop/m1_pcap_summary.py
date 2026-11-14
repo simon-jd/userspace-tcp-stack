@@ -19,7 +19,13 @@ STACK_IP) and "remote" (any other source). Per sender:
   other than SYN/RST that advertise a window of 0), ecn_ip (IP ECN field not
   0), ece_cwr_after_syn, ts_after_syn (timestamp option on non-SYN segments),
   sack_segs (segments carrying SACK blocks), first_t/last_t, fin_acked (one
-  of this sender's last 64 ACKs covers the other sender's last FIN).
+  of this sender's last 64 ACKs covers the other sender's last FIN),
+  rst_after_close (RSTs without ACK sent after both FINs were seen and this
+  sender's FIN was ACKed, with the sequence number of the end of that FIN:
+  the answer to a segment that arrives after the connection is gone, e.g. a
+  duplicate of the last ACK, RFC 9293 §3.10.7.1 and Linux tcp_v4_rcv ->
+  tcp_v4_send_reset), rst_open (rst - rst_after_close). Single-connection
+  captures only.
 "connections": distinct (src, sport, dst, dport) tuples with a SYN, as
 "a:p>b:q" from the SYN's sender.
 "icmp": ICMP messages by (src, dst, type, code, mtu) with count and the time
@@ -53,6 +59,7 @@ def side():
         "len_counts": collections.Counter(), "syns": [], "zero_win": 0, "ecn_ip": 0,
         "ece_cwr_after_syn": 0, "ts_after_syn": 0, "sack_segs": 0, "first_t": None,
         "last_t": None, "fin_end": None, "last_acks": collections.deque(maxlen=64),
+        "rst_after_close": 0, "fin_acked_by_peer": False,
     }
 
 
@@ -72,6 +79,7 @@ def main():
             ln = num(p[6], 10, 0)
             win = num(p[7], 10, -1)
             s = sides["stack" if src == stack_ip else "remote"]
+            o = sides["remote" if src == stack_ip else "stack"]
             s["pkts"] += 1
             s["first_t"] = t if s["first_t"] is None else s["first_t"]
             s["last_t"] = t
@@ -88,9 +96,15 @@ def main():
                 if seq is not None:
                     s["fin_end"] = (seq + ln + 1) % (1 << 32)
             if flags & TCP_ACK and num(p[16], 10) is not None:
-                s["last_acks"].append(num(p[16], 10))
+                ack = num(p[16], 10)
+                s["last_acks"].append(ack)
+                if o["fin_end"] is not None and (ack - o["fin_end"]) % (1 << 32) < (1 << 31):
+                    o["fin_acked_by_peer"] = True
             if flags & TCP_RST:
                 s["rst"] += 1
+                if (not flags & TCP_ACK and s["fin_acked_by_peer"] and o["fin"] > 0
+                        and num(p[15], 10) == s["fin_end"]):
+                    s["rst_after_close"] += 1
             if flags & TCP_SYN:
                 conns.add(f"{src}:{sport}>{dst}:{dport}" if not flags & TCP_ACK
                           else f"{dst}:{dport}>{src}:{sport}")
@@ -147,7 +161,8 @@ def main():
         s["fin_acked"] = fe is not None and any(
             (a - fe) % (1 << 32) < (1 << 31) for a in s["last_acks"])
     for s in sides.values():
-        del s["last_acks"]
+        del s["last_acks"], s["fin_acked_by_peer"]
+        s["rst_open"] = s["rst"] - s["rst_after_close"]
     with open(err_path) as f:
         err = f.read().strip()
     out = {
