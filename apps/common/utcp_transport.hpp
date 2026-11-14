@@ -124,9 +124,9 @@ public:
   void stop() override { stop_requested_ = true; }
   // Runs the loop without a Handler until the stack holds no TCP connection
   // the program has closed (Stack::debug_usage().tcp_slots equals the
-  // listeners and connections still open; TIME-WAIT entries are not slots)
-  // and nothing waits for the device, or `max` passed, or a signal or device
-  // error stopped the loop.
+  // listeners and connections still open) and no TIME-WAIT entry, and
+  // nothing waits for the device; or until `max` passed, or a signal or
+  // device error stopped the loop.
   void finish_closing(Duration max) override;
   [[nodiscard]] Time now() const override;
   [[nodiscard]] const LoopStats* loop_stats() const override { return &loop_.stats(); }

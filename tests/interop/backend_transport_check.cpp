@@ -39,9 +39,14 @@
 //                   run() leave nothing in the transmit queue when they return
 //   finish_closing  the program closes an accepted connection and run()
 //                   returns; the peer's FIN arrives after that and
-//                   finish_closing ACKs it at once and returns (the
-//                   connection in TIME-WAIT); without it the FIN is never
-//                   ACKed (interop case E-chunked)
+//                   finish_closing ACKs it at once (without it the FIN is
+//                   never ACKed: interop case E-chunked); the peer sends its
+//                   FIN again 200 ms later, as if that ACK were lost, and the
+//                   connection, in TIME-WAIT, ACKs it again (interop case
+//                   B-sack1-ts1-ws0-s2l: the program had exited in TIME-WAIT
+//                   and the peer's 4 retransmitted FINs were never ACKed);
+//                   finish_closing returns at its limit with the TIME-WAIT
+//                   entry still there
 // With --tun IFNAME (an existing, running TUN interface, MTU 1500):
 //   open_tun        open() refuses a stack MTU that differs from the
 //                   interface's and accepts the right one
@@ -883,21 +888,32 @@ void check_finish_closing() {
   if (!fin_ok) {
     return;
   }
-  // The kernel's FIN, ACKing ours, after run() returned.
-  (void)p.write_theirs(
-      tcp_from_kernel(kport, port, kiss + 1, iss + 2, wire::tcp_fin | wire::tcp_ack));
+  // The kernel's FIN, ACKing ours, after run() returned; the same FIN again
+  // 200 ms later (the kernel did not get the ACK).
+  const auto kernel_fin = tcp_from_kernel(kport, port, kiss + 1, iss + 2, wire::tcp_fin | wire::tcp_ack);
+  (void)p.write_theirs(kernel_fin);
+  std::size_t acks_before_resend = 0;
+  (void)t->add_oneshot(200ms, [&] {
+    acks_before_resend = tcp_from_stack(p).size();
+    (void)p.write_theirs(kernel_fin);
+  });
   const Time t0 = utcp::mono_now();
-  t->finish_closing(2s);
+  t->finish_closing(600ms);
   const auto took = utcp::mono_now() - t0;
   const auto acks = tcp_from_stack(p);
-  const bool acked = acks.size() == 1 && acks[0].flags == wire::tcp_ack &&
-                     acks[0].ack.raw() == kiss + 2 && acks[0].seq.raw() == iss + 2;
+  const bool acked = acks_before_resend == 1;
+  const bool reacked = acks.size() == 1 && acks[0].flags == wire::tcp_ack &&
+                       acks[0].ack.raw() == kiss + 2 && acks[0].seq.raw() == iss + 2;
   const auto u = t->stack().debug_usage();
-  expect(acked && took < 500ms && u.tcp_slots == 0 && u.time_wait_entries == 1, "finish_closing",
-         std::format("the peer's FIN {} (segments {}), returned after {} us, tcp_slots {}, "
+  expect(acked && reacked && took >= 590ms && took < 1000ms && u.tcp_slots == 0 &&
+             u.time_wait_entries == 1,
+         "finish_closing",
+         std::format("the peer's FIN {} ({} segments in 200 ms), its retransmission {} ({} "
+                     "segments), returned after {} us (limit 600 ms), tcp_slots {}, "
                      "time_wait_entries {}",
-                     acked ? "ACKed" : "NOT ACKed", acks.size(), took.count() / 1000, u.tcp_slots,
-                     u.time_wait_entries));
+                     acked ? "ACKed" : "NOT ACKed", acks_before_resend,
+                     reacked ? "ACKed again" : "NOT ACKed", acks.size(), took.count() / 1000,
+                     u.tcp_slots, u.time_wait_entries));
 }
 
 // open() on an interface that does not exist fails at once: TUNSETIFF would

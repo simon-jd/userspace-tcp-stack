@@ -412,7 +412,8 @@ void UtcpTransport::run(Handler& h) {
 bool UtcpTransport::closing_done() const {
   const auto open = static_cast<std::uint32_t>(std::ranges::count_if(
       socks_, [](const auto& kv) { return kv.second.kind != Kind::udp; }));
-  return stack_.debug_usage().tcp_slots <= open && !pending_tx_;
+  const StackUsage u = stack_.debug_usage();
+  return u.tcp_slots <= open && u.time_wait_entries == 0 && !pending_tx_;
 }
 
 void UtcpTransport::finish_closing(Duration max) {

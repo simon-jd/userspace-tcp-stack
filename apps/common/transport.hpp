@@ -107,10 +107,12 @@ public:
   virtual void stop() = 0;
   // Called after run() returned, before the program exits: lets the
   // connections the program closed finish closing (ACK the peer's FIN,
-  // retransmit our FIN) as the kernel does after close(2) and exit. Returns
-  // when none is left (TIME-WAIT counts as done), after `max`, or on a stop
-  // signal. Timers still armed fire; no Handler callback is made. The kernel
-  // backend and the fake have nothing to do.
+  // retransmit our FIN) as the kernel does after close(2) and exit. A
+  // connection in TIME-WAIT is kept too, so that a peer whose FIN ACK was
+  // lost gets its retransmitted FIN ACKed (the kernel keeps TIME-WAIT for
+  // 60 s; a program cannot). Returns when none is left, after `max`, or on
+  // a stop signal. Timers still armed fire; no Handler callback is made.
+  // The kernel backend and the fake have nothing to do.
   virtual void finish_closing(Duration /*max*/) {}
   // The transport's clock (CLOCK_MONOTONIC for the real ones).
   [[nodiscard]] virtual Time now() const = 0;
@@ -122,7 +124,9 @@ public:
 // UtcpTransport configuration (m1-backend). The programs (m1-apps) fill it
 // from their command lines: --pcap FILE into pcap_file, --spin-us N into
 // spin_us, --profile into stack.tcp, and so on.
-// How long the programs wait in finish_closing before they exit.
+// How long the programs wait in finish_closing before they exit: an active
+// closer stays this long in TIME-WAIT, which covers a Linux peer's first
+// three FIN retransmissions (RTO 200 ms, doubling).
 inline constexpr Duration finish_closing_max = std::chrono::seconds(2);
 
 struct UtcpTransportOptions {
