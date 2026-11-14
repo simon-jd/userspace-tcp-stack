@@ -27,6 +27,7 @@ for d in sys.argv[3:]:
         p = os.path.join(d, c, "row.json")
         if os.path.isfile(p):
             rows[c] = json.load(open(p))
+            rows[c]["_run"] = os.path.basename(os.path.normpath(d))
 
 def size(n):
     if n is None or n == "":
@@ -42,10 +43,10 @@ keys = [("TcpExtTCPSACKDiscard", "SACKDiscard"), ("TcpExtTCPSACKReneging", "SACK
         ("TcpExtTCPDSACKIgnoredNoUndo", "DSACKIgnoredNoUndo"),
         ("TcpExtTCPToZeroWindowAdv", "ToZeroWindowAdv"), ("TcpExtTCPTimeouts", "Timeouts")]
 
-print("| Case | Direction | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) "
+print("| Case | Run | Direction | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) "
       "| Goodput Mbit/s (non-timing) | Retransmissions (sender total_retrans / peer TcpRetransSegs) "
       "| Peer nstat deltas | utcp0 drops (rx/tx) | Result |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for c in order:
     optional = c.endswith("?")
     c = c.rstrip("?")
@@ -53,7 +54,7 @@ for c in order:
     if r is None and optional:
         continue
     if r is None:
-        print(f"| {c} | | | | | | | | | not run | | NOT RUN |")
+        print(f"| {c} | | | | | | | | | | not run | | NOT RUN |")
         continue
     test = r.get("test")
     ns = r.get("nstat", {})
@@ -86,20 +87,20 @@ for c in order:
     if r.get("replaced_by"):
         res = f"replaced by {r['replaced_by']} (kernel curl precheck failed; not a stack result)"
     drops = "" if public else f"{r.get('tun_rx_dropped', '')}/{r.get('tun_tx_dropped', '')}"
-    print(f"| {c} | {r.get('direction', '')} | {r.get('options', '')} | {r.get('impairment', '')} "
+    print(f"| {c} | {r['_run']} | {r.get('direction', '')} | {r.get('options', '')} | {r.get('impairment', '')} "
           f"| {size(r.get('bytes_n'))} | {sha} | {dur} | {gp} | {rt} | {nst} | {drops} | {res} |")
 
 print()
 print("Linux->Linux reference (tests/interop/m1_linux_ref.sh; not acceptance cases):")
 print()
-print("| Case | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) "
+print("| Case | Run | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) "
       "| Retransmissions (sender total_retrans / TcpRetransSegs) | Sender nstat deltas "
       "| D-SACK replay (predicted SACKDiscard / dubious, D-SACK ACKs, of them older than snd_una) | Result |")
-print("|---|---|---|---|---|---|---|---|---|---|")
+print("|---|---|---|---|---|---|---|---|---|---|---|")
 for c in ref_order:
     r = rows.get(c)
     if r is None:
-        print(f"| {c} | | | | | | | | | NOT RUN |")
+        print(f"| {c} | | | | | | | | | | NOT RUN |")
         continue
     ns = r.get("nstat", {})
     nst = ", ".join(f"{short} {ns.get(k, 0)}" for k, short in keys
@@ -109,7 +110,7 @@ for c in ref_order:
            if ds else "")
     failed = [x["check"] for x in r.get("checks", []) if not x["ok"]]
     res = "pass" if r.get("pass") else "FAIL: " + "; ".join(f"`{f}`" for f in failed)
-    print(f"| {c} | {r.get('options', '')} | {r.get('impairment', '')} | {size(r.get('bytes_n'))} "
+    print(f"| {c} | {r['_run']} | {r.get('options', '')} | {r.get('impairment', '')} | {size(r.get('bytes_n'))} "
           f"| {'yes' if r.get('sha_ok') else 'no'} | {r.get('duration_s') or ''} "
           f"| {r.get('sender_total_retrans')} / {r.get('peer_TcpRetransSegs', '')} | {nst} | {dss} | {res} |")
 PY
