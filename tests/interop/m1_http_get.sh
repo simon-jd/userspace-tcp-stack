@@ -10,7 +10,9 @@
 # Each download is compared with kernel curl fetching the same URL at the
 # same time in the DUT (SHA-256 and length of the body). Public sites: the
 # URL is first checked with kernel `curl -sI` in the DUT for a 200 without a
-# redirect to HTTPS (a failing candidate is recorded and not fetched), and
+# redirect to HTTPS (up to 3 tries, 5 s apart); a candidate that fails is
+# recorded as replaced and the next unused replacement site (info.cern.ch,
+# captive.apple.com) is fetched in its place under its own case name; and
 # the name is resolved over the stack's UDP with --dns set to the host's
 # upstream resolver through the NAT (nat.sh's choice, /run/utcp-m1-dns in the
 # DUT); if that fails, the run is repeated with --resolve and an address from
@@ -34,11 +36,23 @@ public_sites=(
   "httpforever.com http://httpforever.com/"
 )
 
+# Replacements for a candidate that fails the precheck, in order of use.
+replacement_sites=(
+  "info.cern.ch http://info.cern.ch/"
+  "captive.apple.com http://captive.apple.com/"
+)
+
 all_cases() {
   echo E-nginx
   echo E-chunked
   local s
   for s in "${public_sites[@]}"; do echo "E-${s%% *}"; done
+}
+
+# For m1_matrix.sh: the replacement cases, marked optional with a trailing '?'.
+optional_cases() {
+  local s
+  for s in "${replacement_sites[@]}"; do echo "E-${s%% *}?"; done
 }
 
 peer_servers() {
@@ -165,7 +179,7 @@ local_case() {
 
 public_case() {
   local c=$1 name=${1#E-} url="" s
-  for s in "${public_sites[@]}"; do
+  for s in "${public_sites[@]}" "${replacement_sites[@]}"; do
     [[ ${s%% *} == "$name" ]] && url=${s#* }
   done
   m1_peer_for default
@@ -177,16 +191,36 @@ public_case() {
   local dns
   dns=$(tb_exec "$tb_dut" cat /run/utcp-m1-dns)
   # Precheck: kernel curl -sI in the DUT: 200 and no redirect to https.
-  local head code loc
-  head=$(tb_exec "$tb_dut" curl -sI -m 15 "$url" | tr -d '\r')
-  code=$(echo "$head" | awk 'NR == 1 {print $2}')
-  loc=$(echo "$head" | awk 'tolower($1) == "location:" {print $2}')
-  echo "$head" >"$M1_RESULTS/precheck-$name.txt"
+  local head code loc try
+  : >"$M1_RESULTS/precheck-$name.txt"
+  for try in 1 2 3; do
+    head=$(tb_exec "$tb_dut" curl -sSI -m 15 "$url" 2>&1 | tr -d '\r')
+    code=$(echo "$head" | awk 'NR == 1 && /^HTTP/ {print $2}')
+    loc=$(echo "$head" | awk 'tolower($1) == "location:" {print $2}')
+    { echo "== try $try $(date -Is)"; echo "$head"; } >>"$M1_RESULTS/precheck-$name.txt"
+    [[ $code == 200 && $loc != https:* ]] && break
+    sleep 5
+  done
   if [[ $code != 200 || $loc == https:* ]]; then
+    local repl="" used
+    for s in "${replacement_sites[@]}"; do
+      used=$(grep -c "^E-${s%% *}$" "$M1_RESULTS/.replacements_used" 2>/dev/null)
+      if [[ ${used:-0} == 0 && $c != "E-${s%% *}" ]]; then
+        repl=E-${s%% *}
+        break
+      fi
+    done
     m1_case_dir "$c"
-    echo "{\"precheck_code\": \"$code\", \"precheck_location\": \"$loc\"}" >"$M1_RESULTS/$c/extra.json"
-    m1_row "$c" "test=E" "direction=Internet->stack" "options=public site, precheck failed" \
-      "impairment=none (NAT, Wi-Fi)" "url=$url" "check:False"
+    echo "{\"precheck_code\": \"$code\", \"precheck_location\": \"$loc\", \"precheck_tries\": 3}" \
+      >"$M1_RESULTS/$c/extra.json"
+    m1_row "$c" "test=E" "direction=Internet->stack" \
+      "options=public candidate; kernel curl -sI precheck failed 3 times (precheck-$name.txt)" \
+      "impairment=none (NAT, Wi-Fi)" "url=$url" "replaced_by=${repl:-none left}" "check:False"
+    if [[ -n $repl ]]; then
+      echo "$repl" >>"$M1_RESULTS/.replacements_used"
+      public_case "$repl"
+      return
+    fi
     return 1
   fi
   get_case "$c" "$url" public --dns "$dns"
@@ -212,8 +246,10 @@ public_case() {
 
 if [[ ${1:-} == list ]]; then
   all_cases
+  optional_cases
   exit 0
 fi
+rm -f "$M1_RESULTS/.replacements_used"
 m1_need_programs apps/utcp-http-get/utcp-http-get
 patterns=("$@")
 ((${#patterns[@]})) || patterns=('*')

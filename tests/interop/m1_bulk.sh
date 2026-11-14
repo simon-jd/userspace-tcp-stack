@@ -55,7 +55,7 @@ bulk_case() {
   rest=${rest%-*}
   local bytes=1G bytes_n=1000000000 netem=N0 combo=default recv_extra=() pmtu=0 opts=default
   local checks=('check:sha_ok' "check:fin_ok('peer')" "check:extra['metrics_before']==0"
-    "check:peer['TcpExtTCPSACKDiscard']==0" "check:peer['TcpExtTCPSACKReneging']==0")
+    "check:peer['TcpExtTCPSACKReneging']==0")
   case $test-$rest in
     A-N[0-4])
       netem=$rest
@@ -127,6 +127,22 @@ bulk_case() {
       ;;
     *) tb_die "unknown case $c" ;;
   esac
+  # TCPSACKDiscard: 0, except Linux->stack under duplication (N3, N4), where
+  # Linux 7.0 discards D-SACKs for duplicates it never retransmitted
+  # (tcp_dsack_seen: dsack_dups > total_retrans). There the count must be
+  # exactly the one m1_dsack.py predicts from the peer's capture, and every
+  # predicted block must be a D-SACK for a segment the stack received twice
+  # (utcp0 capture), and every D-SACK the stack sent must be one.
+  local dsack=0
+  if [[ $dir == l2s && ($netem == N3 || $netem == N4) && $pmtu == 0 ]]; then
+    dsack=1
+    checks+=("check:peer['TcpExtTCPSACKDiscard']==dsack['sender']['pred_discard']"
+      "check:peer['TcpExtTCPDSACKIgnoredDubious']==dsack['sender']['pred_dubious']"
+      "check:dsack['sender']['pred_discard_dup']==dsack['sender']['pred_discard']"
+      "check:dsack['receiver']['dsack_other']==0")
+  else
+    checks+=("check:peer['TcpExtTCPSACKDiscard']==0")
+  fi
 
   m1_peer_for "$combo"
   if ((pmtu)); then m1_pmtu up; else m1_pmtu down; fi
@@ -177,6 +193,7 @@ bulk_case() {
   tb_exec "$tb_dut" cat /run/utcp-stats.json >"$r/stack-stats.json" 2>/dev/null
   m1_analyze "$c" peer "$stack_ip"
   m1_analyze "$c" utcp0 "$stack_ip" 1348
+  ((dsack)) && m1_dsack "$c" "$peer_addr" peer utcp0
   python3 -I - "$r" "$metrics" "$src" "$rrc" "$t0" "$t1" <<'PY'
 import json, sys
 r, metrics, src, rrc, t0, t1 = sys.argv[1:7]

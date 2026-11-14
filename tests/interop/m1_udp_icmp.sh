@@ -2,7 +2,8 @@
 # M1 interop acceptance test H (docs/INTEROP.md), on the testbed of testbed/m1:
 #   H-udp   utcp-echo --udp on the stack (utcp-m1-dut, --backend utcp, port 7);
 #           from the Linux peer, `nc -u` sends 1000 datagrams (one line each,
-#           1 ms apart); every one must come back unchanged
+#           1 ms apart); every one must come back unchanged, and the stack
+#           counts 1000 datagrams in and 1000 out
 #   H-ping  `ping -c 3 198.18.0.2` from the peer gets 3 replies from the stack
 #           (the echo server is running; nothing else holds utcp0)
 # Each case: record.sh before and after, a capture of utcp0, the stack's
@@ -49,8 +50,11 @@ h_case() {
   if [[ $c == H-udp ]]; then
     opts="nc -u, 1000 datagrams"
     for i in $(seq 1 1000); do printf 'datagram %04d from the Linux peer\n' "$i"; done >"$r/sent.txt"
-    # -i: the lines come from stdin.
-    docker exec -i "$tb_peer" bash -c "while IFS= read -r line; do printf '%s\n' \"\$line\"; sleep 0.001; done |
+    # -i: the lines come from stdin. nc sends what one read() of the pipe
+    # returns as one datagram, so the first line is written 0.5 s after nc
+    # starts (in run2, two lines written while nc was starting left as one
+    # 68-byte datagram) and the lines 1 ms apart.
+    docker exec -i "$tb_peer" bash -c "{ sleep 0.5; while IFS= read -r line; do printf '%s\n' \"\$line\"; sleep 0.001; done; } |
       nc -u -w 3 $stack_ip 7" <"$r/sent.txt" >"$r/received.txt" 2>"$r/nc.err"
     local same=0
     cmp -s "$r/sent.txt" "$r/received.txt" && same=1

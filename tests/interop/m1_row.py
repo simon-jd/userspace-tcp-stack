@@ -11,6 +11,7 @@ Reads RESULTS/CASE/:
   stack-stats.json       the stack's --stats line, if present
   pcap-NAME.json         m1_pcap_summary.py output per capture
   extra.json             other values a script recorded (one JSON object)
+  dsack.json             m1_dsack.py output, if present
 and evaluates each check:EXPR as a Python expression over
   send, recv     the summaries (dicts; {} if missing)
   peer           delta of every peer nstat counter (after - before; 0 if absent)
@@ -20,6 +21,7 @@ and evaluates each check:EXPR as a Python expression over
   pcap           {NAME: summary}
   extra          extra.json (time_total_s, curl's time, is the duration of
                  rows without a utcp-bulk sender)
+  dsack          dsack.json ({} if missing)
   meta           the KEY=VALUE arguments (strings)
   sha_ok         both summaries ok, SHA-256 equal, bytes equal to meta["bytes_n"] if given
   fin_ok(NAME)   in capture NAME both sides sent a FIN, each FIN was
@@ -146,6 +148,8 @@ def main():
                 pcap[f[5:-5]] = {}
     ex = read(os.path.join(d, "extra.json")).strip()
     extra = Zero(json.loads(ex)) if ex else Zero()
+    ds = read(os.path.join(d, "dsack.json")).strip()
+    dsack = json.loads(ds) if ds else {}
 
     want = int(meta["bytes_n"]) if meta.get("bytes_n") else None
     sha_ok = bool(send.get("ok") and recv.get("ok") and send.get("sha256")
@@ -160,7 +164,7 @@ def main():
             and r.get("rst_open", 1) == 0 and s.get("fin_acked") is True and r.get("fin_acked") is True
 
     env = {"send": send, "recv": recv, "peer": peer, "stack": stack, "tun": tund, "qdisc": qd,
-           "pcap": pcap, "extra": extra, "meta": meta, "sha_ok": sha_ok, "fin_ok": fin_ok,
+           "pcap": pcap, "extra": extra, "dsack": dsack, "meta": meta, "sha_ok": sha_ok, "fin_ok": fin_ok,
            "len": len, "max": max, "min": min, "sum": sum, "any": any, "all": all}
     results = []
     for c in checks:
@@ -200,6 +204,7 @@ def main():
                 "TcpExtTCPDSACKIgnoredOld", "TcpExtTCPSACKReneging", "TcpExtTCPSlowStartRetrans",
                 "IcmpInDestUnreachs", "IcmpOutDestUnreachs", "TcpExtTCPMTUPFail",
                 "TcpExtTCPMTUPSuccess"))},
+        "dsack": dsack.get("sender"),
         "checks": results,
         "pass": all(r["ok"] for r in results) and bool(results),
     })

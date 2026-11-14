@@ -16,8 +16,12 @@
 # egress would act on whole GSO bursts, which Linux TCP always builds.)
 #
 #   R-N0-l2l, R-N1-l2l, R-N3-l2l, R-N4-l2l   1 GB
+#   R-N4-100M-{1,2,3}-l2l                    100 MB under N4 (the size of the B rows)
 #   R-pause200-l2l, R-pause500-l2l           100 MB under N0, the receiver
 #                                            with --recv-pause 200:1048576 / 500:1048576
+# Under N3 and N4, m1_dsack.py replays the sender's D-SACK accounting from the
+# capture (CASE/dsack.json); the row checks that it predicts the sender's
+# TCPSACKDiscard and TCPDSACKIgnoredDubious exactly, as in the stack rows.
 #
 # Records what m1_bulk.sh records (record.sh before and after: the peer's
 # nstat is the sender's; a capture of the peer's interface) plus the
@@ -35,7 +39,10 @@ refnet_gw=198.19.9.1
 dut_ref_ip=198.19.9.2
 ref_ip=198.19.9.3
 
-all_cases() { printf '%s\n' R-N0-l2l R-N1-l2l R-N3-l2l R-N4-l2l R-pause200-l2l R-pause500-l2l; }
+all_cases() {
+  printf '%s\n' R-N0-l2l R-N1-l2l R-N3-l2l R-N4-l2l R-N4-100M-1-l2l R-N4-100M-2-l2l R-N4-100M-3-l2l \
+    R-pause200-l2l R-pause500-l2l
+}
 
 netem_params() {
   case $1 in
@@ -85,6 +92,7 @@ ref_case() {
     opts="recv-pause ${netem#pause}:1048576"
     netem=N0 bytes=100M bytes_n=100000000
   fi
+  [[ $c == *-100M-* ]] && bytes=100M bytes_n=100000000
   m1_peer_for default
   m1_pmtu down
   ref_up
@@ -124,6 +132,12 @@ ref_case() {
   tb_exec "$tb_dut" tc qdisc del dev "$rdev" root 2>/dev/null
   # m1_pcap_summary's "stack" side is the Linux receiver here.
   m1_analyze "$c" peer "$ref_ip"
+  local dsack_checks=()
+  if [[ $netem == N3 || $netem == N4 ]]; then
+    m1_dsack "$c" "$tb_peer_ip" peer
+    dsack_checks=("check:peer['TcpExtTCPSACKDiscard']==dsack['sender']['pred_discard']"
+      "check:peer['TcpExtTCPDSACKIgnoredDubious']==dsack['sender']['pred_dubious']")
+  fi
   python3 -I - "$r" "$metrics" "$src" "$rrc" <<'PY'
 import json, sys
 r, metrics, src, rrc = sys.argv[1:5]
@@ -143,7 +157,7 @@ PY
     "bytes_n=$bytes_n" "peer_sysctls=$(m1_peer_sysctls)" "cpus=$tb_cpus" \
     "captures=$m1_volume:/$m1_voldir/$c/peer.pcap" \
     'check:sha_ok' "check:extra['send_exit']==0 and extra['recv_exit']==0" \
-    "check:extra['metrics_before']==0"
+    "check:extra['metrics_before']==0" "${dsack_checks[@]}"
 }
 
 if [[ ${1:-} == list ]]; then

@@ -143,7 +143,7 @@ m1_cap_stop() {
 # m1_in_volume COMMAND...: runs a bash command in a container with utcp-data
 # at /data and the case directories at /res (read-write), on the build CPUs.
 m1_in_volume() {
-  docker run --rm --name "$m1_prefix-ana-$$" --cpuset-cpus 16-31 \
+  docker run --rm --name "$m1_prefix-ana-$BASHPID-$RANDOM" --cpuset-cpus 16-31 \
     -v "$m1_volume:/data" -v "$M1_RESULTS:/res" -v "$m1_repo:/utcp:ro" \
     "$tb_image" nice -n 10 bash -c "$*"
 }
@@ -168,6 +168,30 @@ m1_analyze() {
       > /tmp/icmp.txt 2>>/tmp/tshark.err
     python3 -I /utcp/tests/interop/m1_pcap_summary.py $stack_ip /tmp/tcp.txt /tmp/icmp.txt /tmp/tshark.err $len \
       > /res/$c/pcap-$name.json
+  "
+}
+
+# m1_dsack CASE SENDER_IP SENDER_CAP [RECEIVER_CAP]: m1_dsack.py over
+# CASE/SENDER_CAP.pcap (the Linux data sender's interface) and, if given,
+# CASE/RECEIVER_CAP.pcap (next to the receiver), into CASE/dsack.json.
+m1_dsack() {
+  local c=$1 sender=$2 scap=$3 rcap=${4:-}
+  local f fields=""
+  for f in ip.src ip.dst tcp.srcport tcp.dstport tcp.flags tcp.seq_raw tcp.len tcp.ack_raw \
+    tcp.options.sack_le tcp.options.sack_re; do
+    fields+=" -e $f"
+  done
+  m1_in_volume "
+    tsh() {
+      tshark -r /data/$m1_voldir/$c/\$1.pcap -n -o tcp.analyze_sequence_numbers:FALSE \
+        -o tcp.relative_sequence_numbers:FALSE -o tcp.desegment_tcp_streams:FALSE \
+        -Y 'tcp && !icmp' -T fields -E separator=';' -E occurrence=a -E aggregator=, \
+       $fields > /tmp/\$1.txt 2>>/tmp/tshark.err
+    }
+    tsh $scap
+    ${rcap:+tsh $rcap}
+    python3 -I /utcp/tests/interop/m1_dsack.py $sender /tmp/$scap.txt ${rcap:+/tmp/$rcap.txt} \
+      > /res/$c/dsack.json
   "
 }
 

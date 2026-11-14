@@ -2,7 +2,9 @@
 # Prints the interop matrix of docs/INTEROP.md (Markdown) from the rows the
 # m1_*.sh runners wrote: the row.json of each case directory under the given
 # results directories (a later directory's row for a case replaces an
-# earlier one), in the order of the runners' case lists.
+# earlier one), in the order of the runners' case lists (a name ending in
+# '?' is printed only if it ran), then the Linux->Linux reference rows of
+# m1_linux_ref.sh as a second table.
 #
 # Usage: tests/interop/m1_matrix.sh RESULTS_DIR...
 set -euo pipefail
@@ -13,12 +15,14 @@ order=$(
   "$here/m1_http_get.sh" list
   "$here/m1_udp_icmp.sh" list
 )
-python3 -I - "$order" "$@" <<'PY'
+ref_order=$("$here/m1_linux_ref.sh" list)
+python3 -I - "$order" "$ref_order" "$@" <<'PY'
 import json, os, sys
 
 order = sys.argv[1].split()
+ref_order = sys.argv[2].split()
 rows = {}
-for d in sys.argv[2:]:
+for d in sys.argv[3:]:
     for c in os.listdir(d):
         p = os.path.join(d, c, "row.json")
         if os.path.isfile(p):
@@ -43,7 +47,11 @@ print("| Case | Direction | Options | Impairment | Bytes | SHA-256 equal | Durat
       "| Peer nstat deltas | utcp0 drops (rx/tx) | Result |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|")
 for c in order:
+    optional = c.endswith("?")
+    c = c.rstrip("?")
     r = rows.get(c)
+    if r is None and optional:
+        continue
     if r is None:
         print(f"| {c} | | | | | | | | | not run | | NOT RUN |")
         continue
@@ -52,6 +60,10 @@ for c in order:
     if test in ("A", "B", "C", "D", "E") and not r.get("direction", "").startswith("Internet"):
         nst = ", ".join(f"{short} {ns.get(k, 0)}" for k, short in keys
                         if k in ns or k in ("TcpExtTCPSACKDiscard", "TcpExtTCPSACKReneging"))
+        ds = r.get("dsack")
+        if ds and ns.get("TcpExtTCPSACKDiscard", 0):
+            nst += (f" (SACKDiscard = {ds['pred_discard']} predicted from the capture, all D-SACKs"
+                    f" for segments the stack received twice; see TCPSACKDiscard below)")
     else:
         nst = "n/a"
     sha_checks = [x["ok"] for x in r.get("checks", []) if "sha" in x["check"]]
@@ -71,7 +83,33 @@ for c in order:
         rt = f"- / {r.get('peer_TcpRetransSegs', '')}"
     failed = [x["check"] for x in r.get("checks", []) if not x["ok"]]
     res = "pass" if r.get("pass") else "FAIL: " + "; ".join(f"`{f}`" for f in failed)
+    if r.get("replaced_by"):
+        res = f"replaced by {r['replaced_by']} (kernel curl precheck failed; not a stack result)"
     drops = "" if public else f"{r.get('tun_rx_dropped', '')}/{r.get('tun_tx_dropped', '')}"
     print(f"| {c} | {r.get('direction', '')} | {r.get('options', '')} | {r.get('impairment', '')} "
           f"| {size(r.get('bytes_n'))} | {sha} | {dur} | {gp} | {rt} | {nst} | {drops} | {res} |")
+
+print()
+print("Linux->Linux reference (tests/interop/m1_linux_ref.sh; not acceptance cases):")
+print()
+print("| Case | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) "
+      "| Retransmissions (sender total_retrans / TcpRetransSegs) | Sender nstat deltas "
+      "| D-SACK replay (predicted SACKDiscard / dubious, D-SACK ACKs, of them older than snd_una) | Result |")
+print("|---|---|---|---|---|---|---|---|---|---|")
+for c in ref_order:
+    r = rows.get(c)
+    if r is None:
+        print(f"| {c} | | | | | | | | | NOT RUN |")
+        continue
+    ns = r.get("nstat", {})
+    nst = ", ".join(f"{short} {ns.get(k, 0)}" for k, short in keys
+                    if k in ns or k in ("TcpExtTCPSACKDiscard", "TcpExtTCPSACKReneging"))
+    ds = r.get("dsack")
+    dss = (f"{ds['pred_discard']} / {ds['pred_dubious']}, {ds['dsack_acks']}, {ds['dsack_acks_old']}"
+           if ds else "")
+    failed = [x["check"] for x in r.get("checks", []) if not x["ok"]]
+    res = "pass" if r.get("pass") else "FAIL: " + "; ".join(f"`{f}`" for f in failed)
+    print(f"| {c} | {r.get('options', '')} | {r.get('impairment', '')} | {size(r.get('bytes_n'))} "
+          f"| {'yes' if r.get('sha_ok') else 'no'} | {r.get('duration_s') or ''} "
+          f"| {r.get('sender_total_retrans')} / {r.get('peer_TcpRetransSegs', '')} | {nst} | {dss} | {res} |")
 PY
