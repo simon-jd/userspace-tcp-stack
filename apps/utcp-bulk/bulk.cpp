@@ -460,7 +460,7 @@ JsonLine BulkApp::summary() const {
   return line;
 }
 
-int main_(int argc, const char* const* argv) {
+int main_(int argc, const char* const* argv, const TransportFactory& make) {
   CliParser cli("utcp-bulk", "Bulk transfer over one TCP connection, SHA-256 of the stream.");
   add_options(cli);
   add_backend_options(cli);
@@ -492,7 +492,7 @@ int main_(int argc, const char* const* argv) {
     }
     jsonl.emplace(std::move(*w));
   }
-  auto transport = make_transport(*backend);
+  auto transport = make(*backend);
   if (!transport) {
     std::fprintf(stderr, "utcp-bulk: %s\n", transport.error().c_str());
     return 1;

@@ -36,6 +36,9 @@ struct FakeTransportOptions {
   std::uint32_t rcv_buf = 64 * 1024;          // receive buffer per connection, bytes
   Time start{};                               // initial virtual time
   std::uint16_t first_ephemeral_port = 49152;  // then counting up
+  // Called by finish_closing(max) with `max` and the number of run() calls
+  // that had returned by then (tests of the programs' exit path).
+  std::function<void(Duration max, std::uint64_t runs_returned)> on_finish_closing{};
 };
 
 class FakeTransport final : public Transport {
@@ -68,6 +71,9 @@ public:
   // when no event is queued.
   void run(Handler& h) override;
   void stop() override { stopped_ = true; }
+  // Nothing to finish (data moves at once); reports the call to
+  // FakeTransportOptions::on_finish_closing.
+  void finish_closing(Duration max) override;
   [[nodiscard]] Time now() const override { return now_; }
 
   // --- Test hooks.
@@ -136,6 +142,7 @@ private:
   std::uint16_t next_port_;
   std::uint64_t udp_dropped_ = 0;
   bool stopped_ = false;
+  std::uint64_t runs_returned_ = 0;
 };
 
 }  // namespace utcp::app

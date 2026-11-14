@@ -35,6 +35,7 @@
 
 #include "common/cli.hpp"
 #include "common/jsonl.hpp"
+#include "common/kernel_transport.hpp"
 #include "common/sha256.hpp"
 #include "common/transport.hpp"
 
@@ -129,8 +130,10 @@ private:
   Result result_;
 };
 
-// The whole program: options, transport, run, summary. Returns the exit
-// status (0 = success).
-int main_(int argc, const char* const* argv);
+// The whole program: options, transport, run, finish_closing, summary.
+// Returns the exit status (0 = success). `make` creates the transport (tests
+// pass a fake).
+int main_(int argc, const char* const* argv,
+          const TransportFactory& make = make_transport);
 
 }  // namespace utcp::app::bulk

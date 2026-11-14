@@ -112,7 +112,8 @@ public:
   // lost gets its retransmitted FIN ACKed (the kernel keeps TIME-WAIT for
   // 60 s; a program cannot). Returns when none is left, after `max`, or on
   // a stop signal. Timers still armed fire; no Handler callback is made.
-  // The kernel backend and the fake have nothing to do.
+  // The kernel backend has nothing to do; the fake reports the call
+  // (FakeTransportOptions::on_finish_closing).
   virtual void finish_closing(Duration /*max*/) {}
   // The transport's clock (CLOCK_MONOTONIC for the real ones).
   [[nodiscard]] virtual Time now() const = 0;

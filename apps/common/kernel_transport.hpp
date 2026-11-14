@@ -182,6 +182,9 @@ struct BackendSelection {
 // KernelTransport or make_utcp_transport(), as selected.
 [[nodiscard]] std::expected<std::unique_ptr<Transport>, std::string> make_transport(
     const BackendSelection& b);
+// How a program's main_ gets its transport: make_transport, or a test's fake.
+using TransportFactory =
+    std::function<std::expected<std::unique_ptr<Transport>, std::string>(const BackendSelection&)>;
 
 // The error's name and errno text, e.g. "connection_refused (Connection
 // refused)": for messages.

@@ -26,6 +26,7 @@
 #include "common/cli.hpp"
 #include "common/http.hpp"
 #include "common/jsonl.hpp"
+#include "common/kernel_transport.hpp"
 #include "common/sha256.hpp"
 #include "common/transport.hpp"
 
@@ -114,6 +115,9 @@ private:
 
 void add_options(CliParser& p);
 [[nodiscard]] std::expected<Options, std::string> parse_options(const CliArgs& a);
-int main_(int argc, const char* const* argv);
+// The whole program; `make` creates the transport (tests pass a fake). It
+// calls finish_closing after run().
+int main_(int argc, const char* const* argv,
+          const TransportFactory& make = make_transport);
 
 }  // namespace utcp::app::http_get

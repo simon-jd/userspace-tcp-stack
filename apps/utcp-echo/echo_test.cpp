@@ -3,9 +3,14 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <expected>
 #include <functional>
+#include <iterator>
+#include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/fake_transport.hpp"
@@ -220,4 +225,26 @@ TEST(EchoUdp, DatagramsAreSentBack) {
 }
 
 }  // namespace
+
+// main_ calls finish_closing(finish_closing_max) once, after run() returned
+// (interop case E-chunked: without the call the server's FIN that follows
+// the program's close is never ACKed). Nothing listens on the fake, so the
+// connection is refused and the program fails, but the exit path is the same.
+TEST(EchoMain, MainFinishesClosingAfterRun) {
+  std::vector<std::pair<Duration, std::uint64_t>> calls;
+  const TransportFactory make = [&](const BackendSelection&)
+      -> std::expected<std::unique_ptr<Transport>, std::string> {
+    FakeTransportOptions o;
+    o.on_finish_closing = [&](Duration max, std::uint64_t runs_returned) {
+      calls.emplace_back(max, runs_returned);
+    };
+    return std::make_unique<FakeTransport>(o);
+  };
+  const char* const argv[] = {"utcp-echo", "--connect", "10.0.0.1:7", "--count", "1"};
+  EXPECT_EQ(main_(static_cast<int>(std::size(argv)), argv, make), 1);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].first, finish_closing_max);
+  EXPECT_EQ(calls[0].second, 1u);
+}
+
 }  // namespace utcp::app::echo
