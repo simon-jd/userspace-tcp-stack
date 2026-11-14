@@ -14,6 +14,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "core/wire/tcp.hpp"
@@ -201,6 +202,68 @@ TEST(SimPcap, ExpertScriptTalliesWarnings) {
   EXPECT_NE(out.find("Zero Window"), std::string::npos) << out;
   EXPECT_NE(out.find("Previous segment(s) not captured"), std::string::npos) << out;
   EXPECT_NE(out.find("ok (no Error-severity items)"), std::string::npos) << out;
+}
+
+// A seed directory whose a.egress.pcap holds one data segment to port 5000;
+// `bad_checksum` flips the TCP checksum.
+void write_one_segment_seed(const fs::path& dir, std::vector<std::byte> payload, bool bad_checksum) {
+  fs::create_directories(dir);
+  ASSERT_TRUE(write_scenario_file((dir / "scenario.txt").string(),
+                                  two_node_scenario(1, LinkParams{}, LinkParams{})));
+  auto w = PcapWriter::open((dir / "a.egress.pcap").string(), 65535);
+  ASSERT_TRUE(w.has_value()) << w.error();
+  TcpSegmentSpec t;
+  t.src = Endpoint{node_addr(0), 40000};
+  t.dst = Endpoint{node_addr(1), 5000};
+  t.seq = 1000;
+  t.ack = 1;
+  t.flags = wire::tcp_ack | wire::tcp_psh;
+  t.window = 65535;
+  t.payload = std::move(payload);
+  std::vector<std::byte> d = build_tcp(t);
+  if (bad_checksum) {
+    d[20 + 16] ^= std::byte{0x12};  // IPv4 header (20 bytes), TCP checksum at 16
+  }
+  ASSERT_TRUE(w->write(Time{1'000'000'000}, d));
+}
+
+// Payload bytes that TShark's IPA dissector (TCP port 5000) decodes as a
+// truncated RSL message: an Error with every dissector on, none in the
+// script, which dissects only IP, ICMP, TCP and UDP (sweep 2 of the 1e5 run,
+// docs/SIM-BUGS.md).
+TEST(SimPcap, ExpertScriptIgnoresPayloadDissectors) {
+  if (run("command -v tshark").first != 0) {
+    GTEST_SKIP() << "tshark not installed (runs in the testbed image)";
+  }
+  TempDir dir;
+  write_one_segment_seed(dir.path() / "seed-1",
+                         {std::byte{0x00}, std::byte{0x40}, std::byte{0x00}, std::byte{0x08},
+                          std::byte{0x01}, std::byte{0x02}},
+                         false);
+  const std::string file = (dir.path() / "seed-1" / "a.egress.pcap").string();
+  const auto [st0, all] = run("tshark -n -r " + file + " -q -z expert");
+  ASSERT_EQ(st0, 0) << all;
+  EXPECT_NE(all.find("Errors ("), std::string::npos) << all;
+  EXPECT_NE(all.find("RSL"), std::string::npos) << all;
+  const auto [st, out] = run("bash " + expert_script() + " " + dir.path().string());
+  EXPECT_EQ(st, 0) << out;
+  EXPECT_NE(out.find("ok (no Error-severity items)"), std::string::npos) << out;
+}
+
+// The script still fails on an Error in the stack's own layers: a TCP
+// checksum that does not match.
+TEST(SimPcap, ExpertScriptFailsOnBadTcpChecksum) {
+  if (run("command -v tshark").first != 0) {
+    GTEST_SKIP() << "tshark not installed (runs in the testbed image)";
+  }
+  TempDir dir;
+  write_one_segment_seed(dir.path() / "seed-1", std::vector<std::byte>(100, std::byte{0x78}),
+                         true);
+  const auto [st, out] = run("bash " + expert_script() + " " + dir.path().string());
+  EXPECT_NE(st, 0) << out;
+  EXPECT_NE(out.find("Error-severity"), std::string::npos) << out;
+  EXPECT_NE(out.find("Bad checksum"), std::string::npos) << out;
+  EXPECT_NE(out.find("tshark_expert: FAILED"), std::string::npos) << out;
 }
 
 }  // namespace

@@ -3,10 +3,12 @@
 // §4.4, §4.10).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -469,7 +471,6 @@ TEST(TcpTransfer, AdvancingAckWithOlderSeqTakesItsWindow) {
   c.stack().debug_check();
 }
 
-
 // TcpExtTCPOrigDataSent counts each segment of new data (and a FIN sent
 // for the first time) once, as Linux tcp_event_new_data_sent; the interop
 // run A-N3-s2l showed 1,381,424 for 690,715 segments (counted twice).
@@ -516,6 +517,125 @@ TEST(TcpTransfer, OrigDataSentCountsEachNewSegmentOnce) {
   EXPECT_GE(segs, 100'000u / 1460u);
   EXPECT_EQ(h.a().stats().TcpExtTCPOrigDataSent - before, segs);
   h.a().debug_check();
+}
+
+// Sweep seeds 13775, 34664, 73713, 81519 (docs/SIM-BUGS.md): one-byte writes
+// with nodelay. Each TxSeg takes at least mss / 2 of the send buffer (DESIGN
+// §4.11, as Linux charges every skb its truesize), so the segments held stay
+// below 2 * snd_buf / mss + 1 instead of one per buffered byte, and the data
+// arrives intact.
+TEST(TcpTransfer, OneByteWritesHoldFewSegments) {
+  namespace tc = utcp::test::tcpt;
+  t::TcpHarness h(t::TcpHarness::default_config(Side::a), t::TcpHarness::default_config(Side::b));
+  h.set_delay(Side::a, 5ms);
+  h.set_delay(Side::b, 5ms);
+  utcp::TcpSocketOptions o;
+  o.nodelay = true;
+  o.snd_buf = 16384;
+  const auto p = tc::open(h, 100ms, o);
+  ASSERT_TRUE(p);
+  const std::uint32_t mss = h.a().tcp_info(p->client)->snd_mss;
+  const std::uint32_t bound = *o.snd_buf / (mss / 2) + 1;
+  const t::Bytes data = t::pattern(40'000, 3);
+  t::Bytes got;
+  std::size_t sent = 0;
+  std::uint32_t most = 0;
+  const Time end = h.now() + 60s;
+  while (got.size() < data.size() && h.now() < end) {
+    while (sent < data.size()) {
+      const auto r = h.a().tcp_send(p->client, std::span(data).subspan(sent, 1));
+      if (!r) {
+        break;
+      }
+      sent += *r;
+      const std::uint32_t held = h.a().tcp_info(p->client)->unacked;
+      most = std::max(most, held);
+      ASSERT_LE(held, bound);
+    }
+    const t::Bytes in = tc::drain(h.b(), p->server);
+    got.insert(got.end(), in.begin(), in.end());
+    h.run_for(1ms);
+  }
+  EXPECT_EQ(got, data);
+  EXPECT_GT(most, bound / 2);  // the buffer did fill with small segments
+  h.a().debug_check();
+  h.b().debug_check();
+}
+
+// Sweep seeds 13775, 34664, 73713, 81519 (docs/SIM-BUGS.md): the writable rule
+// compares the free space with half the space in use including the per-segment
+// charge (DESIGN §4.11; Linux sk_stream_is_writeable compares against
+// sk_wmem_queued, which counts truesize), not with half the payload bytes. A
+// buffer filled by one-byte segments stays unwritable, in tcp_readiness and
+// for ev_writable, until enough of them are acknowledged that the free space
+// is half the charged space; by payload bytes it would turn writable at the
+// first ACK.
+TEST(TcpTransfer, OneByteWritesStayUnwritableUntilChargeHalves) {
+  namespace tc = utcp::test::tcpt;
+  t::TcpHarness h(t::TcpHarness::default_config(Side::a), t::TcpHarness::default_config(Side::b));
+  h.set_delay(Side::a, 5ms);
+  h.set_delay(Side::b, 5ms);
+  utcp::TcpSocketOptions o;
+  o.nodelay = true;
+  o.snd_buf = 4608;  // full after about 7 one-byte segments, within the initial window
+  const auto p = tc::open(h, 100ms, o);
+  ASSERT_TRUE(p);
+  const std::uint64_t cap = *o.snd_buf;
+  const t::Bytes data = t::pattern(64, 5);
+  std::uint64_t written = 0;
+  // SendQueue::held() reconstructed from TcpInfo: unsent bytes plus the sent
+  // bytes, the TxSegs charged at least snd_mss / 2 each.
+  struct Space {
+    std::uint64_t held, payload, free;
+  };
+  const auto space = [&] {
+    const auto i = h.a().tcp_info(p->client);
+    const std::uint64_t payload = written - i->bytes_acked;
+    const std::uint64_t sent = payload - i->notsent_bytes;
+    const std::uint64_t charge = std::uint64_t{i->unacked} * (i->snd_mss / 2);
+    const std::uint64_t held = i->notsent_bytes + std::max(sent, charge);
+    return Space{held, payload, held >= cap ? 0 : cap - held};
+  };
+  const auto writable = [](const Space& s, std::uint64_t used) {
+    return s.free > 0 && s.free >= used / 2;
+  };
+  (void)tc::events_of(h.a(), p->client);
+  // One byte per millisecond, each its own segment, until the buffer refuses.
+  for (;;) {
+    const auto r = h.a().tcp_send(p->client, std::span(data).subspan(written, 1));
+    if (!r) {
+      ASSERT_EQ(r.error(), utcp::Error::would_block);
+      break;
+    }
+    written += *r;
+    ASSERT_LT(written, data.size());
+    h.run_for(1ms);
+  }
+  EXPECT_EQ(h.a().tcp_info(p->client)->notsent_bytes, 0u);
+  EXPECT_FALSE(h.a().tcp_readiness(p->client).writable);
+  (void)tc::events_of(h.a(), p->client);
+  // ACKs arrive one by one; check the rule after each 100 us step.
+  int payload_only = 0;  // steps writable by payload bytes but not by the charge
+  bool raised = false;
+  const Time end = h.now() + 100ms;
+  while (!raised && h.now() < end) {
+    h.run_for(100us);
+    const Space s = space();
+    const bool want = writable(s, s.held);
+    ASSERT_EQ(h.a().tcp_readiness(p->client).writable, want)
+        << "held " << s.held << " free " << s.free;
+    if (writable(s, s.payload) && !want) {
+      ++payload_only;
+    }
+    raised = (tc::events_of(h.a(), p->client) & utcp::ev_writable) != 0;
+    ASSERT_EQ(raised, want) << "held " << s.held << " free " << s.free;
+  }
+  EXPECT_TRUE(raised);
+  EXPECT_GT(payload_only, 0);  // the two rules did differ on the way
+  const auto n = static_cast<std::ptrdiff_t>(written);
+  EXPECT_EQ(tc::drain(h.b(), p->server), t::Bytes(data.begin(), data.begin() + n));
+  h.a().debug_check();
+  h.b().debug_check();
 }
 
 }  // namespace

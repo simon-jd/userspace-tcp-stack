@@ -25,10 +25,18 @@ std::uint64_t SendQueue::una() const { return ring_.begin(); }
 std::uint64_t SendQueue::nxt() const { return nxt_; }
 std::uint64_t SendQueue::end() const { return end_; }
 
-std::uint32_t SendQueue::free_space() const {
-  const std::uint64_t held = end_ - una();
-  return held >= capacity_ ? 0u : static_cast<std::uint32_t>(capacity_ - held);
+std::uint64_t SendQueue::held() const {
+  const std::uint64_t sent = std::max<std::uint64_t>(
+      nxt_ - una(), std::uint64_t{ctr_.packets_out} * std::uint64_t{seg_charge_});
+  return (end_ - nxt_) + sent;
 }
+
+std::uint32_t SendQueue::free_space() const {
+  const std::uint64_t h = held();
+  return h >= capacity_ ? 0u : static_cast<std::uint32_t>(capacity_ - h);
+}
+
+void SendQueue::set_seg_charge(std::uint32_t bytes) { seg_charge_ = bytes; }
 
 std::uint32_t SendQueue::capacity() const { return capacity_; }
 

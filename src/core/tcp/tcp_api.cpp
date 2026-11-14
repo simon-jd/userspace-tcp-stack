@@ -366,7 +366,7 @@ Readiness TcpEngine::tcp_readiness(Handle h) const {
   r.read_closed = t.fin_rcvd || t.app_read_shut || ended;
   r.readable = t.rcvq.readable() > 0 || r.read_closed || r.has_error;
   r.write_closed = t.app_write_shut || t.fin_queued || ended;
-  const std::uint64_t queued = t.sndq.end() - t.sndq.una();
+  const std::uint64_t queued = t.sndq.held();
   const bool open = t.state == TcpState::established || t.state == TcpState::close_wait;
   // Not writable while the ChunkPool is exhausted, as tcp_send would refuse.
   const ChunkPool& pool = core_.chunks();

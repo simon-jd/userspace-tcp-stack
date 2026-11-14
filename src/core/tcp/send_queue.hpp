@@ -95,8 +95,21 @@ public:
   [[nodiscard]] std::uint64_t una() const;  // first unacknowledged byte (SND.UNA as an offset)
   [[nodiscard]] std::uint64_t nxt() const;  // first byte never sent (SND.NXT as an offset); never moves back
   [[nodiscard]] std::uint64_t end() const;  // one past the last byte written
-  [[nodiscard]] std::uint32_t free_space() const;  // capacity() - (end() - una())
+  // capacity() - held(), or 0 if held() >= capacity().
+  [[nodiscard]] std::uint32_t free_space() const;
+  // Send-buffer space in use: unsent bytes plus the sent bytes, where the
+  // TxSegs held are charged at least seg_charge() bytes each in total:
+  // (end() - nxt()) + max(nxt() - una(), packets_out * seg_charge()). Linux
+  // charges every skb its truesize (sk_wmem_queued), so tiny segments fill
+  // the buffer long before their payload does; without a charge a sender of
+  // one-byte segments would hold one TxSeg per buffered byte (DESIGN §4.11).
+  // Equals end() - una() while the TxSegs average at least seg_charge().
+  [[nodiscard]] std::uint64_t held() const;
   [[nodiscard]] std::uint32_t capacity() const;
+  // The engine sets the charge to mss_cache / 2 (0, the default, charges payload
+  // bytes only).
+  void set_seg_charge(std::uint32_t bytes);
+  [[nodiscard]] std::uint32_t seg_charge() const { return seg_charge_; }
   // Autotuning (tcp_sndbuf_expand) or TcpSocketOptions::snd_buf. A capacity
   // below the bytes held only stops further writes.
   void set_capacity(std::uint32_t capacity);
@@ -200,6 +213,7 @@ private:
 
   ByteRing ring_;  // begin() is una()
   std::uint32_t capacity_;
+  std::uint32_t seg_charge_ = 0;
   std::uint64_t nxt_ = 0, end_ = 0;
   // TxSegs in sequence order: segs_[head_, size()); popped entries below
   // head_ are dropped by compact() (amortised O(1) per pop).
