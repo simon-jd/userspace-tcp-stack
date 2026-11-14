@@ -1,5 +1,7 @@
 #include "utcp-bulk/bulk.hpp"
 
+#include <time.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -185,6 +187,11 @@ void BulkApp::on_connected(ConnId conn) {
 
 void BulkApp::begin(ConnId /*conn*/) {
   start_ = t_.now();
+  if (jsonl_ != nullptr) {
+    JsonLine line;
+    line.add("t", start_.ns).add("ev", "start").add("role", role());
+    jsonl_->write(line);
+  }
   if (o_.sample_interval > Duration::zero()) {
     sample_timer_ = t_.add_timer(o_.sample_interval, [this] { take_sample(); });
     sample_timer_on_ = true;
@@ -460,6 +467,20 @@ JsonLine BulkApp::summary() const {
   return line;
 }
 
+JsonLine clock_line() {
+  const auto read = [](clockid_t id) {
+    timespec ts{};
+    clock_gettime(id, &ts);
+    return std::int64_t{ts.tv_sec} * 1'000'000'000 + ts.tv_nsec;
+  };
+  const std::int64_t r1 = read(CLOCK_REALTIME);
+  const std::int64_t m = read(CLOCK_MONOTONIC);
+  const std::int64_t r2 = read(CLOCK_REALTIME);
+  JsonLine line;
+  line.add("ev", "clock").add("monotonic_ns", m).add("realtime_ns", r1 + (r2 - r1) / 2);
+  return line;
+}
+
 int main_(int argc, const char* const* argv, const TransportFactory& make) {
   CliParser cli("utcp-bulk", "Bulk transfer over one TCP connection, SHA-256 of the stream.");
   add_options(cli);
@@ -491,6 +512,7 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
       return 2;
     }
     jsonl.emplace(std::move(*w));
+    jsonl->write(clock_line());
   }
   auto transport = make(*backend);
   if (!transport) {

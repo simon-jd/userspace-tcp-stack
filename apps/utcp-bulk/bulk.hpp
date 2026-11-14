@@ -23,6 +23,14 @@
 //
 // --recv-pause MS:BYTES stops reading for MS after every BYTES read, so the
 // sender sees a zero window.
+//
+// The JSONL file starts with one clock line, {"ev":"clock","monotonic_ns":M,
+// "realtime_ns":R}: R is CLOCK_REALTIME at the moment CLOCK_MONOTONIC read M
+// (the mean of two realtime reads around it), so CLOCK_REALTIME times from
+// other tools (ping -D, tcpdump) convert to the samples' clock: t = rt - R + M
+// (DESIGN §14). When the connection is established (accepted or connected)
+// a start line {"t":...,"ev":"start","role":...} follows; its t is the start
+// of the duration and of the testbed's measurement window.
 #pragma once
 
 #include <cstddef>
@@ -129,6 +137,9 @@ private:
   bool done_ = false;
   Result result_;
 };
+
+// The clock line described at the top, from the system clocks.
+[[nodiscard]] JsonLine clock_line();
 
 // The whole program: options, transport, run, finish_closing, summary.
 // Returns the exit status (0 = success). `make` creates the transport (tests

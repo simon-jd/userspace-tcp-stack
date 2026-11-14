@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <time.h>
+
 #include <cstdint>
 #include <expected>
 #include <fstream>
@@ -197,8 +199,11 @@ TEST(BulkJsonl, SamplesAndSummaryHaveTheFields) {
   for (std::string l; std::getline(in, l);) {
     lines.push_back(l);
   }
-  ASSERT_GE(lines.size(), 10u);
-  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+  ASSERT_GE(lines.size(), 11u);
+  // The start line first: the connection's establishment on the transport's
+  // clock (the fake starts at 0 and connects without delay).
+  EXPECT_EQ(lines[0], "{\"t\":0,\"ev\":\"start\",\"role\":\"sender\"}");
+  for (std::size_t i = 1; i + 1 < lines.size(); ++i) {
     for (const char* key : {"\"t\":", "\"ev\":\"sample\"", "\"cc_name\":", "\"srtt_us\":", "\"cwnd\":",
                             "\"bytes_acked\":", "\"busy_time_us\":", "\"rwnd_limited_us\":",
                             "\"sndbuf_limited_us\":", "\"notsent_bytes\":", "\"last_ack_recv_us\":",
@@ -338,6 +343,33 @@ TEST(BulkOptions, Parse) {
   EXPECT_FALSE(parse({"--connect", "1.2.3.4:5", "--send", "--bytes", "1", "--duration", "1"}));
   EXPECT_FALSE(parse({"--listen", "1", "--recv-pause", "200"}));
   EXPECT_FALSE(parse({"--listen", "1", "--cc", "vegas"}));
+}
+
+// main_ writes the clock line first (DESIGN §14: ping -D and tcpdump times
+// convert to the samples' clock with it), also when the connection fails.
+TEST(BulkMain, JsonlStartsWithTheClockPair) {
+  const std::string path = testing::TempDir() + "/bulk_test_clock.jsonl";
+  const TransportFactory make = [](const BackendSelection&)
+      -> std::expected<std::unique_ptr<Transport>, std::string> {
+    return std::make_unique<FakeTransport>();
+  };
+  timespec before{};
+  clock_gettime(CLOCK_REALTIME, &before);
+  const char* const argv[] = {"utcp-bulk", "--connect", "10.0.0.1:9", "--send", "--bytes", "10",
+                              "--jsonl", path.c_str()};
+  EXPECT_EQ(main_(static_cast<int>(std::size(argv)), argv, make), 1);
+  std::ifstream in(path);
+  std::string first;
+  ASSERT_TRUE(std::getline(in, first));
+  ASSERT_TRUE(first.starts_with("{\"ev\":\"clock\",\"monotonic_ns\":")) << first;
+  const auto rt_at = first.find("\"realtime_ns\":");
+  ASSERT_NE(rt_at, std::string::npos) << first;
+  const std::int64_t rt = std::stoll(first.substr(rt_at + 14));
+  const std::int64_t before_ns = std::int64_t{before.tv_sec} * 1'000'000'000 + before.tv_nsec;
+  EXPECT_GE(rt, before_ns);
+  EXPECT_LT(rt, before_ns + 60'000'000'000);
+  const std::int64_t mono = std::stoll(first.substr(first.find("\"monotonic_ns\":") + 15));
+  EXPECT_GT(mono, 0);
 }
 
 }  // namespace
