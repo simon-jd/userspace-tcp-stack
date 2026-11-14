@@ -9,6 +9,8 @@
 #        between eth0 and the TUNs; tcp_wmem max 64 MB; tcp_no_metrics_save.
 #   r1, r2: gro off on both interfaces; no qdisc until shape.sh.
 #   rcv: gro off; tcp_no_metrics_save; tcp_rmem left at the default.
+#   every container runs with --init, so processes the scripts start and stop
+#   (tcpdump, ping, the drop watcher) are reaped.
 #   routes: snd -> nets b, c via r1; r1 -> net c via r2, 198.18.8N.0/21 via
 #           snd; r2 -> net a and the stack via r1; rcv -> nets a, b and the
 #           stack via r2.
@@ -46,7 +48,7 @@ run() {
   local -n sysctls=$arr
   local args=() s
   for s in "${sysctls[@]}"; do args+=(--sysctl "$s"); done
-  docker run -d --name "$name" --hostname "$name" \
+  docker run -d --init --name "$name" --hostname "$name" \
     --network "$net" --ip "$ip" \
     --cap-add NET_ADMIN --cpuset-cpus "$cpus" \
     "${args[@]}" "$@" \

@@ -6,12 +6,13 @@
 #     interface, -raw so that tbf shows its limit: noqueue, pfifo, netem, tbf
 #     with their counters), offloads
 #     (tso, gso, gro, lro per interface), routes, cpuset;
-#   snd and rcv: the net.ipv4.tcp_* and net.core.* sysctls, nstat -asz;
+#     the net.ipv4.tcp_* and net.core.* sysctls;
+#   snd and rcv: nstat -asz;
 #   host: uname -r, /proc/net/softnet_stat (one line per CPU, the CPU
 #     number in front), the cpu lines of /proc/stat, /proc/softirqs,
 #     /proc/sys/net/bridge/bridge-nf-call-{iptables,ip6tables,arptables}
 #     ("absent" without br_netfilter), tcp_cubic and tcp_bbr module
-#     parameters, uptime, the top CPU users.
+#     parameters, uptime, the top CPU users, the threads seen on CPUs 8-15.
 # Each section starts with "== <where> <what>"; the first line has the label
 # and the UTC time. tools/m2/analyze.py parses this format.
 #
@@ -55,9 +56,11 @@ per_container='
   done
   echo "== $c ip route"
   ip route
-  if [ "$brief" = 0 ] && [ "$3" = full ]; then
+  if [ "$brief" = 0 ]; then
     echo "== $c sysctl"
     sysctl -a 2>/dev/null | grep -E "^net\.(ipv4\.tcp_|core\.)" | sort
+  fi
+  if [ "$brief" = 0 ] && [ "$3" = full ]; then
     echo "== $c nstat -asz"
     nstat -asz
   fi
@@ -99,4 +102,8 @@ if ((!brief)); then
   uptime
   echo "== host top"
   ps -eo pid,psr,pcpu,comm --sort=-pcpu | head -15
+  # Threads last run on the timing CPUs 8-15 with a non-zero CPU share (pcpu
+  # is the average over the thread's life; /proc/stat deltas give the load).
+  echo "== host threads on 8-15"
+  ps -eLo pid,tid,psr,pcpu,comm --sort=-pcpu | awk 'NR > 1 && $3 >= 8 && $3 <= 15 && $4 > 0'
 fi

@@ -356,10 +356,10 @@ def record_counters(rec, containers):
 
 def local_drops(pre, post, roles, slot_cpus):
     """Invalidating counters (§5.2), as {name: delta} of the non-zero ones:
-    sender eth0 TX drops, router and receiver RX drops, utcp* rx/tx drops and
-    their qdisc drops, softnet drops on the slot's CPUs. `roles` maps snd, r1,
-    r2, rcv to container names. Also returns the time_squeeze delta on the
-    slot's CPUs (a flag)."""
+    rx and tx drops of every interface of the four containers (sender eth0
+    TX, the routers' and receiver's RX, the ACK path's veth drops, the utcp*
+    TUNs), the utcp* pfifo drops, and softnet drops on the slot's CPUs. Also
+    returns the time_squeeze delta on the slot's CPUs (a flag)."""
     bad = {}
 
     def d(c, dev, key, kind="link"):
@@ -367,30 +367,19 @@ def local_drops(pre, post, roles, slot_cpus):
         b = post[kind].get(c, {}).get(dev, {}).get(key)
         return None if a is None or b is None else b - a
 
-    snd = roles["snd"]
-    for dev in post["link"].get(snd, {}):
-        if dev == "lo":
-            continue
-        if dev.startswith("utcp"):
-            for k in ("rx_dropped", "tx_dropped"):
-                v = d(snd, dev, k)
-                if v:
-                    bad[f"{snd}/{dev}/{k}"] = v
-            v = d(snd, dev, "dropped", "qdisc")
-            if v:
-                bad[f"{snd}/{dev}/qdisc_dropped"] = v
-        else:
-            v = d(snd, dev, "tx_dropped")
-            if v:
-                bad[f"{snd}/{dev}/tx_dropped"] = v
-    for role in ("r1", "r2", "rcv"):
+    for role in ("snd", "r1", "r2", "rcv"):
         c = roles[role]
-        for dev in post["link"].get(c, {}):
+        for dev in sorted(post["link"].get(c, {})):
             if dev == "lo":
                 continue
-            v = d(c, dev, "rx_dropped")
-            if v:
-                bad[f"{c}/{dev}/rx_dropped"] = v
+            for k in ("rx_dropped", "tx_dropped"):
+                v = d(c, dev, k)
+                if v:
+                    bad[f"{c}/{dev}/{k}"] = v
+            if dev.startswith("utcp"):
+                v = d(c, dev, "dropped", "qdisc")
+                if v:
+                    bad[f"{c}/{dev}/qdisc_dropped"] = v
     squeeze = 0
     for cpu in slot_cpus:
         a, b = pre["softnet"].get(cpu), post["softnet"].get(cpu)
@@ -447,22 +436,33 @@ def parse_tbf_samples(text):
     return out
 
 
+FRAME = 1514  # a full-size frame as tbf counts it (skb->len with the Ethernet header)
+
+
 def queue_check(samples, q_bytes, lo_rt=None, hi_rt=None, frac=0.9):
     """Gate item 4 on the sampler: the highest backlog, whether it reaches
-    [frac, 1]·Q, and the drop increments whose interval has no sample at or
-    above frac·Q (either bound)."""
+    [frac, 1]·Q, and the drop increments whose interval has no bounding sample
+    at or above the "full" level min(frac·Q, Q - 2 frames). tbf drops a frame
+    when backlog + frame > Q, and between two 10 ms samples the backlog moves
+    by up to 8 frames at 10 Mbit/s; for Q = 12 500 B (8 frames) 0.9·Q lies
+    between 7 and 8 frames, so a full queue often samples as 7 (DESIGN §14).
+    drop_intervals_below_frac counts against frac·Q alone, for the record."""
     s = [x for x in samples if (lo_rt is None or x[0] >= lo_rt) and (hi_rt is None or x[0] <= hi_rt)]
+    full = min(frac * q_bytes, q_bytes - 2 * FRAME)
     if not s:
-        return {"backlog_max": None, "reaches": False, "drop_intervals": 0, "drop_intervals_low": 0}
+        return {"backlog_max": None, "reaches": False, "drop_intervals": 0, "drop_intervals_low": 0,
+                "drop_intervals_below_frac": 0, "full_level": full}
     bmax = max(x[1] for x in s)
-    n = low = 0
+    n = low = below = 0
     for a, b in zip(s, s[1:]):
         if a[2] is not None and b[2] is not None and b[2] > a[2]:
             n += 1
-            if max(a[1], b[1]) < frac * q_bytes:
-                low += 1
+            top = max(a[1], b[1])
+            low += top < full
+            below += top < frac * q_bytes
     return {"backlog_max": bmax, "reaches": frac * q_bytes <= bmax <= q_bytes,
-            "drop_intervals": n, "drop_intervals_low": low}
+            "drop_intervals": n, "drop_intervals_low": low, "drop_intervals_below_frac": below,
+            "full_level": full}
 
 
 # --------------------------------------------------------------------------
@@ -512,6 +512,28 @@ class TcpSeg:
     ack: int
     flags: int
     payload: int
+    ipid: int = 0
+    tsval: int | None = None
+
+
+def _tsval(opts):
+    i = 0
+    while i < len(opts):
+        kind = opts[i]
+        if kind == 0:
+            return None
+        if kind == 1:
+            i += 1
+            continue
+        if i + 1 >= len(opts):
+            return None
+        ln = opts[i + 1]
+        if kind == 8 and ln == 10 and i + 10 <= len(opts):
+            return struct.unpack(">I", opts[i + 2:i + 6])[0]
+        if ln < 2:
+            return None
+        i += ln
+    return None
 
 
 def tcp_segments(path):
@@ -527,7 +549,8 @@ def tcp_segments(path):
         doff = (t[12] >> 4) * 4
         flags = t[13]
         yield TcpSeg(ts, ".".join(map(str, ip[12:16])), ".".join(map(str, ip[16:20])),
-                     sport, dport, seq, ack, flags, total - ihl - doff)
+                     sport, dport, seq, ack, flags, total - ihl - doff,
+                     struct.unpack(">H", ip[4:6])[0], _tsval(t[20:doff]))
 
 
 def seq_leq(a, b):
@@ -753,6 +776,8 @@ def summarize_run(rundir):
         for name, v in c.items():
             if isinstance(v, dict) and v.get("kernel_dropped"):
                 out["flags"].append(f"capture_drops:{name}")
+            if isinstance(v, dict) and v.get("received_by_filter") not in (None, v.get("captured")):
+                out["flags"].append(f"capture_incomplete:{name}")
     # Stack counters (--stats): pool or device problems invalidate (§5.2).
     st = read_text(rd / "stats.json")
     if st:
@@ -785,6 +810,8 @@ def captures_of_run(rundir, meta=None):
         c["kernel_dropped"] = int(m.group(1)) if m else None
         m = re.search(r"(\d+) packets? captured", log)
         c["captured"] = int(m.group(1)) if m else None
+        m = re.search(r"(\d+) packets? received by filter", log)
+        c["received_by_filter"] = int(m.group(1)) if m else None
         out[name] = c
     return out
 

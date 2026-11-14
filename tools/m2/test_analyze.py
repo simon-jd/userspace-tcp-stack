@@ -332,8 +332,19 @@ class Queue(unittest.TestCase):
         s[1] = (s[1][0], 6056, 0)
         s[2] = (s[2][0], 9000, 1)
         r = A.queue_check(s, q)
-        # Each of the three drop intervals now has both bounds below 0.9*Q.
-        self.assertEqual(r["drop_intervals_low"], 3)
+        # Drop intervals 6056-9000 and 9000-9000 have no bound at the full
+        # level min(0.9*Q, Q - 2*1514) = 9472; 9000-10598 has; all three are
+        # below 0.9*Q.
+        self.assertEqual(r["drop_intervals_low"], 2)
+        self.assertEqual(r["drop_intervals_below_frac"], 3)
+        self.assertEqual(r["full_level"], 9472)
+        # 7 frames (10598 B, 0.85*Q) count as full for Q = 12500 but not
+        # against 0.9*Q; for Q = 50000 the level is 0.9*Q.
+        s[2] = (s[2][0], 10598, 1)
+        s[3] = (s[3][0], 10598, 2)
+        r = A.queue_check(s, q)
+        self.assertEqual((r["drop_intervals_low"], r["drop_intervals_below_frac"]), (0, 3))
+        self.assertEqual(A.queue_check(s, 50_000)["full_level"], 45_000)
 
 
 def pcap_bytes(segs, nano=True):
