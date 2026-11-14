@@ -98,3 +98,22 @@ Everything else in the rule above stays. The check still fails on an Error in th
 "Bad checksum"; with the 6cbff02 script that test fails (checksums not validated), as does
 `ExpertScriptIgnoresPayloadDissectors`.
 
+
+### Run 2 (sweep 2 samples, amended rule)
+
+`tools/tshark_expert.sh` as of 6519c25 on the same `sweep2/samples` (TShark 4.6.4, `utcp-testbed:dev`): 654 files
+checked (400 egress, 254 ingress; 146 ingress files of seeds with bit flips or garbage skipped), every file
+readable, **0 Error-severity items**, exit 0. Warnings by type:
+
+| Warning (group, protocol, summary) | Egress | Ingress | Total |
+|---|---|---|---|
+| Sequence, TCP, Previous segment(s) not captured (common at capture start) | 3 | 9519 | 9522 |
+| Sequence, TCP, D-SACK Sequence | 1020 | 788 | 1808 |
+| Sequence, TCP, TCP Zero Window segment | 1118 | 509 | 1627 |
+| Sequence, TCP, Connection reset (RST) | 600 | 254 | 854 |
+
+The TCP warnings are the same in run 1. "Previous segment(s) not captured" on ingress follows the link's
+losses. The three on egress (seed 47500 `b`, seed 74000 `a` twice) are pure ACKs sent after our FIN whose SEQ is
+the FIN's sequence number + 1, which is SND.NXT once the FIN is sent (RFC 9293 §3.4); TShark's sequence
+analysis flags them, the stack is right. D-SACK, zero-window and RST segments are part of the generated workloads
+(duplication and retransmission, paused readers, aborts and connections to closed ports).
