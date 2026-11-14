@@ -47,6 +47,8 @@ The runs, on 2026-11-14 (the `Run` column of the matrix says which run a row is 
 | run5b | 5493eec | E-neverssl.com again (run5 failed: below) | E-neverssl.com | yes |
 | run6 | 484e628 | the rows whose checks changed after the review (A-ecn*, B, C) with the new checks, A-N4-l2s, R-N0-l2l, R-N4-l2l | those rows | yes |
 | run7, run8 | 484e628 | A-N4-l2s and R-N4-l2l again (the `TCPSACKDiscard` spread, below) | no | yes |
+| run9 | 1f93aa5 (replay counts SYN/FIN retransmissions; stack code as 484e628) | every row with the D-SACK replay checks: A-N4-l2s, A-N3-l2s, B-sack1-*-l2s | no (run5/run6 rows kept; same replay result over their captures) | yes |
+| run10, run11 | 1f93aa5 | A-N4-l2s again | no | yes |
 
 Up to run5b every run wrote its captures to `utcp-data:/m1-accept-interop/<case>/`,
 and each run replaced the previous run's captures of the cases it ran. The ones left
@@ -140,9 +142,9 @@ of its checks hold.
 The nstat column lists the checked counters and the nonzero recovery counters (peer deltas).
 E public rows report only "interoperates" (pass) and no numbers. Run5's E-neverssl.com row
 failed for a network reason (below); the matrix shows run5b's repeat. The run6 rows replace
-run5's rows of the same cases (all of which had passed); run7 and run8 are not in the matrix,
-and run8's A-N4-l2s failed one check (`TCPDSACKIgnoredDubious` one below the replay; see
-TCPSACKDiscard below).
+run5's rows of the same cases (all of which had passed). run7-run11 are not in the matrix.
+run8's and run9's A-N4-l2s each failed one check (`TCPDSACKIgnoredDubious` one below the
+replay; see TCPSACKDiscard below).
 
 | Case | Run | Direction | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) | Goodput Mbit/s (non-timing) | Retransmissions (sender total_retrans / peer TcpRetransSegs) | Peer nstat deltas | utcp0 drops (rx/tx) | Result |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -226,7 +228,9 @@ Linux source references are to the server's Ubuntu 7.0.0-42 kernel tree
 Under N3 and N4, netem duplicates segments toward the stack, and the stack answers each duplicate
 with a D-SACK (RFC 2883 §4). Linux 7.0 counts a D-SACK as dubious when the sender has received more
 D-SACKed segments than it ever retransmitted (`tcp_dsack_seen`: `dsack_dups > total_retrans`,
-`TCPDSACKIgnoredDubious`). The block is then checked as an ordinary SACK block
+`TCPDSACKIgnoredDubious`; `__tcp_retransmit_skb` in `tcp_output.c` adds every retransmitted
+segment to `total_retrans`, a retransmitted SYN or bare FIN included). The block is then
+checked as an ordinary SACK block
 (`tcp_is_sackblock_valid`): above SND.UNA it is valid; at or below SND.UNA it is counted in
 `TCPSACKDiscard`, unless the ACK carrying it is older than SND.UNA ("Don't count olds caused by ACK
 reordering", `tcp_sacktag_write_queue`). A nonzero `TCPSACKDiscard` in these rows therefore does
@@ -234,12 +238,29 @@ not mean a malformed block.
 
 `tests/interop/m1_dsack.py` replays these rules over the peer capture (the order in which the Linux
 sender sent data and processed ACKs) and, from the `utcp0` capture, checks which segments the stack
-received twice. In every Linux→stack row under N3 and N4 and in every Linux→Linux reference row
-under N3 and N4, the predicted `TCPSACKDiscard` equals the nstat delta exactly, and so does the
-predicted `TCPDSACKIgnoredDubious` in every row except run8's A-N4-l2s (below). Every predicted
-discarded block is a D-SACK for a segment the stack received twice, and every D-SACK the stack
-sent is one (`dsack_other` 0). Those are the checks in the rows. `TCPSACKReneging` is 0 in every
-row.
+received twice. Every predicted discarded block is a D-SACK for a segment the stack received
+twice, and every D-SACK the stack sent is one (`dsack_other` 0). Those are the checks in the
+rows. `TCPSACKReneging` is 0 in every row.
+
+Up to 484e628 the replay counted only retransmitted data segments. The second verification's
+first A-N4-l2s run (`utcp-data:/m1-accept-interop-verify-2/vrun/A-N4-l2s`) showed the error:
+netem dropped the peer's first SYN, so the kernel's `total_retrans` was one ahead of the replay's
+count for the whole transfer. The replay predicted 16 dubious D-SACKs and 14 discards; the
+kernel counted 6 and 4. Since 1f93aa5 the replay counts SYN and FIN in the sequence space. It
+gives 6 and 4 for that run, and ctest `interop.m1_dsack_check` checks the rule. The corrected
+replay was run again over all 27 retained peer captures of a Linux sender with SACK under N3 or
+N4. These are the Linux→stack N3/N4 and B-sack1-*-l2s rows of run5-run8, the review's and both
+verifications' runs, and the Linux→Linux N3/N4 references of run3 and run6-run8. Results:
+`utcp-data:/m1-accept-interop/fix3/` (`replay_all.jsonl`, per capture old and new replay output).
+In all 27, the captured retransmissions equal the sender's `total_retrans`; before the fix,
+two captures were one short (vrun's A-N4-l2s and run8's R-N4-l2l, each with a retransmitted SYN).
+The predicted `TCPSACKDiscard` equals the nstat delta in all 27, and the predicted
+`TCPDSACKIgnoredDubious` in 26. The exception is run8's A-N4-l2s, an open item (below). The
+corrected replay changes no other row's prediction. run9-run11 at 1f93aa5 ran every row with
+the replay checks again: A-N4-l2s three times, A-N3-l2s and B-sack1-*-l2s once. The replay was
+exact in all of them except run9's A-N4-l2s. There the replay predicted one
+`TCPDSACKIgnoredDubious` more than the kernel counted (5280 against 5279; `TCPSACKDiscard` 4611
+matched, and the captured retransmissions equal `total_retrans`, 6792), the same as run8.
 
 Under N3 (duplication, no loss) the sender retransmits nothing, so every D-SACK is dubious, and
 the count depends only on how many D-SACK ACKs reach the sender and how many of those are older
@@ -268,9 +289,10 @@ Under N4 (1 % loss and 1 % duplication) the sender's running D-SACK count (`dsac
 its running retransmission count (`total_retrans`) grow at about the same rate, and a D-SACK
 is dubious only while the first is ahead. The count is the outcome of that race and varies
 widely from run to run with the same code, so no ratio to the reference is given for N4.
-A-N4-l2s was run six times (run3b at 84c031d, before 3fc5bb1 and 2441a7a, which change the
+A-N4-l2s was run twelve times (run3b at 84c031d, before 3fc5bb1 and 2441a7a, which change the
 sender's `tcp_info` accounting and the programs' exit, not the receive path; run5, the review's
-run at f811138, and run6-run8 at the same stack code) and R-N4-l2l four times:
+run at f811138, run6-run8 and the verifications' runv, vrun and vrun2 at the same stack code,
+and run9-run11 at 1f93aa5, which changes only the replay) and R-N4-l2l four times:
 
 | Row (run) | D-SACK ACKs reaching the sender | of them older than SND.UNA | Sender retransmissions | D-SACK ACKs per retransmission | `TCPDSACKIgnoredDubious` | `TCPSACKDiscard` |
 |---|---|---|---|---|---|---|
@@ -280,29 +302,57 @@ run at f811138, and run6-run8 at the same stack code) and R-N4-l2l four times:
 | A-N4-l2s (run6) | 6861 | 1 | 6911 | 0.99 | 553 | 466 |
 | A-N4-l2s (run7) | 6762 | 0 | 6935 | 0.98 | 69 | 59 |
 | A-N4-l2s (run8) | 6795 | 0 | 6860 | 0.99 | 2493 (replay 2494) | 2177 |
+| A-N4-l2s (first verification, runv, `utcp-data:/m1-accept-interop-verify-1/logs/runv/A-N4-l2s`) | 6717 | 0 | 6724 | 1.00 | 5411 | 4648 |
+| A-N4-l2s (second verification, vrun, `utcp-data:/m1-accept-interop-verify-2/logs/vrun/A-N4-l2s`) | 6883 | 0 | 6955 | 0.99 | 6 (replay before 1f93aa5: 16) | 4 (before 1f93aa5: 14) |
+| A-N4-l2s (second verification, vrun2) | 6848 | 0 | 6968 | 0.98 | 12 | 11 |
+| A-N4-l2s (run9) | 6897 | 0 | 6792 | 1.02 | 5279 (replay 5280) | 4611 |
+| A-N4-l2s (run10) | 6941 | 1 | 6940 | 1.00 | 6541 | 5743 |
+| A-N4-l2s (run11) | 6655 | 0 | 6840 | 0.97 | 294 | 268 |
 | R-N4-l2l, Linux receiver (run3) | 5848 | 8 | 6825 | 0.86 | 131 | 127 |
 | R-N4-l2l (run6) | 5756 | 3 | 6885 | 0.84 | 1 | 1 |
 | R-N4-l2l (run7) | 5876 | 9 | 6971 | 0.84 | 117 | 110 |
 | R-N4-l2l (run8) | 5691 | 7 | 6926 | 0.82 | 0 | 0 |
 
-With the stack the count ranged from 59 to 2177 at D-SACK ACKs per retransmission of 0.98-0.99
-in every run; with a Linux receiver from 0 to 127 at 0.82-0.86. The stack's higher ratio (it
-sends every D-SACK, point 1 above) keeps the two running counts closer, which makes dubious
-D-SACKs more likely, but at the same ratio the count still differs 37-fold between runs, so it
-says little about the stack beyond that ratio. The 100 MB rows show the same: B-sack1-*-l2s
-42-609 (run5) and 1-599 (run6) against 0-12 in R-N4-100M-{1,2,3}-l2l (run3).
+With the stack, `TCPSACKDiscard` ranged from 4 to 5743 at 0.97-1.02 D-SACK ACKs per
+retransmission. With a Linux receiver it ranged from 0 to 127 at 0.82-0.86. The stack's higher
+ratio (it sends every D-SACK, point 1 above) keeps the two running counts closer, which makes
+dubious D-SACKs more likely. But at about the same ratio the count still differs more than
+1000-fold between runs (vrun 4 at 0.99, run10 5743 at 1.00), so it says little about the stack
+beyond that ratio. The 100 MB rows show the same: B-sack1-*-l2s 42-609 (run5), 1-599 (run6),
+163-630 (run9), 1 and 110 (B-sack1-ts1-ws1-l2s in the two verifications) against 0-12 in
+R-N4-100M-{1,2,3}-l2l (run3).
 
 run8's A-N4-l2s failed the check that the replay predicts `TCPDSACKIgnoredDubious` exactly: the
 kernel counted 2493, the replay 2494 (`TCPSACKDiscard` 2177 matched, and so did every other
 check). The kernel processed the same D-SACKs (`TCPDSACKRecv + TCPDSACKOfoRecv` = 6795, the
 replay's D-SACK ACKs; `TCPDSACKRecvSegs` 4302 = 6795 − 2493), so it took one D-SACK as not
 dubious that the replay took as dubious, i.e. it had counted one retransmission more at that
-ACK than the capture order shows. Two D-SACK ACKs in that capture are on the edge
-(`dsack_dups` one above the retransmissions so far) with a retransmission 83 and 97 us after
-them; if the kernel counted that retransmission before it processed the ACK (for example,
-when the ACK waited in the socket backlog behind an earlier ACK that triggered the
-retransmission), the D-SACK was not dubious. The replay follows capture order and cannot see
-this; the row is kept as failed and is not in the matrix (run6's row is).
+ACK than the capture order shows. The captured retransmissions equal `total_retrans` (6860),
+so unlike vrun's row this is not a missed retransmission; it is a difference of order.
+The kernel can only count a retransmission earlier than the capture shows, never later.
+`__tcp_retransmit_skb` adds it to `total_retrans` before the segment reaches the capture
+point. An ACK is captured on the peer's interface before TCP processes it. While the sending
+program holds the socket lock, `tcp_v4_rcv` (`tcp_ipv4.c` of the v7.0 tree; the Ubuntu tree
+has no copy of it) queues arriving ACKs in the socket
+backlog (`tcp_add_backlog`), and the backlog is processed in order when the lock is released.
+`tcp_ack` ends in `tcp_xmit_recovery`, which sends retransmissions at once. So when two ACKs
+wait in the backlog, the first can trigger a retransmission that the kernel counts before it
+processes the second, although the capture shows both ACKs before the retransmission. The
+replay's `TCPDSACKIgnoredDubious` is therefore an upper bound. The simplest way to be one lower
+is an ACK the replay counts dubious with `dsack_dups` exactly one above the retransmissions so
+far, followed in the capture by a retransmission before the next D-SACK ACK.
+`utcp-data:/m1-accept-interop/fix3/edge.py` lists these ACKs (output in `edge.txt` there).
+run8's capture has 25 such ACKs; the retransmission follows 83 us and 97 us after two of them
+and 3.3-51 ms after the rest. run9's has 9; the retransmission follows 20, 38 and 113 us after
+three of them and 3.5-69 ms after the rest. Which ACK the kernel took as not dubious cannot be
+read from either capture. The nine other retained A-N4-l2s captures, where the replay is exact,
+have 158 such ACKs. Seven of those have a retransmission 14-153 us after them, and the kernel
+counted all seven as dubious. A gap of tens of microseconds is therefore not enough to show
+that the kernel reordered at a given ACK. The backlog path above is a mechanism in the Linux
+source that gives exactly this one-lower result, but no capture shows it happening.
+run8's and run9's rows stay failed and are open items. With the exact check, A-N4-l2s failed
+in 2 of the 11 runs that have the D-SACK checks and a capture (run3b had the checks but its
+capture is gone). Neither row is in the matrix (run6's row is).
 
 With SACK off (B-sack0-*) there are no D-SACKs, and `TCPSACKDiscard` is 0.
 
@@ -486,9 +536,15 @@ counted 999). E prechecks each public site up to 3 times and records a replaceme
   overtaken). Under N4 the count is a race between two running counters and varied from 59 to
   2177 over six runs with the stack (0 to 127 over four with Linux); no ratio is claimed. The
   stack sends nothing a Linux receiver would not also send.
-- run8's A-N4-l2s: the replay predicted one `TCPDSACKIgnoredDubious` more than the kernel
-  counted (above); the replay cannot order an ACK and a retransmission 83-97 us apart as the
-  kernel did. The row stays failed; the check is unchanged.
+- run8's and run9's A-N4-l2s: the replay predicted one `TCPDSACKIgnoredDubious` more than the
+  kernel counted (2494 against 2493; 5280 against 5279). The captured retransmissions equal
+  `total_retrans`, so the difference is one of order. The replay is an upper bound because the
+  socket backlog can make the kernel count a retransmission before it processes an ACK captured
+  earlier. Each capture has ACKs where the kernel could have been one lower, but neither shows
+  which one. Both rows stay failed and the check is unchanged (exact equality). After 1f93aa5
+  these are the only mismatches among the 27 retained captures and the eight rows of run9-run11.
+  A check that accepts the replay minus such ACKs is possible but needs a bound on how late the
+  kernel processes an ACK. That decision is left to the coordinator.
 - The stack's receiver pulls the right window edge back by less than 2^wscale (above). This
   is the deliberate rounding of DESIGN §4.10, not an open item; listed here because Linux
   does not do it.
