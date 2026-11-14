@@ -19,33 +19,66 @@ M1_RESULTS=$PWD/.logs/RUN tests/interop/m1_apps_retrans.sh 3   # m1-apps test 7,
 ```
 
 Each runner starts the testbed if needed (`testbed/m1/up.sh`), takes `PATTERN...` to
-run a subset, and writes per case `RUN/<case>/`: `testbed/m1/record.sh` output before
+run a subset, and writes per case `.logs/RUN/<case>/` in the work directory: `testbed/m1/record.sh` output before
 and after (the peer's `nstat -asz`, `ip tcp_metrics show`, `ip -s link show utcp0`,
 `tc -s qdisc`, offloads), the programs' JSON output, the stack's counters (`--stats`),
 capture summaries, and `row.json`; `RUN/rows.jsonl` collects the rows. Before every
 case the peer runs with `net.ipv4.tcp_no_metrics_save = 1`, and the row checks that
-`ip tcp_metrics show` was empty.
+`ip tcp_metrics show` was empty. The captures of a run go to
+`utcp-data:/m1-accept-interop/RUN/<case>/` (`M1_VOLDIR`, default `m1-accept-interop/RUN`;
+`row.json` records it as `captures_dir`), so a later run does not replace them.
+
+The work directory is not kept. Each run's `.logs/RUN/` (every `<case>/` directory with the
+`record.sh` output before and after, `row.json`, `dsack.json`, `stack-stats.json`,
+`extra.json` and the capture summaries, and the run's `rows.jsonl`) is copied to
+`utcp-data:/m1-accept-interop/logs/RUN/`, and the runner logs (`RUN-*.log`) and run scripts
+to `utcp-data:/m1-accept-interop/logs/top/`. `tests/interop/m1_matrix.sh` over the copied
+directories prints the same tables.
 
 The runs, on 2026-11-14 (the `Run` column of the matrix says which run a row is from):
 
-| Run | Commit | What | Used in the matrix |
-|---|---|---|---|
-| run2 | 8834aae | all cases | no (found the H-udp, E and paused-reader issues; captures kept) |
-| run3 | 84c031d | all cases and the Linux→Linux reference | reference rows only |
-| run3b | 84c031d | Linux→stack rows under N3/N4 with the D-SACK checks, E-neverssl.com | no |
-| run4 | 5060a88 | stack→Linux rows and D after 3fc5bb1 | no (B-sack1-ts1-ws0-s2l failed: fixed in 2441a7a) |
-| run5 | 5493eec | every stack case (A, B, C, D, E, H) with all fixes | all stack rows except E-neverssl.com |
-| run5b | 5493eec | E-neverssl.com again (run5 failed: below) | E-neverssl.com |
+| Run | Commit | What | Used in the matrix | Captures |
+|---|---|---|---|---|
+| run2 | 8834aae | all cases | no (found the H-udp, E and paused-reader issues) | none left (replaced by later runs) |
+| run3 | 84c031d; the reference rows from the working tree later committed as 5060a88 (below) | all cases and the Linux→Linux reference | reference rows except R-N0-l2l and R-N4-l2l | reference rows only |
+| run3b | 84c031d | Linux→stack rows under N3/N4 with the D-SACK checks, E-neverssl.com | no | none left |
+| run4 | 5060a88 | stack→Linux rows and D after 3fc5bb1 | no (B-sack1-ts1-ws0-s2l failed: fixed in 2441a7a) | none left |
+| run5 | 5493eec | every stack case (A, B, C, D, E, H) with all fixes | stack rows not repeated in run6, except E-neverssl.com | all, except E-neverssl.com |
+| run5b | 5493eec | E-neverssl.com again (run5 failed: below) | E-neverssl.com | yes |
+| run6 | 484e628 | the rows whose checks changed after the review (A-ecn*, B, C) with the new checks, A-N4-l2s, R-N0-l2l, R-N4-l2l | those rows | yes |
+| run7, run8 | 484e628 | A-N4-l2s and R-N4-l2l again (the `TCPSACKDiscard` spread, below) | no | yes |
 
-`tests/interop/m1_matrix.sh .logs/run3 .logs/run5 .logs/run5b` prints the tables below (a later
-directory's row replaces an earlier one). The reference rows do not involve the stack, so the
-stack fixes after run3 do not affect them.
+Up to run5b every run wrote its captures to `utcp-data:/m1-accept-interop/<case>/`,
+and each run replaced the previous run's captures of the cases it ran. The ones left
+were moved to `utcp-data:/m1-accept-interop/RUN/<case>/`: run3's reference rows,
+run5's stack rows and run5b's E-neverssl.com. The captures of run2, run3b and run4, of
+run3's stack rows and of run5's E-neverssl.com no longer exist; their summaries
+(`pcap-*.json`) are in the logs. run6 and later runs keep their own.
+
+run3's commit: 84c031d is the head the run started from, but the scripts were synced
+during the run. The four `R-N4-100M-sack0-*` cases exist only in the `m1_linux_ref.sh`
+of 5060a88 (05:54 PST, its only change), and their directories date from 05:26-05:29
+PST, so run3's reference rows ran from the uncommitted working tree that became
+5060a88. Its stack rows also used checks older than 84c031d's; they are not in the
+matrix.
+
+`tests/interop/m1_matrix.sh .logs/run3 .logs/run5 .logs/run5b .logs/run6` prints the tables
+below (a later directory's row replaces an earlier one). The reference rows do not involve the
+stack, so the stack fixes after run3 do not affect them. Between run5 (5493eec) and run6
+(484e628) only the test scripts and the programs' tests changed (`main_` takes the transport
+factory); the stack and the programs' behaviour did not.
 
 ### Testbed and CPU pinning
 
 - `utcp-m1-dut` (the stack on `utcp0`, 198.18.0.2; the DUT kernel 198.18.0.1 forwards
   between `utcp0` and `utcp-m1-net`), `utcp-m1-peer` (Linux, 198.19.1.3), and for C the
-  router `utcp-m1-r` with the 1400-byte link (`testbed/m1/pmtu.sh`).
+  chain of `testbed/m1/pmtu.sh`: DUT 198.19.2.2 -- `utcp-m1-net1400` (MTU 1400) -- router
+  `utcp-m1-r` -- `utcp-m1-netb` (MTU 1500) -- peer 198.19.3.4. The 1400-byte link is the
+  DUT–router hop. So in C-pmtu-s2l the frag-needed comes from the DUT's own forwarding
+  kernel (source 198.18.0.1, the stack's first hop: all 10 in run5 and in run6), and only in
+  C-pmtu-l2s does the router generate it (source 198.19.3.3, to the peer). No case has
+  the stack receive a frag-needed from a router further along the path; that needs the
+  1400-byte link on the router–peer side.
 - Every container (testbed, captures, tshark analysis) runs with `--cpuset-cpus 16-31`
   (E-cores, shared with other build work on the host); analysis containers also with
   `nice -n 10`. No run used CPUs 0-15. No result here is a timing measurement.
@@ -62,17 +95,19 @@ stack fixes after run3 do not affect them.
 
 ### Captures
 
-tcpdump, 128-byte snaplen (headers only), in the Docker volume `utcp-data`:
+tcpdump, 128-byte snaplen (headers only), in the Docker volume `utcp-data`; RUN is the
+`Run` column of the matrix:
 
-- `utcp-data:/m1-accept-interop/<case>/peer.pcap`: the peer's interface (A, B, C, the
+- `utcp-data:/m1-accept-interop/RUN/<case>/peer.pcap`: the peer's interface (A, B, C, the
   local E cases, R).
-- `utcp-data:/m1-accept-interop/<case>/utcp0.pcap`: `utcp0` in the DUT (all stack cases;
+- `utcp-data:/m1-accept-interop/RUN/<case>/utcp0.pcap`: `utcp0` in the DUT (all stack cases;
   egress is captured after the netem qdisc, so duplicates and losses toward the stack
   are visible there).
-- `utcp-data:/m1-accept-interop/apps-t7-<n>/lo.pcap`: m1-apps test 7 reproduction.
+- `utcp-data:/m1-accept-interop/apps7/apps-t7-<n>/lo.pcap`: m1-apps test 7 reproduction.
+- `utcp-data:/m1-accept-interop/logs/RUN/`: the per-case files of each run (above).
 
 The captures stay in the volume (read them with a container that mounts `utcp-data`,
-e.g. `docker run --rm -v utcp-data:/data utcp-testbed:dev tshark -r /data/m1-accept-interop/A-N0-s2l/peer.pcap`).
+e.g. `docker run --rm -v utcp-data:/data utcp-testbed:dev tshark -r /data/m1-accept-interop/run5/A-N0-s2l/peer.pcap`).
 
 The tshark expert-analysis rule and its results are in
 [SIM-BUGS.md, "tshark expert analysis"](SIM-BUGS.md#tshark-expert-analysis).
@@ -92,9 +127,9 @@ of its checks hold.
 | A Linux→stack N1, N4 | `TCPSackRecovery > 0` |
 | A Linux→stack N3 | `TCPDSACKRecv > 0` |
 | A paused reader | stack→Linux: Linux advertised a zero window (capture), `TCPToZeroWindowAdv > 0`, the stack sender was receive-window limited; Linux→stack: the stack advertised a zero window (capture), the stack's `TCPToZeroWindowAdv > 0`, Linux's `tcpi_rwnd_limited > 0` |
-| A ECN (peer `tcp_ecn` 1, 3) | no ECE/CWR/AE in the stack's SYN or SYN-ACK or in Linux's SYN-ACK, no ECN codepoint on any packet, no ECE/CWR after the handshake; Linux→stack: Linux's SYN carried ECE+CWR (it asked; the stack declined) |
-| B | Linux's SYN/SYN-ACK carry exactly the enabled options; the stack's SYN offers SACK, timestamps and window scale, its SYN-ACK only what Linux offered; timestamps after the handshake only if on; no SACK blocks if SACK off; Linux→stack with SACK on: `TCPSackRecovery > 0` |
-| C | stack→Linux: ICMP 3/4 MTU 1400 to the stack on `utcp0`, stack segments ≤ 1348 bytes after it (1448 before), `tcp_info` `pmtu` 1400 and `snd_mss` 1348; Linux→stack: ICMP 3/4 MTU 1400 to the peer, Linux's segments 1348 bytes, Linux's `pmtu` 1400, the stack's `rcv_mss` 1348 |
+| A ECN (peer `tcp_ecn` 1, 3) | at least one SYN or SYN-ACK of each side captured; no ECE/CWR/AE in the stack's SYN or SYN-ACK or in Linux's SYN-ACK, no ECN codepoint on any packet, no ECE/CWR after the handshake; Linux→stack: Linux's SYN carried ECE+CWR (it asked; the stack declined) |
+| B | at least one SYN or SYN-ACK of each side captured; Linux's SYN/SYN-ACK carry exactly the enabled options; the stack's SYN offers SACK, timestamps and window scale, its SYN-ACK only what Linux offered; timestamps after the handshake only if on; no SACK blocks if SACK off; Linux→stack with SACK on: `TCPSackRecovery > 0` |
+| C | stack→Linux: ICMP 3/4 MTU 1400 to the stack on `utcp0` (from the DUT kernel, see Testbed); the stack's first 1348-byte segment comes after the first of them, none of its segments after that one is longer, and the longer ones sent after the ICMP arrived (new data sent before the stack read it) are all within 10 ms of it; 1448 bytes before; `tcp_info` `pmtu` 1400 and `snd_mss` 1348; Linux→stack: ICMP 3/4 MTU 1400 to the peer, Linux's segments 1348 bytes, Linux's `pmtu` 1400, the stack's `rcv_mss` 1348 |
 | D | curl and utcp-httpd exit 0; HTTP 200 and the body's size equal to the file's; SHA-256 of the body (on the peer) equal to the file's (in the DUT); no RST on an open connection from either side; `fin_ok`; `TCPSACKDiscard = 0`, `TCPSACKReneging = 0`; metrics empty |
 | E local | utcp-http-get and the concurrent kernel curl exit 0, both bodies' SHA-256 equal to the file's, utcp-http-get's own SHA and length, `fin_ok`, `TCPSACKDiscard = 0`, `TCPSACKReneging = 0`, metrics empty |
 | E public | kernel `curl -sI` precheck: 200 and no redirect to https (3 tries); both downloads exit 0; curl got 200; utcp-http-get's body equals kernel curl's (SHA-256 and length); the stack sent no RST on an open connection. Only "interoperates" is reported (Wi-Fi path, no numbers) |
@@ -104,7 +139,10 @@ of its checks hold.
 
 The nstat column lists the checked counters and the nonzero recovery counters (peer deltas).
 E public rows report only "interoperates" (pass) and no numbers. Run5's E-neverssl.com row
-failed for a network reason (below); the matrix shows run5b's repeat.
+failed for a network reason (below); the matrix shows run5b's repeat. The run6 rows replace
+run5's rows of the same cases (all of which had passed); run7 and run8 are not in the matrix,
+and run8's A-N4-l2s failed one check (`TCPDSACKIgnoredDubious` one below the replay; see
+TCPSACKDiscard below).
 
 | Case | Run | Direction | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) | Goodput Mbit/s (non-timing) | Retransmissions (sender total_retrans / peer TcpRetransSegs) | Peer nstat deltas | utcp0 drops (rx/tx) | Result |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -117,33 +155,33 @@ failed for a network reason (below); the matrix shows run5b's repeat.
 | A-N3-s2l | run5 | stack->Linux | default | N3 | 1 GB | yes | 4.353 | 1837.7 | 432 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
 | A-N3-l2s | run5 | Linux->stack | default | N3 | 1 GB | yes | 2.034 | 3932.4 | 0 / 0 | SACKDiscard 14131, SACKReneging 0, DSACKRecv 14131 (SACKDiscard = 14131 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
 | A-N4-s2l | run5 | stack->Linux | default | N4 | 1 GB | yes | 240.55 | 33.3 | 7061 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| A-N4-l2s | run5 | Linux->stack | default | N4 | 1 GB | yes | 293.373 | 27.3 | 6961 / 6961 | SACKDiscard 862, SACKReneging 0, SackRecovery 5768, DSACKRecv 5688, DSACKIgnoredNoUndo 133, Timeouts 5 (SACKDiscard = 862 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
+| A-N4-l2s | run6 | Linux->stack | default | N4 | 1 GB | yes | 300.581 | 26.6 | 6911 / 6911 | SACKDiscard 466, SACKReneging 0, SackRecovery 5761, DSACKRecv 5678, DSACKIgnoredNoUndo 171, Timeouts 6 (SACKDiscard = 466 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
 | A-pause200-s2l | run5 | stack->Linux | recv-pause 200:1048576 | N0 | 100 MB | yes | 19.1 | 41.9 | 0 / 0 | SACKDiscard 0, SACKReneging 0, ToZeroWindowAdv 1 | 0/0 | pass |
 | A-pause200-l2s | run5 | Linux->stack | recv-pause 200:1048576 | N0 | 100 MB | yes | 19.235 | 41.6 | 84 / 84 | SACKDiscard 0, SACKReneging 0, DSACKRecv 84, DSACKIgnoredNoUndo 84 | 0/0 | pass |
 | A-pause-s2l | run5 | stack->Linux | recv-pause 500:1048576 | N0 | 100 MB | yes | 47.6 | 16.8 | 0 / 0 | SACKDiscard 0, SACKReneging 0, ToZeroWindowAdv 93 | 0/0 | pass |
 | A-pause-l2s | run5 | Linux->stack | recv-pause 500:1048576 | N0 | 100 MB | yes | 47.661 | 16.8 | 26 / 26 | SACKDiscard 0, SACKReneging 0, DSACKRecv 26, DSACKIgnoredNoUndo 26 | 0/0 | pass |
-| A-ecn1-s2l | run5 | stack->Linux | peer tcp_ecn=1 | N0 | 100 MB | yes | 0.507 | 1579.4 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| A-ecn1-l2s | run5 | Linux->stack | peer tcp_ecn=1 | N0 | 100 MB | yes | 0.199 | 4021.6 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| A-ecn3-s2l | run5 | stack->Linux | peer tcp_ecn=3 | N0 | 100 MB | yes | 0.502 | 1595.0 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| A-ecn3-l2s | run5 | Linux->stack | peer tcp_ecn=3 | N0 | 100 MB | yes | 0.197 | 4054.2 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack0-ts0-ws0-s2l | run5 | stack->Linux | sack0-ts0-ws0 | N4 | 100 MB | yes | 30.089 | 26.6 | 797 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack0-ts0-ws0-l2s | run5 | Linux->stack | sack0-ts0-ws0 | N4 | 100 MB | yes | 50.427 | 15.9 | 1029 / 1029 | SACKDiscard 0, SACKReneging 0, Timeouts 105 | 0/0 | pass |
-| B-sack0-ts0-ws1-s2l | run5 | stack->Linux | sack0-ts0-ws1 | N4 | 100 MB | yes | 26.474 | 30.2 | 724 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack0-ts0-ws1-l2s | run5 | Linux->stack | sack0-ts0-ws1 | N4 | 100 MB | yes | 36.008 | 22.2 | 1340 / 1340 | SACKDiscard 0, SACKReneging 0, Timeouts 46 | 0/0 | pass |
-| B-sack0-ts1-ws0-s2l | run5 | stack->Linux | sack0-ts1-ws0 | N4 | 100 MB | yes | 28.086 | 28.5 | 785 / 1 | SACKDiscard 0, SACKReneging 0, Timeouts 1 | 0/0 | pass |
-| B-sack0-ts1-ws0-l2s | run5 | Linux->stack | sack0-ts1-ws0 | N4 | 100 MB | yes | 38.435 | 20.8 | 796 / 796 | SACKDiscard 0, SACKReneging 0, Timeouts 44 | 0/0 | pass |
-| B-sack0-ts1-ws1-s2l | run5 | stack->Linux | sack0-ts1-ws1 | N4 | 100 MB | yes | 25.307 | 31.6 | 821 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack0-ts1-ws1-l2s | run5 | Linux->stack | sack0-ts1-ws1 | N4 | 100 MB | yes | 37.664 | 21.2 | 1005 / 1005 | SACKDiscard 0, SACKReneging 0, Timeouts 37 | 0/0 | pass |
-| B-sack1-ts0-ws0-s2l | run5 | stack->Linux | sack1-ts0-ws0 | N4 | 100 MB | yes | 24.72 | 32.4 | 721 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack1-ts0-ws0-l2s | run5 | Linux->stack | sack1-ts0-ws0 | N4 | 100 MB | yes | 30.447 | 26.3 | 729 / 729 | SACKDiscard 42, SACKReneging 0, SackRecovery 655, DSACKRecv 613, DSACKIgnoredNoUndo 173 (SACKDiscard = 42 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
-| B-sack1-ts0-ws1-s2l | run5 | stack->Linux | sack1-ts0-ws1 | N4 | 100 MB | yes | 25.087 | 31.9 | 733 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack1-ts0-ws1-l2s | run5 | Linux->stack | sack1-ts0-ws1 | N4 | 100 MB | yes | 29.027 | 27.6 | 667 / 667 | SACKDiscard 609, SACKReneging 0, SackRecovery 564, DSACKRecv 609 (SACKDiscard = 609 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
-| B-sack1-ts1-ws0-s2l | run5 | stack->Linux | sack1-ts1-ws0 | N4 | 100 MB | yes | 23.4 | 34.2 | 684 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack1-ts1-ws0-l2s | run5 | Linux->stack | sack1-ts1-ws0 | N4 | 100 MB | yes | 29.031 | 27.6 | 683 / 683 | SACKDiscard 124, SACKReneging 0, SackRecovery 572, DSACKRecv 565, DSACKIgnoredNoUndo 113 (SACKDiscard = 124 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
-| B-sack1-ts1-ws1-s2l | run5 | stack->Linux | sack1-ts1-ws1 | N4 | 100 MB | yes | 23.135 | 34.6 | 682 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| B-sack1-ts1-ws1-l2s | run5 | Linux->stack | sack1-ts1-ws1 | N4 | 100 MB | yes | 29.247 | 27.4 | 709 / 709 | SACKDiscard 488, SACKReneging 0, SackRecovery 581, DSACKRecv 623, DSACKIgnoredNoUndo 3 (SACKDiscard = 488 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
-| C-pmtu-s2l | run5 | stack->Linux | PMTU 1400 chain | N0 | 1 GB | yes | 6.549 | 1221.6 | 20 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
-| C-pmtu-l2s | run5 | Linux->stack | PMTU 1400 chain | N0 | 1 GB | yes | 2.412 | 3316.3 | 12 / 12 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| A-ecn1-s2l | run6 | stack->Linux | peer tcp_ecn=1 | N0 | 100 MB | yes | 0.473 | 1692.0 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| A-ecn1-l2s | run6 | Linux->stack | peer tcp_ecn=1 | N0 | 100 MB | yes | 0.187 | 4289.1 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| A-ecn3-s2l | run6 | stack->Linux | peer tcp_ecn=3 | N0 | 100 MB | yes | 0.481 | 1664.0 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| A-ecn3-l2s | run6 | Linux->stack | peer tcp_ecn=3 | N0 | 100 MB | yes | 0.238 | 3366.0 | 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack0-ts0-ws0-s2l | run6 | stack->Linux | sack0-ts0-ws0 | N4 | 100 MB | yes | 25.088 | 31.9 | 689 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack0-ts0-ws0-l2s | run6 | Linux->stack | sack0-ts0-ws0 | N4 | 100 MB | yes | 64.454 | 12.4 | 1244 / 1244 | SACKDiscard 0, SACKReneging 0, Timeouts 177 | 0/0 | pass |
+| B-sack0-ts0-ws1-s2l | run6 | stack->Linux | sack0-ts0-ws1 | N4 | 100 MB | yes | 26.872 | 29.8 | 861 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack0-ts0-ws1-l2s | run6 | Linux->stack | sack0-ts0-ws1 | N4 | 100 MB | yes | 36.707 | 21.8 | 1666 / 1666 | SACKDiscard 0, SACKReneging 0, Timeouts 37 | 0/0 | pass |
+| B-sack0-ts1-ws0-s2l | run6 | stack->Linux | sack0-ts1-ws0 | N4 | 100 MB | yes | 26.183 | 30.6 | 704 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack0-ts1-ws0-l2s | run6 | Linux->stack | sack0-ts1-ws0 | N4 | 100 MB | yes | 37.175 | 21.5 | 808 / 808 | SACKDiscard 0, SACKReneging 0, Timeouts 17 | 0/0 | pass |
+| B-sack0-ts1-ws1-s2l | run6 | stack->Linux | sack0-ts1-ws1 | N4 | 100 MB | yes | 25.615 | 31.2 | 723 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack0-ts1-ws1-l2s | run6 | Linux->stack | sack0-ts1-ws1 | N4 | 100 MB | yes | 37.521 | 21.3 | 2893 / 2893 | SACKDiscard 0, SACKReneging 0, Timeouts 41 | 0/0 | pass |
+| B-sack1-ts0-ws0-s2l | run6 | stack->Linux | sack1-ts0-ws0 | N4 | 100 MB | yes | 22.533 | 35.5 | 688 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack1-ts0-ws0-l2s | run6 | Linux->stack | sack1-ts0-ws0 | N4 | 100 MB | yes | 29.453 | 27.2 | 683 / 683 | SACKDiscard 1, SACKReneging 0, SackRecovery 577, DSACKRecv 558, DSACKIgnoredNoUndo 188 (SACKDiscard = 1 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
+| B-sack1-ts0-ws1-s2l | run6 | stack->Linux | sack1-ts0-ws1 | N4 | 100 MB | yes | 23.523 | 34.0 | 667 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack1-ts0-ws1-l2s | run6 | Linux->stack | sack1-ts0-ws1 | N4 | 100 MB | yes | 30.078 | 26.6 | 674 / 674 | SACKDiscard 599, SACKReneging 0, SackRecovery 591, DSACKRecv 618, DSACKIgnoredNoUndo 1, Timeouts 1 (SACKDiscard = 599 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
+| B-sack1-ts1-ws0-s2l | run6 | stack->Linux | sack1-ts1-ws0 | N4 | 100 MB | yes | 25.426 | 31.5 | 708 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack1-ts1-ws0-l2s | run6 | Linux->stack | sack1-ts1-ws0 | N4 | 100 MB | yes | 29.776 | 26.9 | 680 / 680 | SACKDiscard 30, SACKReneging 0, SackRecovery 591, DSACKRecv 576, DSACKIgnoredNoUndo 172 (SACKDiscard = 30 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
+| B-sack1-ts1-ws1-s2l | run6 | stack->Linux | sack1-ts1-ws1 | N4 | 100 MB | yes | 24.093 | 33.2 | 689 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| B-sack1-ts1-ws1-l2s | run6 | Linux->stack | sack1-ts1-ws1 | N4 | 100 MB | yes | 29.524 | 27.1 | 664 / 664 | SACKDiscard 213, SACKReneging 0, SackRecovery 587, DSACKRecv 638, DSACKIgnoredNoUndo 8 (SACKDiscard = 213 predicted from the capture, all D-SACKs for segments the stack received twice; see TCPSACKDiscard below) | 0/0 | pass |
+| C-pmtu-s2l | run6 | stack->Linux | PMTU 1400 chain | N0 | 1 GB | yes | 6.288 | 1272.3 | 20 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
+| C-pmtu-l2s | run6 | Linux->stack | PMTU 1400 chain | N0 | 1 GB | yes | 2.38 | 3361.0 | 12 / 12 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
 | D-N0-100M | run5 | stack->Linux | curl GET /big.bin | N0 | 100 MB | yes | 0.423345 |  | stack 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
 | D-N0-1B | run5 | stack->Linux | curl GET /one.bin | N0 | 1 B | yes | 0.000325 |  | stack 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
 | D-N0-0B | run5 | stack->Linux | curl GET /empty.bin | N0 | 0 B | yes | 0.000379 |  | stack 0 / 0 | SACKDiscard 0, SACKReneging 0 | 0/0 | pass |
@@ -164,10 +202,10 @@ Linux->Linux reference (tests/interop/m1_linux_ref.sh; not acceptance cases):
 
 | Case | Run | Options | Impairment | Bytes | SHA-256 equal | Duration s (non-timing) | Retransmissions (sender total_retrans / TcpRetransSegs) | Sender nstat deltas | D-SACK replay (predicted SACKDiscard / dubious, D-SACK ACKs, of them older than snd_una) | Result |
 |---|---|---|---|---|---|---|---|---|---|---|
-| R-N0-l2l | run3 | default | N0 | 1 GB | yes | 1.917 | 0 / 0 | SACKDiscard 0, SACKReneging 0 |  | pass |
+| R-N0-l2l | run6 | default | N0 | 1 GB | yes | 1.919 | 0 / 0 | SACKDiscard 0, SACKReneging 0 |  | pass |
 | R-N1-l2l | run3 | default | N1 | 1 GB | yes | 191.509 | 6995 / 6995 | SACKDiscard 0, SACKReneging 0, SackRecovery 6246, DSACKRecv 11, Timeouts 12 |  | pass |
 | R-N3-l2l | run3 | default | N3 | 1 GB | yes | 2.711 | 0 / 0 | SACKDiscard 2801, SACKReneging 0, DSACKRecv 6459 | 2801 / 6460, 6460, 3658 | pass |
-| R-N4-l2l | run3 | default | N4 | 1 GB | yes | 293.672 | 6825 / 6825 | SACKDiscard 127, SACKReneging 0, SackRecovery 5578, DSACKRecv 5489, DSACKIgnoredNoUndo 540, Timeouts 4 | 127 / 131, 5848, 8 | pass |
+| R-N4-l2l | run6 | default | N4 | 1 GB | yes | 300.313 | 6885 / 6885 | SACKDiscard 1, SACKReneging 0, SackRecovery 5614, DSACKRecv 5404, DSACKIgnoredNoUndo 567, Timeouts 8 | 1 / 1, 5756, 3 | pass |
 | R-N4-100M-1-l2l | run3 | default | N4 | 100 MB | yes | 29.369 | 684 / 684 | SACKDiscard 12, SACKReneging 0, SackRecovery 578, DSACKRecv 550, DSACKIgnoredNoUndo 77 | 12 / 12, 575, 1 | pass |
 | R-N4-100M-2-l2l | run3 | default | N4 | 100 MB | yes | 28.147 | 674 / 674 | SACKDiscard 0, SACKReneging 0, SackRecovery 541, DSACKRecv 571, DSACKIgnoredNoUndo 64 | 0 / 0, 606, 0 | pass |
 | R-N4-100M-3-l2l | run3 | default | N4 | 100 MB | yes | 30.376 | 740 / 740 | SACKDiscard 1, SACKReneging 0, SackRecovery 649, DSACKRecv 618, DSACKIgnoredNoUndo 66, Timeouts 1 | 1 / 1, 652, 0 | pass |
@@ -197,42 +235,74 @@ not mean a malformed block.
 `tests/interop/m1_dsack.py` replays these rules over the peer capture (the order in which the Linux
 sender sent data and processed ACKs) and, from the `utcp0` capture, checks which segments the stack
 received twice. In every Linux→stack row under N3 and N4 and in every Linux→Linux reference row
-under N3 and N4, the predicted `TCPSACKDiscard` and `TCPDSACKIgnoredDubious` equal the nstat deltas
-exactly. Every predicted discarded block is a D-SACK for a segment the stack received twice, and
-every D-SACK the stack sent is one (`dsack_other` 0). Those are the checks in the rows.
-`TCPSACKReneging` is 0 in every row.
+under N3 and N4, the predicted `TCPSACKDiscard` equals the nstat delta exactly, and so does the
+predicted `TCPDSACKIgnoredDubious` in every row except run8's A-N4-l2s (below). Every predicted
+discarded block is a D-SACK for a segment the stack received twice, and every D-SACK the stack
+sent is one (`dsack_other` 0). Those are the checks in the rows. `TCPSACKReneging` is 0 in every
+row.
 
-| Profile, size | Row (run) | Receiver: duplicates received / D-SACKs recorded | D-SACK ACKs reaching the sender | of them older than SND.UNA | Sender retransmissions | `TCPDSACKIgnoredDubious` | `TCPSACKDiscard` |
-|---|---|---|---|---|---|---|---|
-| N3, 1 GB | A-N3-l2s, stack receiver (run5) | 13872 / 13872 | 14131 | 0 | 0 | 14131 | 14131 |
-| N3, 1 GB | R-N3-l2l, Linux receiver (run3) | not captured / 13826 | 6460 | 3658 | 0 | 6460 | 2801 |
-| N4, 1 GB | A-N4-l2s (run5) | 6829 / 6829 | 6832 | 0 | 6961 | 978 | 862 |
-| N4, 1 GB | R-N4-l2l (run3) | not captured / 6838 | 5848 | 8 | 6825 | 131 | 127 |
-| N4, 100 MB | B-sack1-*-l2s, 4 rows (run5) | 670-758 / same | 673-758 | 0 | 667-729 | 45-684 | 42-609 |
-| N4, 100 MB | R-N4-100M-{1,2,3}-l2l (run3) | not captured / 663-722 | 575-652 | 0-1 | 674-740 | 0-12 | 0-12 |
+Under N3 (duplication, no loss) the sender retransmits nothing, so every D-SACK is dubious, and
+the count depends only on how many D-SACK ACKs reach the sender and how many of those are older
+than SND.UNA:
+
+| Row (run) | Receiver: duplicates received / D-SACKs recorded | D-SACK ACKs reaching the sender | of them older than SND.UNA | `TCPDSACKIgnoredDubious` | `TCPSACKDiscard` |
+|---|---|---|---|---|---|
+| A-N3-l2s, stack receiver (run5) | 13872 / 13872 | 14131 | 0 | 14131 | 14131 |
+| A-N3-l2s (run3b) | not summarized | 14133 | 1 | 14133 | 14132 |
+| R-N3-l2l, Linux receiver (run3) | not captured / 13826 | 6460 | 3658 | 6460 | 2801 |
 
 "D-SACKs recorded" is the receiver's `TCPDSACKOldSent + TCPDSACKOfoSent`. The D-SACK ACK counts
-include netem's duplicates of ACKs (the ACK path has the same netem).
-
-The ratios to the reference (5.0 under N3, 6.8 under N4 at 1 GB, larger at 100 MB) come from
-the replayed rule's inputs. The same holds in run3b (14132 and 1109 against the same reference
-rows).
+include netem's duplicates of ACKs (the ACK path has the same netem). The ratio, 5.0, comes from
+two receiver differences:
 
 1. The stack puts every D-SACK on the wire. The Linux receiver records about as many but sends
    fewer: `tcp_dsack_set` keeps one range (`duplicate_sack[0]`), and `__tcp_ack_snd_check` defers
    ACKs while the socket backlog is processed (`tcp_backlog_ack_defer`), so a later duplicate
-   replaces the earlier range before an ACK leaves. Under N3, 13826 were recorded and 6460 arrived;
-   under N4, 6838 and 5848.
-2. Under N3, 3658 of the Linux receiver's 6460 D-SACK ACKs reached the sender after an ACK with a
-   higher number and were skipped. About 4.2 times fewer of the stack's ACKs reached
-   the sender (34871 against 145567 in the peer captures, both including netem's duplicates; see
-   "ACK frequency" below), and none of its D-SACK ACKs was overtaken (1 in
-   run3b).
-3. Under N4, duplicates (1 %) and retransmissions (about 1 % loss) are about equal, so the
-   sender's running D-SACK count stays near its running retransmission count, and the dubious
-   count depends on how often the first exceeds the second. D-SACK ACKs per retransmission were
-   0.98 (A-N4-l2s) and 0.94-1.07 (B rows) with the stack, against 0.86 (R-N4-l2l) and 0.84-0.90
-   (R-N4-100M) with Linux.
+   replaces the earlier range before an ACK leaves: 13826 recorded, 6460 arrived.
+2. 3658 of the Linux receiver's 6460 D-SACK ACKs reached the sender after an ACK with a higher
+   number and were skipped. About 4.2 times fewer of the stack's ACKs reached the sender (34871
+   against 145567 in the peer captures, both including netem's duplicates; see "ACK frequency"
+   below), and none of its D-SACK ACKs was overtaken (1 in run3b).
+
+Under N4 (1 % loss and 1 % duplication) the sender's running D-SACK count (`dsack_dups`) and
+its running retransmission count (`total_retrans`) grow at about the same rate, and a D-SACK
+is dubious only while the first is ahead. The count is the outcome of that race and varies
+widely from run to run with the same code, so no ratio to the reference is given for N4.
+A-N4-l2s was run six times (run3b at 84c031d, before 3fc5bb1 and 2441a7a, which change the
+sender's `tcp_info` accounting and the programs' exit, not the receive path; run5, the review's
+run at f811138, and run6-run8 at the same stack code) and R-N4-l2l four times:
+
+| Row (run) | D-SACK ACKs reaching the sender | of them older than SND.UNA | Sender retransmissions | D-SACK ACKs per retransmission | `TCPDSACKIgnoredDubious` | `TCPSACKDiscard` |
+|---|---|---|---|---|---|---|
+| A-N4-l2s (run3b) | 6790 | 0 | 6912 | 0.98 | 1288 | 1109 |
+| A-N4-l2s (run5) | 6832 | 0 | 6961 | 0.98 | 978 | 862 |
+| A-N4-l2s (review, `utcp-data:/m1-accept-interop-review/logs/A-N4-l2s`) | 6832 | 0 | 6888 | 0.99 | 222 | 178 |
+| A-N4-l2s (run6) | 6861 | 1 | 6911 | 0.99 | 553 | 466 |
+| A-N4-l2s (run7) | 6762 | 0 | 6935 | 0.98 | 69 | 59 |
+| A-N4-l2s (run8) | 6795 | 0 | 6860 | 0.99 | 2493 (replay 2494) | 2177 |
+| R-N4-l2l, Linux receiver (run3) | 5848 | 8 | 6825 | 0.86 | 131 | 127 |
+| R-N4-l2l (run6) | 5756 | 3 | 6885 | 0.84 | 1 | 1 |
+| R-N4-l2l (run7) | 5876 | 9 | 6971 | 0.84 | 117 | 110 |
+| R-N4-l2l (run8) | 5691 | 7 | 6926 | 0.82 | 0 | 0 |
+
+With the stack the count ranged from 59 to 2177 at D-SACK ACKs per retransmission of 0.98-0.99
+in every run; with a Linux receiver from 0 to 127 at 0.82-0.86. The stack's higher ratio (it
+sends every D-SACK, point 1 above) keeps the two running counts closer, which makes dubious
+D-SACKs more likely, but at the same ratio the count still differs 37-fold between runs, so it
+says little about the stack beyond that ratio. The 100 MB rows show the same: B-sack1-*-l2s
+42-609 (run5) and 1-599 (run6) against 0-12 in R-N4-100M-{1,2,3}-l2l (run3).
+
+run8's A-N4-l2s failed the check that the replay predicts `TCPDSACKIgnoredDubious` exactly: the
+kernel counted 2493, the replay 2494 (`TCPSACKDiscard` 2177 matched, and so did every other
+check). The kernel processed the same D-SACKs (`TCPDSACKRecv + TCPDSACKOfoRecv` = 6795, the
+replay's D-SACK ACKs; `TCPDSACKRecvSegs` 4302 = 6795 − 2493), so it took one D-SACK as not
+dubious that the replay took as dubious, i.e. it had counted one retransmission more at that
+ACK than the capture order shows. Two D-SACK ACKs in that capture are on the edge
+(`dsack_dups` one above the retransmissions so far) with a retransmission 83 and 97 us after
+them; if the kernel counted that retransmission before it processed the ACK (for example,
+when the ACK waited in the socket backlog behind an earlier ACK that triggered the
+retransmission), the D-SACK was not dubious. The replay follows capture order and cannot see
+this; the row is kept as failed and is not in the matrix (run6's row is).
 
 With SACK off (B-sack0-*) there are no D-SACKs, and `TCPSACKDiscard` is 0.
 
@@ -253,9 +323,11 @@ receiver of a Linux sender advertised 95, R-pause200-l2l). The cause:
   window, until the persist timer's SWS override, which comes at the RTO (at least 200 ms). The
   200 ms pause ends first, so the window reopens without having reached zero.
 - A Linux sender fills the last bytes at once (`tcp_mss_split_point` sends the partial segment
-  when Nagle allows; in the R-pause200-l2l capture of run2, segments of 1016, 664, ... bytes end
-  each burst before the zero window). Its
-  receiver then has no space left and advertises 0.
+  when Nagle allows). In the R-pause200-l2l capture of run3
+  (`utcp-data:/m1-accept-interop/run3/R-pause200-l2l/peer.pcap`), 94 of the receiver's 95
+  zero-window ACKs follow a sender segment shorter than 1448 bytes (1088 bytes before 68 of
+  them, 240 before 14, 64 before 6, 664 before 5, 1192 before 1). Its receiver then has no
+  space left and advertises 0.
 
 With the 500 ms pause the override fires, the stack sends the remaining bytes, and Linux
 advertised a zero window in 127 ACKs of the capture (A-pause-s2l, `TCPToZeroWindowAdv` 93).
@@ -286,16 +358,16 @@ reported 0 s and 18.9 s. After the fix (run5): A-pause200-s2l `rwnd_limited` 18.
 The Linux sender's retransmissions in these rows vary between runs and are higher with window
 scaling on:
 
-| Row | run3 | run3b | run5 | Linux receiver (run3, R-N4-100M-sack0-*) |
-|---|---|---|---|---|
-| sack0-ts0-ws0 | 692 | 772 | 1029 | 758 |
-| sack0-ts1-ws0 | 735 | 708 | 796 | 721 |
-| sack0-ts0-ws1 | 1849 | 1425 | 1340 | 2387 |
-| sack0-ts1-ws1 | 2135 | 1762 | 1005 | 1426 |
+| Row | run3 | run3b | run5 | run6 | Linux receiver (run3, R-N4-100M-sack0-*) |
+|---|---|---|---|---|---|
+| sack0-ts0-ws0 | 692 | 772 | 1029 | 1244 | 758 |
+| sack0-ts1-ws0 | 735 | 708 | 796 | 808 | 721 |
+| sack0-ts0-ws1 | 1849 | 1425 | 1340 | 1666 | 2387 |
+| sack0-ts1-ws1 | 2135 | 1762 | 1005 | 2893 | 1426 |
 
 A Linux receiver gives the same pattern with the same sender settings. It comes from the Linux
 sender's recovery without SACK in a larger window, not from the stack's receiver. The B rows
-with SACK on had 667-729 (run5).
+with SACK on had 667-729 (run5) and 664-683 (run6).
 
 ### m1-apps test 7: 91 retransmissions
 
@@ -336,11 +408,34 @@ Linux→Linux: 9 (7 undone) in A-N1-l2s (13 in run3), 12 in R-N1-l2l.
 - Linux's zero-window probes (`SEG.SEQ = SND.UNA − 1`) are out of window; replies within 500 ms of
   the previous one are held by the out-of-window ACK limiter: stack 25 (`TCPACKSkippedSeq`,
   A-pause-l2s), Linux receiver 27 (R-pause500-l2l).
-- `fin_ok` accepts one kind of RST: in A-N4-l2s (run3b; A-N3-l2s in run2; none in run5) netem
-  duplicated Linux's last ACK.
+- `fin_ok` accepts one kind of RST: in A-N4-l2s (run3b; A-N3-l2s in run2; none in run5 to
+  run8) netem duplicated Linux's last ACK. Those captures no longer exist; the summaries in
+  `utcp-data:/m1-accept-interop/logs/run3b/A-N4-l2s/pcap-{peer,utcp0}.json` record the RST
+  (`rst` 1, `rst_after_close` 1, `rst_open` 0 for the stack). `tests/interop/m1_pcap_summary_check.py`
+  (ctest `interop.m1_pcap_summary_check`) checks on hand-written segments that this RST is
+  exempt and that an RST mid-transfer, an RST|ACK after the close, an RST with another
+  sequence number and an RST before the stack's FIN was ACKed are not.
   The stack, in LAST-ACK, had closed on the first copy and answered the second with
   `<SEQ=SEG.ACK><CTL=RST>` (RFC 9293 §3.10.7.1), as Linux does when no socket matches
   (`tcp_v4_send_reset`). The capture summary counts it as `rst_after_close`.
+- The stack's receiver pulls its advertised right window edge (SEG.ACK + window << 10) back by
+  less than 2^10 bytes, up to tens of thousands of times per 1 GB run under loss or
+  duplication; a Linux receiver does not. Counted in the `utcp0` captures by
+  `m1_pcap_summary.py` (`edge_retreats`, ACKs below an earlier SEG.ACK skipped; in `row.json`
+  from run6 on): A-N0-l2s 20, A-N1-l2s 18341, A-N3-l2s 13571 (run5); A-N4-l2s 29255 (run5),
+  8519, 10956 and 22470 (run6-run8); B-sack1-ts1-ws1-l2s 2818 (run5) and 879 (run6),
+  B-sack1-ts0-ws1-l2s 1287 (run6); A-ecn1-l2s 17, A-ecn3-l2s 16, C-pmtu-l2s 19 (run6); 0 in
+  the B rows without window scaling. The largest step in every row is 1016 bytes or less. The
+  Linux receiver in R-N0-l2l and R-N4-l2l: 0 (run3 peer captures, and run6-run8 for R-N4-l2l). The cause is deliberate: `RcvWindow`
+  rounds the window that keeps the edge down to a multiple of 2^wscale (DESIGN §4.10, listed
+  there as a deviation from Linux), because the stack's buffer limit is hard; Linux
+  `tcp_select_window` rounds the current window up (`ALIGN(cur_win, 1 << rcv_wscale)`, "Never
+  shrink the offered window", with `tcp_shrink_window` at its default 0) over its soft
+  limit. RFC 7323 §2.4 describes this choice (advertise past the earlier edge, perhaps past
+  the buffer, or shrink the window) and requires implementations to handle a shrinking
+  window; the stack's acceptance and storage use the highest edge advertised (§2.4 rule 1),
+  so nothing sent into the earlier window is dropped. The Linux senders handled it (every row passed).
+  Not changed in M1.
 - Open Linux differences listed by m1-tcp-core and m1-tcp-robust: rcv_wup ACK acceptance,
   ICMP net/host unreachable to a SYN-RECEIVED child, autocork for one-byte `nodelay` writes, the
   error reported for an RST in CLOSE-WAIT, and `TCPTimeouts` counting. No run showed the first
@@ -356,16 +451,17 @@ Linux→Linux: 9 (7 undone) in A-N1-l2s (13 in run3), 12 in R-N1-l2l.
   in the `--resolve` repeat utcp-http-get got the page (200, 3961 bytes) but the kernel curl
   started at the same time in the DUT timed out (exit 28), so the row failed: the site did not
   answer the kernel either. run5b (same commit) passed with `--dns`; that row is in the matrix.
-  The run5 failure stays in `.logs/run5/E-neverssl.com` and is listed under open items.
+  The run5 failure's files are in `utcp-data:/m1-accept-interop/logs/run5/E-neverssl.com/`
+  (its capture was replaced by run5b's) and it is listed under open items.
 
 ## Fixes made by these runs
 
 | Commit | Case | Fix | Regression test |
 |---|---|---|---|
 | 37b8bac | A-N3-s2l: `TcpExtTCPOrigDataSent` 1,381,424 for 690,715 segments | count once per new segment (`tcp_output.cpp`) | `TcpTransfer.OrigDataSentCountsEachNewSegmentOnce` |
-| 8834aae | E-chunked: utcp-http-get exited after its close; the server's FIN (0.15 ms later) was never ACKed and was retransmitted | `Transport::finish_closing`: the client programs run the loop until their closed connections are done (at most 2 s) | `backend_transport_check --expect-stack` (`finish_closing` check; ctest `interop.backend_transport_check_stack`) |
+| 8834aae | E-chunked: utcp-http-get exited after its close; the server's FIN (0.15 ms later) was never ACKed and was retransmitted | `Transport::finish_closing`: the client programs run the loop until their closed connections are done (at most 2 s) | `backend_transport_check --expect-stack` (`finish_closing` check; ctest `interop.backend_transport_check_stack`); that the programs call it: `BulkMain`, `HttpGetMain`, `EchoMain.MainFinishesClosingAfterRun` (9593c70; each fails without its program's call) |
 | 3fc5bb1 | A-pause200-s2l: 17.7 s `sndbuf_limited`, 0.84 s `rwnd_limited` | start `sndbuf_limited` as Linux `tcp_cwnd_validate` does; DESIGN §10.1 | `TcpInfo.FullSendBufferBehindClosedWindowIsRwndLimited` |
-| 4d133e0 | A-N3-l2s `fin_ok` | checker: the RST answering a segment after the close is not an RST on an open connection (above) | (test scripts) |
+| 4d133e0 | A-N3-l2s `fin_ok` | checker: the RST answering a segment after the close is not an RST on an open connection (above) | `tests/interop/m1_pcap_summary_check.py` (484e628, ctest `interop.m1_pcap_summary_check`): the exempt RST and four RSTs that must still count |
 | 2441a7a | B-sack1-ts1-ws0-s2l (run4): utcp-bulk exited while the stack's connection was in TIME-WAIT; Linux's FIN, sent 4 times, was dropped at `utcp0` (tx_dropped 4) and never ACKed, so `fin_ok` failed | `finish_closing` also waits until no TIME-WAIT entry is left (at most 2 s, which covers three FIN retransmissions), so a retransmitted FIN is ACKed again | `backend_transport_check --expect-stack` (`finish_closing` re-sends the FIN after 200 ms and expects a second ACK) |
 | f960663 | all rows | `--stats FILE` for the utcp backend (the stack's counters for the rows) | `backend_transport_check` stats_file check |
 
@@ -385,10 +481,17 @@ counted 999). E prechecks each public site up to 3 times and records a replaceme
 - Known and assigned to M2a, not fixed here: spurious fast retransmissions of the stack sender
   under duplication and reordering (A-N3-s2l, A-N2-s2l) and RTO repair of lost retransmissions
   (A-N1-s2l, A-N4-s2l).
-- The D-SACK-related `TCPSACKDiscard` of a Linux sender is 5.0 (N3) and 6.8 (N4) times the
-  Linux→Linux count. The cause is explained above (the stack sends every D-SACK and one ACK
-  per batch, so none are merged or overtaken); the stack sends nothing a Linux receiver would
-  not also send.
+- The D-SACK-related `TCPSACKDiscard` of a Linux sender is 5.0 times the Linux→Linux count
+  under N3, explained above (the stack sends every D-SACK and fewer ACKs, so none are merged or
+  overtaken). Under N4 the count is a race between two running counters and varied from 59 to
+  2177 over six runs with the stack (0 to 127 over four with Linux); no ratio is claimed. The
+  stack sends nothing a Linux receiver would not also send.
+- run8's A-N4-l2s: the replay predicted one `TCPDSACKIgnoredDubious` more than the kernel
+  counted (above); the replay cannot order an ACK and a retransmission 83-97 us apart as the
+  kernel did. The row stays failed; the check is unchanged.
+- The stack's receiver pulls the right window edge back by less than 2^wscale (above). This
+  is the deliberate rounding of DESIGN §4.10, not an open item; listed here because Linux
+  does not do it.
 - The Linux differences listed by m1-tcp-core and m1-tcp-robust that no run exercised on the
   wire (above) remain open.
 
