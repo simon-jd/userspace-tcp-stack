@@ -506,6 +506,7 @@ int main_(int argc, const char* const* argv) {
   if (!app.done()) {
     app.abort("interrupted");
   }
+  (*transport)->finish_closing(finish_closing_max);
   const JsonLine summary = app.summary();
   if (jsonl) {
     jsonl->write(summary);

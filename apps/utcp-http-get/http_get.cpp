@@ -492,6 +492,7 @@ int main_(int argc, const char* const* argv) {
   if (!get.done()) {
     get.abort("interrupted");
   }
+  (*transport)->finish_closing(finish_closing_max);  // the server's FIN usually follows ours
   bool write_ok = true;
   if (out != nullptr && out != stdout) {
     write_ok = std::fclose(out) == 0;

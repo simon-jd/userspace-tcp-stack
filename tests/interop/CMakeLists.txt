@@ -16,3 +16,9 @@ endforeach()
 # signals, device errors. The pcap file goes to the build directory.
 add_test(NAME interop.backend_transport_check
          COMMAND backend_transport_check --tmp ${CMAKE_CURRENT_BINARY_DIR})
+# The same with the checks that need the Stack (ICMP and UDP echo, EAGAIN,
+# receive clock, outside-run drain, finish_closing), with its own directory
+# for the files so that the two can run in parallel.
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/stack)
+add_test(NAME interop.backend_transport_check_stack
+         COMMAND backend_transport_check --expect-stack --tmp ${CMAKE_CURRENT_BINARY_DIR}/stack)

@@ -122,6 +122,12 @@ public:
   // can be called again after stop(), not after a signal.
   void run(Handler& h) override;
   void stop() override { stop_requested_ = true; }
+  // Runs the loop without a Handler until the stack holds no TCP connection
+  // the program has closed (Stack::debug_usage().tcp_slots equals the
+  // listeners and connections still open; TIME-WAIT entries are not slots)
+  // and nothing waits for the device, or `max` passed, or a signal or device
+  // error stopped the loop.
+  void finish_closing(Duration max) override;
   [[nodiscard]] Time now() const override;
   [[nodiscard]] const LoopStats* loop_stats() const override { return &loop_.stats(); }
 
@@ -166,6 +172,7 @@ private:
   void device_failed();
   void drain_tx();
   void deliver_events();
+  [[nodiscard]] bool closing_done() const;
   void deliver(ConnId id, std::uint16_t ev);
   void accept_all(ConnId listener);
   void fire_timers(Time now);

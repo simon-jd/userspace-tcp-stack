@@ -105,6 +105,13 @@ public:
   // Delivers events and runs timers until stop().
   virtual void run(Handler& h) = 0;
   virtual void stop() = 0;
+  // Called after run() returned, before the program exits: lets the
+  // connections the program closed finish closing (ACK the peer's FIN,
+  // retransmit our FIN) as the kernel does after close(2) and exit. Returns
+  // when none is left (TIME-WAIT counts as done), after `max`, or on a stop
+  // signal. Timers still armed fire; no Handler callback is made. The kernel
+  // backend and the fake have nothing to do.
+  virtual void finish_closing(Duration /*max*/) {}
   // The transport's clock (CLOCK_MONOTONIC for the real ones).
   [[nodiscard]] virtual Time now() const = 0;
   // The statistics of the EventLoop the transport runs on, wake-up lateness
@@ -115,6 +122,9 @@ public:
 // UtcpTransport configuration (m1-backend). The programs (m1-apps) fill it
 // from their command lines: --pcap FILE into pcap_file, --spin-us N into
 // spin_us, --profile into stack.tcp, and so on.
+// How long the programs wait in finish_closing before they exit.
+inline constexpr Duration finish_closing_max = std::chrono::seconds(2);
+
 struct UtcpTransportOptions {
   StackConfig stack;            // local_addr, mtu (must equal the TUN MTU), profile, seed, ...
   std::string tun = "utcp0";    // TUN interface, IFF_TUN | IFF_NO_PI (§8.1)

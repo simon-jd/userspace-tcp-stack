@@ -409,6 +409,35 @@ void UtcpTransport::run(Handler& h) {
   handler_ = nullptr;
 }
 
+bool UtcpTransport::closing_done() const {
+  const auto open = static_cast<std::uint32_t>(std::ranges::count_if(
+      socks_, [](const auto& kv) { return kv.second.kind != Kind::udp; }));
+  return stack_.debug_usage().tcp_slots <= open && !pending_tx_;
+}
+
+void UtcpTransport::finish_closing(Duration max) {
+  UTCP_CHECK(!in_run_);  // not from a callback
+  Handler none;
+  handler_ = &none;
+  in_run_ = true;
+  stop_requested_ = dev_.device_failed;
+  bool expired = false;
+  const TimerToken limit = add_oneshot(max, [&expired] { expired = true; });
+  stack_.advance(mono_now());
+  for (;;) {
+    deliver_events();
+    drain_tx();
+    flush_pcap();
+    if (expired || stop_requested_ || loop_.stopped() || closing_done()) {
+      break;
+    }
+    loop_.run_once();
+  }
+  cancel_timer(limit);
+  in_run_ = false;
+  handler_ = nullptr;
+}
+
 Time UtcpTransport::now() const { return mono_now(); }
 
 void UtcpTransport::outside_run_enter() {

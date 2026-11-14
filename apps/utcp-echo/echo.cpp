@@ -574,6 +574,7 @@ int main_(int argc, const char* const* argv) {
   if (!client.done()) {
     client.abort("interrupted");
   }
+  t.finish_closing(finish_closing_max);
   std::printf("%s\n", client.summary().str().c_str());
   if (!client.result().ok) {
     std::fprintf(stderr, "utcp-echo: failed: %s\n", client.result().first_error.c_str());
