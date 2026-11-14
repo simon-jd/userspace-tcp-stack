@@ -159,7 +159,9 @@ TEST(TcpRfc5961, AckBelowMaxSndWndGetsChallengeAck) {
 }
 
 // §4.7 limiter: ten out-of-window pure ACKs within 100 ms draw one ACK
-// (TcpExtTCPACKSkippedSeq counts the rest); after 500 ms another goes out.
+// (TcpExtTCPACKSkippedSeq counts the rest); one 490 ms after the first ACK is
+// still suppressed, one exactly 500 ms after it goes out (Linux
+// __tcp_oow_rate_limited: elapsed < tcp_invalid_ratelimit is limited).
 TEST(TcpRfc5961, OutOfWindowPureAcksAreRateLimited) {
   for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
     SCOPED_TRACE(name(profile));
@@ -175,11 +177,18 @@ TEST(TcpRfc5961, OutOfWindowPureAcksAreRateLimited) {
     }
     EXPECT_EQ(acks, 1u);
     EXPECT_EQ(c.stack().stats().TcpExtTCPACKSkippedSeq, 9u);
-    c.d().run_for(500ms);
+    c.d().run_for(390ms);  // 490 ms after the first ACK
+    t::TcpSpec early = c.spec(w::tcp_ack);
+    early.seq = c.nxt + far;
+    c.send(early);
+    EXPECT_EQ(pure_acks(c.out()), 0u);
+    EXPECT_EQ(c.stack().stats().TcpExtTCPACKSkippedSeq, 10u);
+    c.d().run_for(10ms);  // 500 ms after the first ACK
     t::TcpSpec a = c.spec(w::tcp_ack);
     a.seq = c.nxt - 5000;  // below RCV.NXT
     c.send(a);
     EXPECT_EQ(pure_acks(c.out()), 1u);
+    EXPECT_EQ(c.stack().stats().TcpExtTCPACKSkippedSeq, 10u);
     c.stack().debug_check();
   }
 }
@@ -254,13 +263,22 @@ TEST(TcpRfc5961, ChallengeAcksLimitedPerConnection) {
     ASSERT_EQ(reply2.size(), 1u);
     EXPECT_EQ(reply2[0].v.h.ack, c2.nxt);
     EXPECT_EQ(reply2[0].v.h.dport, 40001);
-    // 500 ms after the first, the next one is answered.
-    c.d().run_for(500ms);
+    // 490 ms after the first challenge ACK the next one is still suppressed;
+    // exactly 500 ms after it, the next one is answered.
+    c.d().run_for(390ms);
+    t::TcpSpec early = c.spec(w::tcp_rst);
+    early.seq = c.nxt + 1;
+    c.send(early);
+    EXPECT_EQ(pure_acks(c.out()), 0u);
+    EXPECT_EQ(c.stack().stats().TcpExtTCPChallengeACK, 2u);
+    EXPECT_EQ(c.stack().stats().TcpExtTCPACKSkippedChallenge, 10u);
+    c.d().run_for(10ms);
     t::TcpSpec rst = c.spec(w::tcp_rst);
     rst.seq = c.nxt + 1;
     c.send(rst);
     EXPECT_EQ(pure_acks(c.out()), 1u);
     EXPECT_EQ(c.stack().stats().TcpExtTCPChallengeACK, 3u);
+    EXPECT_EQ(c.stack().stats().TcpExtTCPACKSkippedChallenge, 10u);
     EXPECT_EQ(state(c.stack(), c.h), TcpState::established);
     EXPECT_EQ(state(c.stack(), c2.h), TcpState::established);
     c.stack().debug_check();

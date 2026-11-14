@@ -90,7 +90,7 @@ enum class Kind : std::uint8_t {
   ack_below_window,
   oow_ack_burst,     // 10 out-of-window pure ACKs within 100 ms
   dup_data_burst,    // 10 duplicate data segments within 100 ms
-  rst_burst,         // 5 in-window RSTs within 100 ms
+  rst_burst,         // 6 in-window RSTs 98 ms apart, the last 490 ms after the first
 };
 
 TEST(TcpRfc5961Sim, ForgedSegmentsDuringATransfer) {
@@ -155,7 +155,7 @@ TEST(TcpRfc5961Sim, ForgedSegmentsDuringATransfer) {
         static const std::vector<std::byte> junk(1000, std::byte{0x5a});
         add(Kind::dup_data_burst, 10, 10ms,
             [&] { return v.forge(wire::tcp_ack, v.rcv_nxt - 3000, v.a_ack, junk); });
-        add(Kind::rst_burst, 5, 20ms, [&] { return v.forge(wire::tcp_rst, v.in_window(), Seq32(0)); });
+        add(Kind::rst_burst, 6, 98ms, [&] { return v.forge(wire::tcp_rst, v.in_window(), Seq32(0)); });
       };
       const Outcome o = run_sim(s, spec);
       ASSERT_TRUE(o.ok()) << o.violations();
@@ -208,7 +208,7 @@ TEST(TcpRfc5961Sim, ForgedSegmentsDuringATransfer) {
             break;
           case Kind::rst_burst:  // at most one challenge ACK per 500 ms
             EXPECT_EQ(challenge, 1u);
-            EXPECT_EQ(skipped_challenge, 4u);
+            EXPECT_EQ(skipped_challenge, 5u);
             EXPECT_EQ(out, 1u);
             break;
         }
