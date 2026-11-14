@@ -15,6 +15,9 @@
 //                   header is on disk right after open, and the records
 //                   before the transport is destroyed (a killed process
 //                   keeps them)
+//   stats_file      with stats_file set, the destructor writes one JSON line
+//                   with every StackStats field and the device counters
+//                   (3 datagrams read: IpInReceives 3, dev_rx_datagrams 3)
 //   signal          SIGTERM ends run() through the EventLoop's signalfd
 //   device_hup      the device's peer closing ends run() (device_failed)
 //   open_missing    open() on a TUN interface that does not exist fails at
@@ -393,6 +396,42 @@ void check_device_rx_pcap(const std::filesystem::path& dir) {
                                  "the bytes read"
                                : final_problem);
   std::filesystem::remove(pcap);
+}
+
+void check_stats_file(const std::filesystem::path& dir) {
+  const std::filesystem::path file = dir / "backend_transport_check.stats.json";
+  std::filesystem::remove(file);
+  {
+    Pair p;
+    UtcpTransportOptions o = options();
+    o.stats_file = file.string();
+    auto t = attach(p, o);
+    for (const std::size_t n : {20u, 40u, 60u}) {
+      const std::vector<std::byte> d(n, std::byte{0});  // version 0: IpInHdrErrors
+      if (!p.write_theirs(d)) {
+        expect(false, "stats_file", "write to the socketpair failed");
+        return;
+      }
+    }
+    t->add_oneshot(30ms, [&] { t->stop(); });
+    Recorder h;
+    h.t = t.get();
+    t->run(h);
+    expect(!std::filesystem::exists(file), "stats_file", "nothing is written before destruction");
+  }
+  std::ifstream in(file);
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const bool ok = text.starts_with("{\"ev\":\"stack_stats\",\"") && text.ends_with("}\n") &&
+                  std::ranges::count(text, '\n') == 1 &&
+                  text.contains("\"IpInReceives\":3,") && text.contains("\"IpInHdrErrors\":3,") &&
+                  text.contains("\"TcpRetransSegs\":0,") &&
+                  text.contains("\"dev_rx_datagrams\":3,") &&
+                  text.contains("\"dev_device_failed\":false}");
+  expect(ok, "stats_file",
+         ok ? "one JSON line with IpInReceives 3, IpInHdrErrors 3, TcpRetransSegs 0, "
+              "dev_rx_datagrams 3"
+            : "unexpected content: " + text);
+  std::filesystem::remove(file);
 }
 
 void check_signal() {
@@ -801,6 +840,7 @@ int main(int argc, char** argv) {
   check_timers_and_rerun();
   check_timer_ties();
   check_device_rx_pcap(*args->get("tmp"));
+  check_stats_file(*args->get("tmp"));
   check_signal();
   check_device_hup();
   check_open_missing();

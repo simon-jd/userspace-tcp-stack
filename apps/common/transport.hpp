@@ -119,6 +119,7 @@ struct UtcpTransportOptions {
   StackConfig stack;            // local_addr, mtu (must equal the TUN MTU), profile, seed, ...
   std::string tun = "utcp0";    // TUN interface, IFF_TUN | IFF_NO_PI (§8.1)
   std::string pcap_file;        // non-empty: write what crosses the TUN (CLOCK_REALTIME, §10.2)
+  std::string stats_file;       // non-empty: write StackStats and DeviceStats here at destruction
   std::uint32_t spin_us = 0;    // --spin-us: busy-poll the last N us before a deadline (§8.3)
   bool seed_from_getrandom = true;  // fill stack.seed from getrandom(2) (§3.8)
 };

@@ -20,8 +20,10 @@
 #include <format>
 #include <utility>
 
+#include "common/jsonl.hpp"
 #include "utcp/check.hpp"
 #include "utcp/pcap.hpp"
+#include "utcp/stats.hpp"
 #include "utcp/tun_device.hpp"
 
 namespace utcp::app {
@@ -226,6 +228,14 @@ UtcpTransport::UtcpTransport(int fd, const UtcpTransportOptions& opts)
 }
 
 UtcpTransport::~UtcpTransport() {
+  if (!opt_.stats_file.empty()) {
+    const std::string line = stats_json() + "\n";
+    std::FILE* f = std::fopen(opt_.stats_file.c_str(), "w");
+    const bool ok = f != nullptr && std::fwrite(line.data(), 1, line.size(), f) == line.size();
+    if (f == nullptr || std::fclose(f) != 0 || !ok) {
+      std::fprintf(stderr, "utcp backend: cannot write --stats %s\n", opt_.stats_file.c_str());
+    }
+  }
   pending_tx_.reset();  // every TxPacket goes back before the Stack (stack.hpp)
   if (pcap_) {
     pcap_->close();
@@ -234,6 +244,26 @@ UtcpTransport::~UtcpTransport() {
     loop_.unwatch(fd_);
   }
   ::close(fd_);
+}
+
+std::string UtcpTransport::stats_json() const {
+  JsonLine line;
+  line.add("ev", "stack_stats");
+  for_each_stat(stack_.stats(), [&](std::string_view name, std::uint64_t v) { line.add(name, v); });
+  line.add("dev_rx_datagrams", dev_.rx_datagrams)
+      .add("dev_rx_bytes", dev_.rx_bytes)
+      .add("dev_rx_errors", dev_.rx_errors)
+      .add("dev_tx_datagrams", dev_.tx_datagrams)
+      .add("dev_tx_bytes", dev_.tx_bytes)
+      .add("dev_tx_eagain", dev_.tx_eagain)
+      .add("dev_tx_errors", dev_.tx_errors)
+      .add("dev_last_tx_errno", dev_.last_tx_errno)
+      .add("dev_rx_batches", dev_.rx_batches)
+      .add("dev_rx_batch_limit", dev_.rx_batch_limit)
+      .add("dev_pcap_records", dev_.pcap_records)
+      .add("dev_pcap_failed", dev_.pcap_failed)
+      .add("dev_device_failed", dev_.device_failed);
+  return line.str();
 }
 
 // --- Device.

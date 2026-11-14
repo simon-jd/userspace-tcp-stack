@@ -133,6 +133,12 @@ public:
   [[nodiscard]] int stop_signal() const noexcept { return loop_.stop_signal(); }
   // Writes the pcap buffer to the file now (run() does it before every wait).
   void flush_pcap();
+  // One JSON object: "ev":"stack_stats", every StackStats field under its
+  // name (for_each_stat order), then every DeviceStats field with the prefix
+  // "dev_". The destructor writes it, with a newline, to opts.stats_file if
+  // that is set (failures go to stderr), so a program that ends normally or
+  // by SIGINT/SIGTERM leaves the counters of the whole run.
+  [[nodiscard]] std::string stats_json() const;
 
 private:
   struct PcapWriter;
