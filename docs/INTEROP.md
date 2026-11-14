@@ -527,14 +527,15 @@ counted 999). E prechecks each public site up to 3 times and records a replaceme
   as the captures show, but not explained further.
 - DESIGN §3 says host batching does not change protocol decisions such as ACK frequency. On the
   receive path it does (one ACK per TUN batch, "ACK frequency" above). Reported to the
-  coordinator; DESIGN is not changed here.
+  coordinator; DESIGN is not changed here. Coordinator decision (2026-11-14): assigned to M2
+  (m2-found): the receiver's ACK frequency must not depend on the host's batch size.
 - Known and assigned to M2a, not fixed here: spurious fast retransmissions of the stack sender
   under duplication and reordering (A-N3-s2l, A-N2-s2l) and RTO repair of lost retransmissions
   (A-N1-s2l, A-N4-s2l).
 - The D-SACK-related `TCPSACKDiscard` of a Linux sender is 5.0 times the Linux→Linux count
   under N3, explained above (the stack sends every D-SACK and fewer ACKs, so none are merged or
-  overtaken). Under N4 the count is a race between two running counters and varied from 59 to
-  2177 over six runs with the stack (0 to 127 over four with Linux); no ratio is claimed. The
+  overtaken). Under N4 the count is a race between two running counters and varied from 4 to
+  5743 over twelve runs with the stack (0 to 127 over four with Linux); no ratio is claimed. The
   stack sends nothing a Linux receiver would not also send.
 - run8's and run9's A-N4-l2s: the replay predicted one `TCPDSACKIgnoredDubious` more than the
   kernel counted (2494 against 2493; 5280 against 5279). The captured retransmissions equal
@@ -544,7 +545,10 @@ counted 999). E prechecks each public site up to 3 times and records a replaceme
   which one. Both rows stay failed and the check is unchanged (exact equality). After 1f93aa5
   these are the only mismatches among the 27 retained captures and the eight rows of run9-run11.
   A check that accepts the replay minus such ACKs is possible but needs a bound on how late the
-  kernel processes an ACK. That decision is left to the coordinator.
+  kernel processes an ACK. Coordinator decision (2026-11-14): the check stays exact and both
+  rows stay failed as recorded. They do not block M1 acceptance: `TCPSACKDiscard` matched the
+  replay in every run, the matrix row (run6) passes, and the one-count difference has a
+  mechanism in the Linux source that can only lower the kernel's count.
 - The stack's receiver pulls the right window edge back by less than 2^wscale (above). This
   is the deliberate rounding of DESIGN §4.10, not an open item; listed here because Linux
   does not do it.
