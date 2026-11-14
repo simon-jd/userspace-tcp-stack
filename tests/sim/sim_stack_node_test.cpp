@@ -1,6 +1,6 @@
-// StackNode scenarios over UDP, ICMP and TCP. They need a working Stack: the
-// TCP-less parts (IPv4, UDP, ICMP) come with m1-ip and TCP with m1-tcp-core,
-// so they are disabled until those are merged.
+// StackNode scenarios over UDP, ICMP and TCP. The UDP and ICMP ones run on
+// the Stack's IPv4, UDP and ICMP; the TCP one needs the TCP engine and stays
+// disabled until it exists (see that test).
 #include <gtest/gtest.h>
 
 #include "utcp/sim/datagram.hpp"
@@ -59,8 +59,7 @@ TEST(SimStackNode, ConfigFollowsTheScenario) {
   EXPECT_NE(stack_config(s, 0).seed, c.seed);
 }
 
-// TODO(m1-ip): enable once m1-ip provides UDP in the Stack.
-TEST(SimStackNode, DISABLED_UdpEchoOverLossyPath) {
+TEST(SimStackNode, UdpEchoOverLossyPath) {
   Scenario s = two_node_scenario(2, path(5ms, 10'000), path(5ms, 10'000));
   s.udp.push_back(UdpSpec{0, 7, 0, true, 200, 1, 1400, 2ms, 10ms});
   const StackRun r = run_stack(s);
@@ -71,8 +70,7 @@ TEST(SimStackNode, DISABLED_UdpEchoOverLossyPath) {
   EXPECT_LE(r.a.udp_replies, r.b.udp_echoed);
 }
 
-// TODO(m1-ip): enable once m1-ip provides UDP and ICMP port unreachable.
-TEST(SimStackNode, DISABLED_UdpToUnboundPortQuiesces) {
+TEST(SimStackNode, UdpToUnboundPortQuiesces) {
   Scenario s = two_node_scenario(3, path(1ms), path(1ms));
   s.udp.push_back(UdpSpec{0, 9, 0, false, 5, 10, 10, 1ms, 0ms});
   const StackRun r = run_stack(s);
@@ -81,8 +79,7 @@ TEST(SimStackNode, DISABLED_UdpToUnboundPortQuiesces) {
   EXPECT_EQ(r.a.udp_replies, 0u);
 }
 
-// TODO(m1-ip): enable once m1-ip provides ICMP echo.
-TEST(SimStackNode, DISABLED_PingRepliesOverLossyPath) {
+TEST(SimStackNode, PingRepliesOverLossyPath) {
   Scenario s = two_node_scenario(4, path(2ms, 20'000), path(2ms));
   s.ping.push_back(PingSpec{0, 77, 100, 56, 10ms, 1ms});
   const StackRun r = run_stack(s);
@@ -92,8 +89,7 @@ TEST(SimStackNode, DISABLED_PingRepliesOverLossyPath) {
   EXPECT_LT(r.a.ping_replies, 100u);  // 2 % loss on the way out: some never return
 }
 
-// TODO(m1-ip): enable once m1-ip provides UDP and PMTU from frag-needed.
-TEST(SimStackNode, DISABLED_UdpThroughNarrowRouterLearnsPmtu) {
+TEST(SimStackNode, UdpThroughNarrowRouterLearnsPmtu) {
   Scenario s = two_node_scenario(5, path(1ms), path(1ms));
   LinkParams narrow = path(1ms);
   narrow.mtu = 1000;
@@ -111,7 +107,9 @@ TEST(SimStackNode, DISABLED_UdpThroughNarrowRouterLearnsPmtu) {
 // listener with backlog 1. SYNs beyond the backlog are dropped and
 // retransmitted (§3.5); the listener accepts each client, told apart by its
 // fixed client port, and every byte arrives at the right connection.
-// TODO(m1-tcp-core): enable once the Stack has the TCP engine.
+// Disabled: the Stack's TCP engine is still a stub (tcp_listen fails, so the
+// run ends with verdict `workload`). TODO(m1-tcp-core): enable once the Stack
+// has the TCP engine.
 TEST(SimStackNode, DISABLED_SharedListenerAcceptsEveryClientBeyondItsBacklog) {
   Scenario s = two_node_scenario(6, path(10ms), path(10ms));
   for (std::uint32_t i = 0; i < 4; ++i) {
