@@ -138,10 +138,8 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
         t.retrans_stamp = now;  // Linux tcp_retransmit_skb
       }
     } else {
+      // TcpExtTCPOrigDataSent is LossRecovery::on_transmit's (tx_count 1).
       t.txp.on_data_sent(o.data_off, o.data_len, mss_now(t));
-      if (o.data_len > 0) {
-        ++st.TcpExtTCPOrigDataSent;
-      }
       t.lsndtime = now;
       chrono_start(t, ChronoType::busy, now);
     }

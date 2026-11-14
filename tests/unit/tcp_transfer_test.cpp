@@ -469,4 +469,53 @@ TEST(TcpTransfer, AdvancingAckWithOlderSeqTakesItsWindow) {
   c.stack().debug_check();
 }
 
+
+// TcpExtTCPOrigDataSent counts each segment of new data (and a FIN sent
+// for the first time) once, as Linux tcp_event_new_data_sent; the interop
+// run A-N3-s2l showed 1,381,424 for 690,715 segments (counted twice).
+TEST(TcpTransfer, OrigDataSentCountsEachNewSegmentOnce) {
+  t::TcpHarness h(t::TcpHarness::default_config(Side::a), t::TcpHarness::default_config(Side::b));
+  h.set_delay(Side::a, 500us);
+  h.set_delay(Side::b, 500us);
+  const auto p = open(h);
+  ASSERT_TRUE(p);
+  h.clear_log();
+  const std::uint64_t before = h.a().stats().TcpExtTCPOrigDataSent;
+  const t::Bytes data = t::pattern(100'000, 3);
+  std::size_t sent = 0;
+  std::size_t segs = 0;
+  std::array<std::byte, 65536> buf{};
+  bool shut = false;
+  for (int i = 0; i < 2000; ++i) {
+    while (sent < data.size()) {
+      const auto r = h.a().tcp_send(p->client, std::span(data).subspan(sent));
+      if (!r) {
+        break;
+      }
+      sent += *r;
+    }
+    if (sent == data.size() && !shut) {
+      shut = h.a().tcp_shutdown(p->client, utcp::Shutdown::write).has_value();
+    }
+    while (h.b().tcp_recv(p->server, buf).value_or(0) > 0) {
+    }
+    h.run_for(1ms);
+    for (const auto& e : h.log()) {
+      if (e.from != Side::a) {
+        continue;
+      }
+      const auto q = parse(e.bytes);
+      if (q && (!q->v.payload.empty() || has(q->v, w::tcp_fin))) {
+        ++segs;
+      }
+    }
+    h.clear_log();
+  }
+  ASSERT_TRUE(shut);
+  EXPECT_EQ(h.a().stats().TcpRetransSegs, 0u);
+  EXPECT_GE(segs, 100'000u / 1460u);
+  EXPECT_EQ(h.a().stats().TcpExtTCPOrigDataSent - before, segs);
+  h.a().debug_check();
+}
+
 }  // namespace
