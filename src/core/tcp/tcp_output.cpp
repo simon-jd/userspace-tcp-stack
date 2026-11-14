@@ -477,6 +477,14 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         cc.max_packets_out = k.packets_out;
         t.cwnd_usage_seq = t.sndq.nxt();
       }
+      // The network starves because of the send buffer (§10.1): data was
+      // sent, cwnd does not limit, nothing unsent is left and the
+      // application was refused (SOCK_NOSPACE). A refused write with data
+      // still held by the window or cwnd stays rwnd_limited or busy.
+      if (!is_cwnd_limited(cc) && t.sndq.nxt() == t.sndq.end() && t.send_blocked &&
+          (t.state == TcpState::established || t.state == TcpState::close_wait)) {
+        chrono_start(t, ChronoType::sndbuf_limited, now);
+      }
     }
     RecoveryCtx rc = rctx(t, now);
     t.recovery.on_burst_end(rc);

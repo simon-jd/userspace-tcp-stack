@@ -32,8 +32,8 @@ public:
 
 // §10.1 chrono (Linux tcp_chrono_start/stop): a receiver that stops reading
 // makes the sender rwnd_limited (its send buffer holds all the data, so the
-// application is never refused: sndbuf_limited, which would take over, stays
-// 0) and the persist timer probes the zero window
+// application is never refused; FullSendBufferBehindClosedWindowIsRwndLimited
+// covers a refused one) and the persist timer probes the zero window
 // (§4.9: <SEQ=SND.UNA-1>, TxKind::zwp); once it reads again the transfer
 // finishes and the clocks stop with the queues empty.
 TEST(TcpInfo, RwndLimitedAndZeroWindowProbes) {
@@ -113,7 +113,52 @@ TEST(TcpInfo, RwndLimitedAndZeroWindowProbes) {
   h.b().debug_check();
 }
 
-// §10.1: an application refused by a full send buffer makes the connection
+// §10.1 (Linux tcp_cwnd_validate): a full send buffer behind a closed
+// receive window is rwnd_limited, not sndbuf_limited. The application is
+// refused, but data is still unsent because of the window, so the send
+// buffer is not what stops the transfer (interop case A-pause200-s2l: the
+// stack sender reported 17.7 s sndbuf_limited and 0.84 s rwnd_limited where
+// a Linux sender reported 0 s and 18.9 s).
+TEST(TcpInfo, FullSendBufferBehindClosedWindowIsRwndLimited) {
+  t::TcpHarness h(config(Side::a), config(Side::b));
+  h.set_delay(Side::a, 5ms);
+  h.set_delay(Side::b, 5ms);
+  utcp::TcpSocketOptions o;
+  o.rcv_buf = 64 * 1024;
+  const auto l = h.b().tcp_listen(Endpoint{{}, port}, 4, o);
+  ASSERT_TRUE(l);
+  utcp::TcpSocketOptions small;
+  small.snd_buf = 32 * 1024;
+  const auto c = h.a().tcp_connect(Endpoint{h.addr(Side::b), port}, small);
+  ASSERT_TRUE(c);
+  h.run_for(100ms);
+  const auto s = h.b().tcp_accept(*l);
+  ASSERT_TRUE(s);
+  const t::Bytes data = t::pattern(1'000'000, 10);
+  std::size_t sent = 0;
+  bool refused = false;
+  for (int i = 0; i < 300; ++i) {  // 3 s, nobody reads, the writer keeps trying
+    const auto n = h.a().tcp_send(*c, std::span(data).subspan(sent));
+    if (n) {
+      sent += *n;
+    } else {
+      refused = true;
+    }
+    h.run_for(10ms);
+  }
+  ASSERT_TRUE(refused);
+  ASSERT_LT(sent, data.size());
+  const auto ia = h.a().tcp_info(*c);
+  EXPECT_EQ(ia->snd_wnd, 0u);
+  EXPECT_GT(ia->notsent_bytes, 0u);
+  EXPECT_GT(ia->rwnd_limited, 2s);
+  EXPECT_EQ(ia->sndbuf_limited, Duration::zero());
+  h.a().debug_check();
+  h.b().debug_check();
+}
+
+// §10.1: an application refused by a full send buffer while everything it
+// queued has been sent (not cwnd- or window-limited) makes the connection
 // sndbuf_limited.
 TEST(TcpInfo, SndbufLimited) {
   t::TcpHarness h;
