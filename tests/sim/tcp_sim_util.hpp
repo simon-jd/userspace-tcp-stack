@@ -368,6 +368,9 @@ struct Outcome {
   std::vector<Seg> wire;  // TCP segments, egress and ingress, in order
   std::vector<StackStats> stats;
   std::vector<StackNode::Counts> counts;  // zero for AppNodes
+  // Each node's Tap::injected(), copied before the World (and its Taps) is
+  // destroyed.
+  std::vector<std::vector<Tap::Injected>> injected;
 
   [[nodiscard]] std::string violations() const {
     std::string s;
@@ -424,7 +427,8 @@ struct Outcome {
 struct RunSpec {
   // Node i of the World; default: a StackNode for the scenario.
   std::function<std::unique_ptr<Node>(const Scenario&, std::uint32_t)> make;
-  // Called with the taps (one per node) before the run.
+  // Called with the taps (one per node) before the run. The taps belong to
+  // the World and die with it: use Outcome::injected after the run.
   std::function<void(std::vector<Tap*>&)> setup;
   bool keep_trace = true;
   bool keep_wire = true;
@@ -480,6 +484,7 @@ inline Outcome run_sim(const Scenario& s, const RunSpec& spec = {}) {
     out.stats.push_back(st != nullptr ? st->stats() : StackStats{});
     auto* sn = dynamic_cast<StackNode*>(inner[i]);
     out.counts.push_back(sn != nullptr ? sn->counts() : StackNode::Counts{});
+    out.injected.push_back(taps[i]->injected());
   }
   return out;
 }

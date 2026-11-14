@@ -116,12 +116,10 @@ TEST(TcpRfc5961Sim, ForgedSegmentsDuringATransfer) {
       }
       s.conn.push_back(bulk(10'000'000, 3'000'000));
       View v;
-      Tap* tap_b = nullptr;
       // (kind, index of the first injection, count)
       std::vector<std::tuple<Kind, std::size_t, std::size_t>> plan;
       RunSpec spec;
       spec.setup = [&](std::vector<Tap*>& taps) {
-        tap_b = taps[1];
         Tap& b = *taps[1];
         b.egress = [&](Tap&, Time t, std::span<const std::byte> d) {
           if (const auto g = parse_seg(1, true, t, d)) {
@@ -163,8 +161,7 @@ TEST(TcpRfc5961Sim, ForgedSegmentsDuringATransfer) {
       ASSERT_TRUE(o.ok()) << o.violations();
       EXPECT_EQ(o.counts[1].tcp_bytes_received, 10'000'000u);
       EXPECT_EQ(o.counts[0].tcp_bytes_received, 3'000'000u);
-      ASSERT_NE(tap_b, nullptr);
-      const auto& inj = tap_b->injected();
+      const auto& inj = o.injected[1];
       for (const auto& [kind, first, count] : plan) {
         SCOPED_TRACE(static_cast<int>(kind));
         std::uint64_t challenge = 0, skipped_challenge = 0, out = 0, skipped_seq = 0, dsack = 0,
