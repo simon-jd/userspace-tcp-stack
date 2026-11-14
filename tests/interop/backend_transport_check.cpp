@@ -15,6 +15,9 @@
 //                   header is on disk right after open, and the records
 //                   before the transport is destroyed (a killed process
 //                   keeps them)
+//   stats_file      with stats_file set, the destructor writes one JSON line
+//                   with every StackStats field and the device counters
+//                   (3 datagrams read: IpInReceives 3, dev_rx_datagrams 3)
 //   signal          SIGTERM ends run() through the EventLoop's signalfd
 //   device_hup      the device's peer closing ends run() (device_failed)
 //   open_missing    open() on a TUN interface that does not exist fails at
@@ -34,6 +37,16 @@
 //                   datagram gets its own receive time (strictly increasing)
 //   outside_run_drain  udp_open, listen and a failing connect called outside
 //                   run() leave nothing in the transmit queue when they return
+//   finish_closing  the program closes an accepted connection and run()
+//                   returns; the peer's FIN arrives after that and
+//                   finish_closing ACKs it at once (without it the FIN is
+//                   never ACKed: interop case E-chunked); the peer sends its
+//                   FIN again 200 ms later, as if that ACK were lost, and the
+//                   connection, in TIME-WAIT, ACKs it again (interop case
+//                   B-sack1-ts1-ws0-s2l: the program had exited in TIME-WAIT
+//                   and the peer's 4 retransmitted FINs were never ACKed);
+//                   finish_closing returns at its limit with the TIME-WAIT
+//                   entry still there
 // With --tun IFNAME (an existing, running TUN interface, MTU 1500):
 //   open_tun        open() refuses a stack MTU that differs from the
 //                   interface's and accepts the right one
@@ -71,6 +84,7 @@
 #include "common/utcp_transport.hpp"
 #include "core/wire/icmp.hpp"
 #include "core/wire/ipv4.hpp"
+#include "core/wire/tcp.hpp"
 #include "core/wire/udp.hpp"
 #include "utcp/checksum.hpp"
 #include "utcp/event_loop.hpp"
@@ -393,6 +407,42 @@ void check_device_rx_pcap(const std::filesystem::path& dir) {
                                  "the bytes read"
                                : final_problem);
   std::filesystem::remove(pcap);
+}
+
+void check_stats_file(const std::filesystem::path& dir) {
+  const std::filesystem::path file = dir / "backend_transport_check.stats.json";
+  std::filesystem::remove(file);
+  {
+    Pair p;
+    UtcpTransportOptions o = options();
+    o.stats_file = file.string();
+    auto t = attach(p, o);
+    for (const std::size_t n : {20u, 40u, 60u}) {
+      const std::vector<std::byte> d(n, std::byte{0});  // version 0: IpInHdrErrors
+      if (!p.write_theirs(d)) {
+        expect(false, "stats_file", "write to the socketpair failed");
+        return;
+      }
+    }
+    t->add_oneshot(30ms, [&] { t->stop(); });
+    Recorder h;
+    h.t = t.get();
+    t->run(h);
+    expect(!std::filesystem::exists(file), "stats_file", "nothing is written before destruction");
+  }
+  std::ifstream in(file);
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const bool ok = text.starts_with("{\"ev\":\"stack_stats\",\"") && text.ends_with("}\n") &&
+                  std::ranges::count(text, '\n') == 1 &&
+                  text.contains("\"IpInReceives\":3,") && text.contains("\"IpInHdrErrors\":3,") &&
+                  text.contains("\"TcpRetransSegs\":0,") &&
+                  text.contains("\"dev_rx_datagrams\":3,") &&
+                  text.contains("\"dev_device_failed\":false}");
+  expect(ok, "stats_file",
+         ok ? "one JSON line with IpInReceives 3, IpInHdrErrors 3, TcpRetransSegs 0, "
+              "dev_rx_datagrams 3"
+            : "unexpected content: " + text);
+  std::filesystem::remove(file);
 }
 
 void check_signal() {
@@ -751,6 +801,121 @@ void check_outside_run_drain() {
              [&] { return outcome(t->connect(utcp::Endpoint{Ipv4Addr{}, 0}, {})); });
 }
 
+std::vector<std::byte> tcp_from_kernel(std::uint16_t sport, std::uint16_t dport, std::uint32_t seq,
+                                       std::uint32_t ack, std::uint16_t flags) {
+  wire::TcpOptions opt;
+  const bool syn = (flags & wire::tcp_syn) != 0;
+  if (syn) {
+    opt.mss = 1460;
+  }
+  std::vector<std::byte> l4(wire::tcp_header_len(opt, syn));
+  wire::write_tcp_header(l4,
+                         wire::TcpHeader{.sport = sport,
+                                         .dport = dport,
+                                         .seq = utcp::Seq32(seq),
+                                         .ack = utcp::Seq32(ack),
+                                         .window = 65535,
+                                         .flags = flags},
+                         opt, syn);
+  wire::set_l4_checksum(l4, kernel_addr, stack_addr, utcp::ip_proto_tcp);
+  return ipv4_datagram(kernel_addr, stack_addr, utcp::ip_proto_tcp, l4);
+}
+
+// The TCP segments the transport wrote to the device since the last call.
+std::vector<wire::TcpHeader> tcp_from_stack(const Pair& p) {
+  std::vector<wire::TcpHeader> out;
+  while (const auto d = p.read_theirs()) {
+    const auto ip = wire::parse_ipv4(*d);
+    if (!ip || ip->h.proto != utcp::ip_proto_tcp) {
+      continue;
+    }
+    if (const auto t = wire::parse_tcp(ip->payload, ip->h.src, ip->h.dst, true)) {
+      out.push_back(t->h);
+    }
+  }
+  return out;
+}
+
+// Interop case E-chunked: utcp-http-get closed after a chunked body and
+// exited before the server's FIN (0.15 ms later) arrived, so the server
+// retransmitted its FIN to a stack that was gone. The kernel's end here
+// opens a connection to a listener, the program closes it and stops, and the
+// kernel's FIN reaches the device only after run() returned.
+void check_finish_closing() {
+  Pair p;
+  auto t = attach(p, options());
+  constexpr std::uint16_t port = 9400, kport = 40000;
+  constexpr std::uint32_t kiss = 1000;
+  const auto l = t->listen(utcp::Endpoint{stack_addr, port}, 8, {});
+  if (!l) {
+    expect(false, "finish_closing", "listen failed");
+    return;
+  }
+  struct Closer final : utcp::app::Handler {
+    UtcpTransport* t = nullptr;
+    ConnId listener = utcp::app::no_conn;
+    bool accepted = false;
+    void on_accept(ConnId, ConnId conn) override {
+      accepted = true;
+      t->close(conn);  // FIN
+      t->close(listener);
+      t->stop();
+    }
+  } h;
+  h.t = t.get();
+  h.listener = *l;
+  const auto run_for = [&](std::chrono::milliseconds limit) {
+    const auto stop = t->add_oneshot(limit, [&] { t->stop(); });
+    t->run(h);
+    t->cancel_timer(stop);
+  };
+  (void)p.write_theirs(tcp_from_kernel(kport, port, kiss, 0, wire::tcp_syn));
+  run_for(200ms);
+  const auto synack = tcp_from_stack(p);
+  if (synack.size() != 1 || synack[0].flags != (wire::tcp_syn | wire::tcp_ack)) {
+    expect(false, "finish_closing", std::format("{} segments, no SYN-ACK", synack.size()));
+    return;
+  }
+  const std::uint32_t iss = synack[0].seq.raw();
+  (void)p.write_theirs(tcp_from_kernel(kport, port, kiss + 1, iss + 1, wire::tcp_ack));
+  run_for(2000ms);
+  const auto fin = tcp_from_stack(p);
+  const bool fin_ok = h.accepted && fin.size() == 1 && (fin[0].flags & wire::tcp_fin) != 0 &&
+                      fin[0].seq.raw() == iss + 1;
+  expect(fin_ok, "finish_closing",
+         std::format("accepted {}, then {} segment(s), the first a FIN at ISS+1: {}", h.accepted,
+                     fin.size(), fin_ok));
+  if (!fin_ok) {
+    return;
+  }
+  // The kernel's FIN, ACKing ours, after run() returned; the same FIN again
+  // 200 ms later (the kernel did not get the ACK).
+  const auto kernel_fin = tcp_from_kernel(kport, port, kiss + 1, iss + 2, wire::tcp_fin | wire::tcp_ack);
+  (void)p.write_theirs(kernel_fin);
+  std::size_t acks_before_resend = 0;
+  (void)t->add_oneshot(200ms, [&] {
+    acks_before_resend = tcp_from_stack(p).size();
+    (void)p.write_theirs(kernel_fin);
+  });
+  const Time t0 = utcp::mono_now();
+  t->finish_closing(600ms);
+  const auto took = utcp::mono_now() - t0;
+  const auto acks = tcp_from_stack(p);
+  const bool acked = acks_before_resend == 1;
+  const bool reacked = acks.size() == 1 && acks[0].flags == wire::tcp_ack &&
+                       acks[0].ack.raw() == kiss + 2 && acks[0].seq.raw() == iss + 2;
+  const auto u = t->stack().debug_usage();
+  expect(acked && reacked && took >= 590ms && took < 1000ms && u.tcp_slots == 0 &&
+             u.time_wait_entries == 1,
+         "finish_closing",
+         std::format("the peer's FIN {} ({} segments in 200 ms), its retransmission {} ({} "
+                     "segments), returned after {} us (limit 600 ms), tcp_slots {}, "
+                     "time_wait_entries {}",
+                     acked ? "ACKed" : "NOT ACKed", acks_before_resend,
+                     reacked ? "ACKed again" : "NOT ACKed", acks.size(), took.count() / 1000,
+                     u.tcp_slots, u.time_wait_entries));
+}
+
 // open() on an interface that does not exist fails at once: TUNSETIFF would
 // create a new interface that never comes up, and open() would wait 1 s for it.
 void check_open_missing() {
@@ -801,6 +966,7 @@ int main(int argc, char** argv) {
   check_timers_and_rerun();
   check_timer_ties();
   check_device_rx_pcap(*args->get("tmp"));
+  check_stats_file(*args->get("tmp"));
   check_signal();
   check_device_hup();
   check_open_missing();
@@ -810,6 +976,7 @@ int main(int argc, char** argv) {
     check_tx_eagain();
     check_rx_clock();
     check_outside_run_drain();
+    check_finish_closing();
   }
   if (const auto tun = args->get("tun")) {
     check_open_tun(*tun);

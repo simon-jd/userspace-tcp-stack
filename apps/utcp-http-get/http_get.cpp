@@ -432,7 +432,7 @@ std::expected<Options, std::string> parse_options(const CliArgs& a) {
   return o;
 }
 
-int main_(int argc, const char* const* argv) {
+int main_(int argc, const char* const* argv, const TransportFactory& make) {
   CliParser cli("utcp-http-get", "Fetch an http:// URL, print the body's SHA-256 and length.");
   add_options(cli);
   add_backend_options(cli);
@@ -476,7 +476,7 @@ int main_(int argc, const char* const* argv) {
   if (out != nullptr) {
     sink = [out](std::span<const std::byte> b) { return std::fwrite(b.data(), 1, b.size(), out) == b.size(); };
   }
-  auto transport = make_transport(*backend);
+  auto transport = make(*backend);
   if (!transport) {
     std::fprintf(stderr, "utcp-http-get: %s\n", transport.error().c_str());
     return 1;
@@ -492,6 +492,7 @@ int main_(int argc, const char* const* argv) {
   if (!get.done()) {
     get.abort("interrupted");
   }
+  (*transport)->finish_closing(finish_closing_max);  // the server's FIN usually follows ours
   bool write_ok = true;
   if (out != nullptr && out != stdout) {
     write_ok = std::fclose(out) == 0;

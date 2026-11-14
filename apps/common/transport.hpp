@@ -105,6 +105,16 @@ public:
   // Delivers events and runs timers until stop().
   virtual void run(Handler& h) = 0;
   virtual void stop() = 0;
+  // Called after run() returned, before the program exits: lets the
+  // connections the program closed finish closing (ACK the peer's FIN,
+  // retransmit our FIN) as the kernel does after close(2) and exit. A
+  // connection in TIME-WAIT is kept too, so that a peer whose FIN ACK was
+  // lost gets its retransmitted FIN ACKed (the kernel keeps TIME-WAIT for
+  // 60 s; a program cannot). Returns when none is left, after `max`, or on
+  // a stop signal. Timers still armed fire; no Handler callback is made.
+  // The kernel backend has nothing to do; the fake reports the call
+  // (FakeTransportOptions::on_finish_closing).
+  virtual void finish_closing(Duration /*max*/) {}
   // The transport's clock (CLOCK_MONOTONIC for the real ones).
   [[nodiscard]] virtual Time now() const = 0;
   // The statistics of the EventLoop the transport runs on, wake-up lateness
@@ -115,10 +125,16 @@ public:
 // UtcpTransport configuration (m1-backend). The programs (m1-apps) fill it
 // from their command lines: --pcap FILE into pcap_file, --spin-us N into
 // spin_us, --profile into stack.tcp, and so on.
+// How long the programs wait in finish_closing before they exit: an active
+// closer stays this long in TIME-WAIT, which covers a Linux peer's first
+// three FIN retransmissions (RTO 200 ms, doubling).
+inline constexpr Duration finish_closing_max = std::chrono::seconds(2);
+
 struct UtcpTransportOptions {
   StackConfig stack;            // local_addr, mtu (must equal the TUN MTU), profile, seed, ...
   std::string tun = "utcp0";    // TUN interface, IFF_TUN | IFF_NO_PI (§8.1)
   std::string pcap_file;        // non-empty: write what crosses the TUN (CLOCK_REALTIME, §10.2)
+  std::string stats_file;       // non-empty: write StackStats and DeviceStats here at destruction
   std::uint32_t spin_us = 0;    // --spin-us: busy-poll the last N us before a deadline (§8.3)
   bool seed_from_getrandom = true;  // fill stack.seed from getrandom(2) (§3.8)
 };

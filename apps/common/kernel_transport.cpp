@@ -762,6 +762,9 @@ void add_backend_options(CliParser& p) {
       .option("addr", "IP", "utcp backend: the stack's address", "198.18.0.2")
       .option("mtu", "N", "utcp backend: the TUN interface's MTU", "1500")
       .option("pcap", "FILE", "utcp backend: record the datagrams that cross the TUN")
+      .option("stats", "FILE",
+              "utcp backend: write the stack's counters (StackStats) and the device counters "
+              "as one JSON line to FILE when the program ends")
       .option("spin-us", "US", "utcp backend: busy-poll the last US microseconds before a deadline",
               "0")
       .option("seed", "N", "utcp backend: stack seed (default: getrandom)");
@@ -796,6 +799,7 @@ std::expected<BackendSelection, std::string> parse_backend_options(const CliArgs
   }
   u.stack.mtu = static_cast<std::uint16_t>(*mtu);
   u.pcap_file = a.get("pcap").value_or("");
+  u.stats_file = a.get("stats").value_or("");
   const auto spin = parse_u64(a.get("spin-us").value_or("0"));
   if (!spin || *spin > 1'000'000) {
     return std::unexpected(std::string("--spin-us must be 0..1000000"));

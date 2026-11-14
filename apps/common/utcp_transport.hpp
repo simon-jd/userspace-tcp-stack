@@ -122,6 +122,12 @@ public:
   // can be called again after stop(), not after a signal.
   void run(Handler& h) override;
   void stop() override { stop_requested_ = true; }
+  // Runs the loop without a Handler until the stack holds no TCP connection
+  // the program has closed (Stack::debug_usage().tcp_slots equals the
+  // listeners and connections still open) and no TIME-WAIT entry, and
+  // nothing waits for the device; or until `max` passed, or a signal or
+  // device error stopped the loop.
+  void finish_closing(Duration max) override;
   [[nodiscard]] Time now() const override;
   [[nodiscard]] const LoopStats* loop_stats() const override { return &loop_.stats(); }
 
@@ -133,6 +139,12 @@ public:
   [[nodiscard]] int stop_signal() const noexcept { return loop_.stop_signal(); }
   // Writes the pcap buffer to the file now (run() does it before every wait).
   void flush_pcap();
+  // One JSON object: "ev":"stack_stats", every StackStats field under its
+  // name (for_each_stat order), then every DeviceStats field with the prefix
+  // "dev_". The destructor writes it, with a newline, to opts.stats_file if
+  // that is set (failures go to stderr), so a program that ends normally or
+  // by SIGINT/SIGTERM leaves the counters of the whole run.
+  [[nodiscard]] std::string stats_json() const;
 
 private:
   struct PcapWriter;
@@ -160,6 +172,7 @@ private:
   void device_failed();
   void drain_tx();
   void deliver_events();
+  [[nodiscard]] bool closing_done() const;
   void deliver(ConnId id, std::uint16_t ev);
   void accept_all(ConnId listener);
   void fire_timers(Time now);

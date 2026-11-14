@@ -27,6 +27,7 @@
 
 #include "common/cli.hpp"
 #include "common/jsonl.hpp"
+#include "common/kernel_transport.hpp"
 #include "common/latency_hist.hpp"
 #include "common/transport.hpp"
 
@@ -165,6 +166,9 @@ private:
 };
 
 void add_options(CliParser& p);
-int main_(int argc, const char* const* argv);
+// The whole program; `make` creates the transport (tests pass a fake). The
+// client calls finish_closing after run().
+int main_(int argc, const char* const* argv,
+          const TransportFactory& make = make_transport);
 
 }  // namespace utcp::app::echo

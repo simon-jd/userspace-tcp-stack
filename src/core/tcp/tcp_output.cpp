@@ -138,10 +138,8 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
         t.retrans_stamp = now;  // Linux tcp_retransmit_skb
       }
     } else {
+      // TcpExtTCPOrigDataSent is LossRecovery::on_transmit's (tx_count 1).
       t.txp.on_data_sent(o.data_off, o.data_len, mss_now(t));
-      if (o.data_len > 0) {
-        ++st.TcpExtTCPOrigDataSent;
-      }
       t.lsndtime = now;
       chrono_start(t, ChronoType::busy, now);
     }
@@ -478,6 +476,14 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         cc.cwnd_limited = cwnd_limited;
         cc.max_packets_out = k.packets_out;
         t.cwnd_usage_seq = t.sndq.nxt();
+      }
+      // The network starves because of the send buffer (§10.1): data was
+      // sent, cwnd does not limit, nothing unsent is left and the
+      // application was refused (SOCK_NOSPACE). A refused write with data
+      // still held by the window or cwnd stays rwnd_limited or busy.
+      if (!is_cwnd_limited(cc) && t.sndq.nxt() == t.sndq.end() && t.send_blocked &&
+          (t.state == TcpState::established || t.state == TcpState::close_wait)) {
+        chrono_start(t, ChronoType::sndbuf_limited, now);
       }
     }
     RecoveryCtx rc = rctx(t, now);

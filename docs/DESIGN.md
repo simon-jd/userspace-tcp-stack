@@ -1268,7 +1268,9 @@ class Transport {
 
 Limited-time accounting follows Linux `tcp_chrono_start/stop`: exactly one of `busy`, `rwnd_limited`,
 `sndbuf_limited` runs while unsent or unacked data exists; `rwnd_limited` when transmission stopped at the
-receive window, `sndbuf_limited` when the app was refused by a full send buffer, `busy` otherwise.
+receive window, `sndbuf_limited` when a transmission left nothing unsent, cwnd did not limit it and the app had
+been refused by a full send buffer (Linux `tcp_cwnd_validate`; a refused app behind a closed window stays
+`rwnd_limited`), `busy` otherwise.
 `StackStats` holds stack counters named after Linux MIB entries (`InSegs`, `OutSegs`, `RetransSegs`, `InCsumErrors`,
 `OutRsts`, `TCPChallengeACK`, `PAWSEstab`, `TCPSACKReneging`, `TCPZeroWindowDrop`, `frag_dropped`, ...), declared in
 X-macro lists split by owning task (M1 task list).

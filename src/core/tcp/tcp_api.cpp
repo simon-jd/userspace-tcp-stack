@@ -160,8 +160,7 @@ std::expected<std::size_t, Error> TcpEngine::tcp_send(Handle h, std::span<const 
   const std::uint64_t space = t.sndq.free_space();
   const std::size_t n = t.sndq.write(data);
   if (n < data.size()) {
-    t.send_blocked = true;
-    chrono_start(t, ChronoType::sndbuf_limited, now);
+    t.send_blocked = true;  // sndbuf_limited is transmit's (tcp_cwnd_validate)
     if (n < space) {
       wait_for_chunks(t);  // the buffer had room, the ChunkPool did not
     }

@@ -399,7 +399,7 @@ void FakeTransport::run(Handler& h) {
       continue;
     }
     if (timers_.empty()) {
-      return;
+      break;
     }
     auto next = timers_.begin();
     for (auto it = timers_.begin(); it != timers_.end(); ++it) {
@@ -418,6 +418,13 @@ void FakeTransport::run(Handler& h) {
       timers_.erase(next);
     }
     cb();
+  }
+  ++runs_returned_;
+}
+
+void FakeTransport::finish_closing(Duration max) {
+  if (opt_.on_finish_closing) {
+    opt_.on_finish_closing(max, runs_returned_);
   }
 }
 

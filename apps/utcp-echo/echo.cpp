@@ -473,7 +473,7 @@ std::expected<std::uint64_t, std::string> get_u64(const CliArgs& a, const char* 
 
 }  // namespace
 
-int main_(int argc, const char* const* argv) {
+int main_(int argc, const char* const* argv, const TransportFactory& make) {
   CliParser cli("utcp-echo", "TCP echo server and client, UDP echo server.");
   add_options(cli);
   add_backend_options(cli);
@@ -506,7 +506,7 @@ int main_(int argc, const char* const* argv) {
   if (listen.has_value() == connect.has_value()) {
     return die("give exactly one of --listen and --connect");
   }
-  auto transport = make_transport(*backend);
+  auto transport = make(*backend);
   if (!transport) {
     std::fprintf(stderr, "utcp-echo: %s\n", transport.error().c_str());
     return 1;
@@ -574,6 +574,7 @@ int main_(int argc, const char* const* argv) {
   if (!client.done()) {
     client.abort("interrupted");
   }
+  t.finish_closing(finish_closing_max);
   std::printf("%s\n", client.summary().str().c_str());
   if (!client.result().ok) {
     std::fprintf(stderr, "utcp-echo: failed: %s\n", client.result().first_error.c_str());
