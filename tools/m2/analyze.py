@@ -54,6 +54,18 @@ JAIN_REPORT_DIFF = 0.05
 RUNS_PER_SIDE = 5
 RERUN_CAP = 3
 LIMITED_FLAG_FRACTION = 0.01       # sndbuf/rwnd-limited time >= 1 % of the window flags
+# Transient-dominated cells (RESULTS.md): 100 Mbit/s, 100 ms, 0 % loss, both
+# queues, for the window-based algorithms.
+TRANSIENT_CELLS = {(100, 100, 0.0, 0.5), (100, 100, 0.0, 2.0)}
+TRANSIENT_CCS = {"newreno", "reno", "cubic"}
+
+
+def transient(bw, rtt, loss, queue_bdp, cc):
+    try:
+        key = (int(bw), int(rtt), float(loss), float(queue_bdp))
+    except (TypeError, ValueError):
+        return False
+    return key in TRANSIENT_CELLS and str(cc) in TRANSIENT_CCS
 
 
 # --------------------------------------------------------------------------
@@ -776,7 +788,8 @@ def summarize_run(rundir):
         q = int(meta.get("queue_bytes", 0))
         lo_rt = lo - clock.monotonic_ns + clock.realtime_ns
         hi_rt = hi - clock.monotonic_ns + clock.realtime_ns
-        rate = float(meta["bw_mbit"]) * 1e6 if meta.get("bw_mbit") else None
+        bw = meta.get("bw_mbit", meta.get("bw"))
+        rate = float(bw) * 1e6 if bw else None
         out["queue"] = queue_check(samples, q, rate, int(meta.get("burst_bytes", 0)), lo_rt, hi_rt) if q else None
     # Captures (capture.json, made by `analyze.py captures`).
     cap = read_text(rd / "capture.json")
@@ -888,7 +901,7 @@ RUN_COLUMNS = ("campaign", "run", "cell", "bw_mbit", "rtt_ms", "loss_pct", "queu
                "ping_lost", "sndbuf_limited_frac", "rwnd_limited_frac", "sender_lateness_p99_ns",
                "sender_lateness_max_ns", "backlog_max", "netem_dropped", "tbf_dropped")
 
-CELL_COLUMNS = ("cell", "bw_mbit", "rtt_ms", "loss_pct", "queue_bdp", "cc", "impl", "status",
+CELL_COLUMNS = ("cell", "bw_mbit", "rtt_ms", "loss_pct", "queue_bdp", "cc", "impl", "transient", "status",
                 "n_counted", "n_invalid", "commits") + tuple(
     f"{m}_{s}" for m in METRICS for s in ("median", "min", "max")) + tuple(f"gap_{m}" for m in METRICS)
 
@@ -975,6 +988,8 @@ def cell_rows(pairs):
             row = {"cell": cell, "bw_mbit": m0.get("bw_mbit"), "rtt_ms": m0.get("rtt_ms"),
                    "loss_pct": m0.get("loss_pct"), "queue_bdp": m0.get("queue_bdp"), "cc": cc,
                    "impl": impl, "status": status, "n_counted": len(counted[impl]),
+                   "transient": transient(m0.get("bw_mbit"), m0.get("rtt_ms"), m0.get("loss_pct"),
+                                          m0.get("queue_bdp"), cc),
                    "n_invalid": sum(1 for r in runs if r["impl"] == impl and not r["valid"]),
                    "commits": sorted({r["meta"].get("commit", "") for r in counted[impl]})}
             for m in METRICS:

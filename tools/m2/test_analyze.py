@@ -210,6 +210,13 @@ class Basics(unittest.TestCase):
         self.assertAlmostEqual(A.jain([10, 0]), 0.5)
         self.assertAlmostEqual(A.jain([3, 1]), 16 / 20)
 
+    def test_transient_cells(self):
+        self.assertTrue(A.transient(100, 100, 0, 2, "cubic"))
+        self.assertTrue(A.transient(100, 100, 0, 0.5, "newreno"))
+        self.assertFalse(A.transient(100, 100, 0, 2, "bbr"))
+        self.assertFalse(A.transient(100, 100, 0.1, 2, "cubic"))
+        self.assertFalse(A.transient(10, 100, 0, 2, "cubic"))
+
     def test_cpu_list(self):
         self.assertEqual(A.cpu_list("8,9"), [8, 9])
         self.assertEqual(A.cpu_list("8-11"), [8, 9, 10, 11])
@@ -527,6 +534,7 @@ class Tables(unittest.TestCase):
             row = dict(zip(hdr, cells[2].split(",")))  # utcp sorts after linux
             self.assertEqual(row["impl"], "utcp")
             self.assertEqual(row["status"], "ok")
+            self.assertEqual(row["transient"], "0")
             self.assertEqual(row["n_counted"], "5")
             self.assertEqual(row["n_invalid"], "1")
             self.assertEqual(row["gap_goodput_bps"], "gap")

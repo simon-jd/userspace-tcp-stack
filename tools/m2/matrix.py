@@ -232,6 +232,7 @@ def one_run(slot, campaign, run, spec, smeta=None):
         "ifaces": slot.ifs, "rcv_ip": slot.rcv_ip, "snd_ip": slot.snd_ip,
         "queue_bytes": int(shp["queue_bytes"]), "burst_bytes": int(shp["burst_bytes"]),
         "bdp_bytes": int(shp["bdp_bytes"]),
+        "bw_mbit": float(spec["bw"]), "rtt_ms": float(spec["rtt"]), "loss_pct": float(spec.get("loss") or 0),
         "netem": [l for l in shape.splitlines() if " netem " in l and l.startswith("shape:")][0].split(" root ")[1],
         "tbf": [l for l in shape.splitlines() if " tbf " in l and l.startswith("shape:")][0].split(" root ")[1],
         "iproute2": sh(["docker", "exec", slot.r1, "tc", "-V"]).strip(),
@@ -279,6 +280,15 @@ def one_run(slot, campaign, run, spec, smeta=None):
                  "receiver exit", timeout=60)
     except RuntimeError:
         dexec(slot.rcv, "pkill -x utcp-bulk", check=False)
+    # The close (FIN, its retransmissions after a loss) can outlast the
+    # processes; captures stop only after both ends left every state but
+    # TIME-WAIT (the stack's end is not in snd's socket table).
+    for c in (slot.snd, slot.rcv):
+        try:
+            wait_for(c, f"! ss -Htn state connected exclude time-wait '( dport = :{PORT} or sport = :{PORT} )'"
+                        " | grep -q .", "connection closed", timeout=30)
+        except RuntimeError as e:
+            log(f"{run}: {e}")
     time.sleep(0.5)
     dexec(slot.snd, "pkill -INT -x ping", check=False)
     dexec(slot.r2, "kill $(cat /run/utcp-tbf-sampler.pid)", check=False)
