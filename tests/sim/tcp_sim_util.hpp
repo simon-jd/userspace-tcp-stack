@@ -113,13 +113,20 @@ public:
   struct Injected {
     Time at;
     std::vector<std::byte> bytes;
+    std::function<std::vector<std::byte>()> build;  // if set, makes `bytes` at delivery
     bool delivered = false;
     Time t;  // when delivered
     StackStats before, after;
   };
   // Delivers `d` at the first advance at or after `t`. Returns its index.
   std::size_t inject_at(Time t, std::vector<std::byte> d) {
-    injected_.push_back(Injected{t, std::move(d), false, Time{}, {}, {}});
+    injected_.push_back(Injected{t, std::move(d), {}, false, Time{}, {}, {}});
+    return injected_.size() - 1;
+  }
+  // As above, with the datagram built at delivery time (from what the test
+  // has seen on the wire by then).
+  std::size_t inject_at(Time t, std::function<std::vector<std::byte>()> build) {
+    injected_.push_back(Injected{t, {}, std::move(build), false, Time{}, {}, {}});
     return injected_.size() - 1;
   }
   [[nodiscard]] const std::vector<Injected>& injected() const noexcept { return injected_; }
@@ -141,6 +148,9 @@ public:
       if (!i.delivered && i.at <= now) {
         i.delivered = true;
         i.t = now;
+        if (i.build) {
+          i.bytes = i.build();
+        }
         i.before = stack_->stats();
         inner_->receive(now, i.bytes);
         i.after = stack_->stats();
