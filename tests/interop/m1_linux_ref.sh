@@ -8,6 +8,8 @@
 # the Linux->stack cases, with a Linux receiver instead of the stack.
 #
 #   R-N0-l2l, R-N1-l2l, R-N3-l2l, R-N4-l2l
+#   R-pause200-l2l, R-pause500-l2l  100 MB under N0, the receiver with
+#                                   --recv-pause 200:1048576 / 500:1048576
 #
 # Records the same files as m1_bulk.sh (record.sh before and after: the
 # peer's nstat is the sender's; a capture of the peer's interface), plus
@@ -18,7 +20,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/m1_lib.sh"
 
 port=5002
 
-all_cases() { printf '%s\n' R-N0-l2l R-N1-l2l R-N3-l2l R-N4-l2l; }
+all_cases() { printf '%s\n' R-N0-l2l R-N1-l2l R-N3-l2l R-N4-l2l R-pause200-l2l R-pause500-l2l; }
 
 netem_params() {
   case $1 in
@@ -32,8 +34,13 @@ netem_params() {
 
 ref_case() {
   local c=$1
-  local netem=${c#R-}
+  local netem=${c#R-} bytes=1G bytes_n=1000000000 recv_extra=() opts=default
   netem=${netem%%-*}
+  if [[ $netem == pause* ]]; then
+    recv_extra=(--recv-pause "${netem#pause}:1048576")
+    opts="recv-pause ${netem#pause}:1048576"
+    netem=N0 bytes=100M bytes_n=100000000
+  fi
   m1_peer_for default
   m1_pmtu down
   m1_case_dir "$c"
@@ -50,17 +57,17 @@ ref_case() {
   tb_exec "$tb_peer" tc -s qdisc show dev "$peth" >>"$r/netem.txt"
   local metrics
   metrics=$(m1_metrics_count)
-  m1_log "$c: Linux $tb_peer_ip -> Linux $tb_dut_ip 1G $netem (both directions)"
+  m1_log "$c: Linux $tb_peer_ip -> Linux $tb_dut_ip $bytes $netem (both directions) $opts"
   m1_record "$c" before
   tb_exec "$tb_dut" nstat -asz >"$r/dut-before.nstat"
   m1_cap_start "$c" peer "$tb_peer" "$tb_peer_ip" "tcp port $port" || return 1
   local B=$m1_bin/apps/utcp-bulk/utcp-bulk
   tb_exec "$tb_dut" timeout 1800 "$B" --backend kernel --sample-ms 100 --jsonl - --listen "$port" \
-    --recv --bytes 1G >"$r/recv.out" 2>"$r/recv.err" &
+    --recv --bytes "$bytes" "${recv_extra[@]}" >"$r/recv.out" 2>"$r/recv.err" &
   local rpid=$!
   m1_wait_kernel_listen "$tb_dut" "$port"
   tb_exec "$tb_peer" timeout 1800 "$B" --backend kernel --sample-ms 100 --jsonl - \
-    --connect "$tb_dut_ip:$port" --send --bytes 1G >"$r/send.out" 2>"$r/send.err"
+    --connect "$tb_dut_ip:$port" --send --bytes "$bytes" >"$r/send.out" 2>"$r/send.err"
   local src=$?
   wait "$rpid"
   local rrc=$?
@@ -86,10 +93,11 @@ dut = {k: a[k] - b.get(k, 0) for k in a if a[k] - b.get(k, 0)}
 json.dump({"metrics_before": int(metrics), "send_exit": int(src), "recv_exit": int(rrc),
            "dut_nstat": dut}, open(f"{r}/extra.json", "w"))
 PY
-  m1_row "$c" "test=R" "direction=Linux->Linux (reference)" "options=default" "impairment=$netem" \
-    "bytes_n=1000000000" "peer_sysctls=$(m1_peer_sysctls)" "cpus=$tb_cpus" \
+  m1_row "$c" "test=R" "direction=Linux->Linux (reference)" "options=$opts" "impairment=$netem" \
+    "bytes_n=$bytes_n" "peer_sysctls=$(m1_peer_sysctls)" "cpus=$tb_cpus" \
     "captures=$m1_volume:/$m1_voldir/$c/peer.pcap" \
-    'check:sha_ok' "check:extra['send_exit']==0 and extra['recv_exit']==0"
+    'check:sha_ok' "check:extra['send_exit']==0 and extra['recv_exit']==0" \
+    "check:extra['metrics_before']==0"
 }
 
 if [[ ${1:-} == list ]]; then

@@ -4,7 +4,10 @@
 # --backend kernel on the Linux peer, on the testbed of testbed/m1.
 #
 #   A-N<k>-s2l, A-N<k>-l2s   1 GB stack->Linux / Linux->stack under netem N0..N4
-#   A-pause-s2l, A-pause-l2s 100 MB, the receiver with --recv-pause 200:1048576
+#   A-pause200-s2l, -l2s     100 MB, the receiver with --recv-pause 200:1048576
+#   A-pause-s2l, A-pause-l2s 100 MB, the receiver with --recv-pause 500:1048576
+#                            (200 ms ends before the sender's persist/SWS-override
+#                            timer, which fills a sub-MSS window: docs/INTEROP.md)
 #   A-ecn<k>-s2l, -l2s       100 MB under N0, peer with net.ipv4.tcp_ecn=k (1, 3)
 #   B-<combo>-s2l, -l2s      100 MB under N4, peer with combo.sh's sack/ts/ws combination
 #   C-pmtu-s2l, C-pmtu-l2s   1 GB under N0 over the PMTU chain (MTU 1400 link)
@@ -24,13 +27,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/m1_lib.sh"
 
 port=5001
 stack_ip=$tb_tun_stack
-pause=200:1048576
 
 all_cases() {
   local n d c s t w
   for n in N0 N1 N2 N3 N4; do
     for d in s2l l2s; do echo "A-$n-$d"; done
   done
+  for d in s2l l2s; do echo "A-pause200-$d"; done
   for d in s2l l2s; do echo "A-pause-$d"; done
   for c in ecn1 ecn3; do
     for d in s2l l2s; do echo "A-$c-$d"; done
@@ -63,7 +66,9 @@ bulk_case() {
         checks+=("check:peer['TcpExtTCPDSACKRecv']>0")
       fi
       ;;
-    A-pause)
+    A-pause | A-pause200)
+      local pause=500:1048576
+      [[ $rest == pause200 ]] && pause=200:1048576
       bytes=100M bytes_n=100000000 recv_extra=(--recv-pause "$pause") opts="recv-pause $pause"
       if [[ $dir == s2l ]]; then
         # Linux's receiver advertised 0; the stack's sender was held by it.
