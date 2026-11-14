@@ -27,7 +27,10 @@ stack was correct but held per-segment metadata for every buffered byte. Linux c
 to the send buffer (`sk_wmem_queued`), so tiny segments fill it long before their payload does. The fix
 (76ee00a, DESIGN §4.11) charges the TxSegs held at least `mss_cache`/2 each (`SendQueue::held`); full-sized
 segments still count as their payload. After it the four seeds take 7-17 s (gcc-sweep) with verdict `ok`. Tests:
-`SendQueue.SegChargeCountsSmallSegments`, `TcpTransfer.OneByteWritesHoldFewSegments` (fails without the charge).
+`SendQueue.SegChargeCountsSmallSegments`, `TcpTransfer.OneByteWritesHoldFewSegments` (fails without the charge),
+`TcpTransfer.OneByteWritesStayUnwritableUntilChargeHalves` (the writable rule in `tcp_readiness` and for
+`ev_writable` uses the charged space, as `sk_stream_is_writeable` uses `sk_wmem_queued`; fails if either rule
+counts payload bytes only).
 Under gcc-asan the four corpus entries take 390-820 s each, so dbbd47c runs each corpus entry as its own test.
 
 ## 1e5-seed acceptance sweep (m1-accept-sweep, test F)
