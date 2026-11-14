@@ -13,7 +13,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <optional>
+#include <span>
+#include <string>
 #include <string_view>
 
 #include "utcp/defs/config_ip_types.hpp"
@@ -34,6 +37,13 @@ enum class CcAlgo : std::uint8_t {
   newreno,  // M1
   cubic,    // M2b
   bbr,      // M2c (BBRv1 as Linux tcp_bbr.c)
+};
+
+// Which formulas NewReno and CUBIC follow where the RFC and Linux differ
+// (M2b; M2-DESIGN §2.1 item 5).
+enum class CcFlavor : std::uint8_t {
+  rfc,    // RFC 5681 eq. 4 and §3.1 slow start (NewReno), RFC 9438 (CUBIC)
+  linux,  // tcp_reno_ssthresh, tcp_slow_start (NewReno), tcp_cubic.c (CUBIC)
 };
 
 // SRTT/RTTVAR/RTO computation (§4.8).
@@ -135,6 +145,15 @@ enum class TestFault : std::uint8_t {
   none,
   unscaled_peer_window,   // treat the peer's window field as unscaled (sends less)
   overscaled_peer_window,  // scale the peer's window field by 14, whatever was negotiated
+  // M2 (M2-TASKS m2-found): the first PRR retransmission of a recovery
+  // bypasses the cwnd gate (LossRecovery, M2a).
+  prr_skip_force,
+  // M2: on_pto ignores tlp_high_seq, so a second probe can go out while one is
+  // outstanding (LossRecovery, M2a).
+  double_tlp,
+  // M2: the engine sends as if the pacing gate were always open, while still
+  // advancing pacing_next (the PacingChecker must catch it).
+  ignore_pacing_gate,
 };
 
 // Inclusive port range.
@@ -176,6 +195,7 @@ struct TcpConfig {
   bool adaptive_reordering = true;             // raise dupthresh on reordering, up to max_reordering
   std::uint32_t max_reordering = 300;          // tcp_max_reordering; unused if !adaptive_reordering
   CcAlgo cc = CcAlgo::newreno;
+  CcFlavor cc_flavor = CcFlavor::linux;        // M2b, M2-DESIGN §2.1 item 5
   Hystart hystart = Hystart::hystart_classic;
   std::uint32_t hystart_low_window = 16;       // tcp_cubic hystart_low_window
   Duration hystart_ack_delta = 2ms;            // tcp_cubic hystart_ack_delta_us
@@ -250,6 +270,36 @@ struct TcpConfig {
 
 // Returns the profile with every field set (DESIGN §3.9).
 [[nodiscard]] TcpConfig tcp_config(ProfileId profile);
+
+// Checks combinations of fields that must not be used together: an error
+// message, or nothing if `c` is usable. The one forbidden pairing is
+// rack_tlp with recovery_reduction = rfc6675 (RFC 8985 §9.2: RFC 6675
+// recovery MUST NOT be used with RACK-TLP). The TCP engine refuses such a
+// configuration (it aborts).
+[[nodiscard]] std::optional<std::string> check_tcp_config(const TcpConfig& c);
+
+// Sets the TcpConfig field `name` from text, for `utcp-bulk --set` and the
+// M2 ablation. Accepted forms by field type:
+//   durations   an integer with a unit: 200ms, 1s, 10min, 500us, 40000ns
+//   enums       the value name as in the code (rfc6298, hystart_pp, linux, ...)
+//   bool        true/false, on/off, 1/0
+//   integers    decimal; byte sizes also with Ki, Mi or Gi (64Mi); rates
+//               (bytes/s of payload) also with bit, kbit, Mbit or Gbit, divided
+//               by 8 (50Mbit = 6250000), which must give whole bytes
+//   optional    "none" for no value, else the value's form
+//   PortRange   lo-hi (32768-60999)
+// Combinations are not checked here (check_tcp_config does that once all
+// fields are set). Returns an error message for an unknown name or a value
+// that does not parse or does not fit the field.
+std::expected<void, std::string> set_config_field(TcpConfig& c, std::string_view name,
+                                                  std::string_view value);
+// The field `name` of `c` as text that set_config_field accepts (durations in
+// the largest unit that divides them, sizes and rates as plain integers), or
+// nothing for an unknown name.
+[[nodiscard]] std::optional<std::string> get_config_field(const TcpConfig& c,
+                                                          std::string_view name);
+// Every name set_config_field accepts, in TcpConfig declaration order.
+[[nodiscard]] std::span<const std::string_view> config_field_names();
 
 struct UdpConfig {
   std::uint32_t rcv_buf = 256 * 1024;  // per socket, length-prefixed datagrams
@@ -341,6 +391,10 @@ struct StackConfig {
     return ProfileId::linux_compat;
   }
   return std::nullopt;
+}
+
+[[nodiscard]] constexpr std::string_view to_string(CcFlavor f) noexcept {
+  return f == CcFlavor::rfc ? "rfc" : "linux";
 }
 
 [[nodiscard]] constexpr std::string_view to_string(CcAlgo a) noexcept {

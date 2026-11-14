@@ -112,6 +112,12 @@ struct TraceEvent {
   std::int64_t srtt_ns = 0, rttvar_ns = 0, rto_ns = 0;
   std::uint64_t delivered = 0, pacing_rate = 0, delivery_rate = 0;
   std::uint64_t snd_una_off = 0, snd_nxt_off = 0;
+  // tx events of data and retransmissions (M2-DESIGN §4.4, PacingChecker):
+  // the rate of the pacing gate in force at this send in bytes/s, 0 when
+  // the gate does not apply; and whether this send opened a new paced burst
+  // (the gate was checked against pacing_next before it).
+  std::uint64_t gate_rate = 0;
+  bool burst_start = false;
 
   bool operator==(const TraceEvent&) const = default;
 };
@@ -244,6 +250,8 @@ void for_each_field(const TraceEvent& e, F&& f) {
   f(std::string_view{"delivery_rate"}, e.delivery_rate);
   f(std::string_view{"snd_una_off"}, e.snd_una_off);
   f(std::string_view{"snd_nxt_off"}, e.snd_nxt_off);
+  f(std::string_view{"gate_rate"}, e.gate_rate);
+  f(std::string_view{"burst_start"}, e.burst_start);
 }
 
 }  // namespace utcp

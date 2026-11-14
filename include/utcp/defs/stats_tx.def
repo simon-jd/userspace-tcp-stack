@@ -1,5 +1,6 @@
-// Counters owned by m1-tx (send side, ACK pipeline, CC, M1 recovery).
-// Only m1-tx adds entries here. No include guard: included by
+// Counters owned by m1-tx (send side, ACK pipeline, CC, M1 recovery); the
+// M2 entries below are declared by m2-found for m2a-recovery and m2b-cc.
+// Only these tasks add entries here. No include guard: included by
 // stats.hpp and defs_test.cpp with both macros defined.
 //
 //   UTCP_STACK_STAT(name, doc)  a std::uint64_t field of StackStats
@@ -21,10 +22,29 @@ UTCP_STACK_STAT(TcpExtTCPFastRetrans, "retransmissions in Recovery")
 UTCP_STACK_STAT(TcpExtTCPSlowStartRetrans, "retransmissions in Loss")
 UTCP_STACK_STAT(TcpExtTCPLossProbes, "tail loss probes sent (M2a)")
 UTCP_STACK_STAT(TcpExtTCPOrigDataSent, "segments of new data sent")
-UTCP_STACK_STAT(TcpExtTCPDelivered, "packets delivered (cumulatively ACKed or SACKed)")
+UTCP_STACK_STAT(TcpExtTCPDelivered,
+                "packets delivered (cumulatively ACKed or SACKed, plus valid D-SACKed segments)")
+
+// M2 (M2-DESIGN §1.6, §1.7, §1.9, §2.4).
+UTCP_STACK_STAT(TcpExtTCPDSACKRecvSegs,
+                "segments covered by valid D-SACK blocks (tcp_check_dsack, M2-DESIGN 1.6)")
+UTCP_STACK_STAT(TcpExtTCPDSACKIgnoredDubious,
+                "D-SACK blocks ignored: longer than the max window or beyond total_retrans (tcp_dsack_seen)")
+UTCP_STACK_STAT(TcpExtTCPLossProbeRecovery,
+                "losses repaired by a tail loss probe (tcp_process_tlp_ack, M2a)")
+UTCP_STACK_STAT(TcpExtTCPSACKReorder, "reordering detected from SACK (tcp_check_sack_reordering, M2a)")
+UTCP_STACK_STAT(TcpExtTCPRenoReorder,
+                "reordering detected from duplicate ACKs (tcp_check_reno_reordering, M2a)")
+UTCP_STACK_STAT(rack_reo_timeouts,
+                "RACK reordering-timer expiries (tcp_rack_reo_timeout; no Linux MIB, M2a)")
+UTCP_STACK_STAT(TcpExtTCPHystartTrainDetect, "classic HyStart exits by ACK train (M2b)")
+UTCP_STACK_STAT(TcpExtTCPHystartTrainCwnd, "sum of cwnd at ACK-train exits (M2b)")
+UTCP_STACK_STAT(TcpExtTCPHystartDelayDetect, "classic HyStart exits by delay increase (M2b)")
+UTCP_STACK_STAT(TcpExtTCPHystartDelayCwnd, "sum of cwnd at delay exits (M2b)")
 
 UTCP_CONN_STAT(data_segs_out,
                "segments with payload sent, retransmissions included (tcpi_data_segs_out)")
 UTCP_CONN_STAT(total_retrans, "retransmitted segments (tcpi_total_retrans)")
-UTCP_CONN_STAT(dsack_dups, "received D-SACK blocks (tcpi_dsack_dups, DESIGN 4.5)")
+UTCP_CONN_STAT(dsack_dups,
+               "segments covered by D-SACK blocks within the max window (tcpi_dsack_dups, M2-DESIGN 1.6)")
 UTCP_CONN_STAT(reord_seen, "reordering events detected (tcpi_reord_seen, M2a)")

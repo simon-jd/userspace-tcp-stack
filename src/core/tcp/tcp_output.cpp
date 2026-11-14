@@ -124,10 +124,16 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
                        o.kind != TxKind::zwp;
   if (carries) {
     const Counters& k = t.sndq.counters();
-    if (!o.retrans && packets_in_flight(k) == 0) {
+    // Linux tcp_event_data_sent (tcp_output.c:185, from __tcp_transmit_skb
+    // for every data transmission, retransmissions included): tx_start when
+    // nothing is in flight before this segment, and lsndtime = now (M2-DESIGN
+    // §2.1 item 8; an RTO retransmission after everything was marked lost
+    // starts a new transmission period).
+    if (packets_in_flight(k) == 0) {
       refresh_cc(t, now);
       t.algo().cwnd_event(t.cc_conn, CaEvent::tx_start);
     }
+    t.lsndtime = now;
     rate_on_send(t.rate, k.packets_out, now);
     const TxSeg& seg =
         t.sndq.on_transmit(o.data_off, o.data_len, (o.flags & tcp_fin) != 0, now, t.rate);
@@ -140,7 +146,6 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
     } else {
       // TcpExtTCPOrigDataSent is LossRecovery::on_transmit's (tx_count 1).
       t.txp.on_data_sent(o.data_off, o.data_len, mss_now(t));
-      t.lsndtime = now;
       chrono_start(t, ChronoType::busy, now);
     }
     if (o.data_len > 0) {
@@ -431,7 +436,7 @@ void TcpEngine::transmit(Tcb& t, Time now) {
           break;
         }
         burst_left = pacing_burst_segments(rate, t.rtt.min_rtt(), cfg_.gso_max_size, mss,
-                                           t.algo().min_tso_segs());
+                                           t.algo().min_tso_segs(cc));
         burst_bytes = 0;
       }
       if (!core_.can_transmit() || !send_new_data(t, now, len, fin)) {

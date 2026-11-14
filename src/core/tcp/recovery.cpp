@@ -258,7 +258,10 @@ void LossRecovery::on_transmit(RecoveryCtx& c, const TxSeg& seg, TxKind kind) {
   }
 }
 
-void LossRecovery::on_burst_end(RecoveryCtx& c) {
+void LossRecovery::on_burst_end(RecoveryCtx& c, bool new_data_sent) {
+  if (script_ != nullptr && script_->on_burst_end(c, new_data_sent)) {
+    return;
+  }
   if (c.q.counters().packets_out > 0) {
     if (timer_ != XmitTimer::rto) {
       arm(XmitTimer::rto, c.now + c.rtt.rto_backed_off(c.backoff));
@@ -336,15 +339,82 @@ void LossRecovery::on_pmtu_drop(RecoveryCtx& c) {
   refresh(c);
 }
 
-std::pair<XmitTimer, Time> LossRecovery::xmit_timer(const RecoveryCtx&) const {
+std::pair<XmitTimer, Time> LossRecovery::xmit_timer(const RecoveryCtx& c) const {
+  if (script_ != nullptr) {
+    if (auto t = script_->xmit_timer(c)) {
+      return *t;
+    }
+  }
   return {timer_, deadline_};
 }
 
-void LossRecovery::on_xmit_timer(RecoveryCtx&, XmitTimer kind) {
+void LossRecovery::on_xmit_timer(RecoveryCtx& c, XmitTimer kind) {
+  if (script_ != nullptr && script_->on_xmit_timer(c, kind)) {
+    return;
+  }
   if (kind == timer_) {
     arm(XmitTimer::none, Time::never());
   }
 }
+
+// ---- M2 hooks: m2-found stubs with M1 behaviour (m2a-recovery replaces
+// them, M2-DESIGN §1.4-1.9).
+
+void LossRecovery::cwnd_reduction(RecoveryCtx& c, std::uint32_t newly_acked_sacked,
+                                  std::uint32_t newly_lost, std::uint32_t flags) {
+  if (script_ != nullptr && script_->cwnd_reduction(c, newly_acked_sacked, newly_lost, flags)) {
+    return;
+  }
+  // M1: cwnd = ssthresh was set on entering Recovery; nothing per ACK.
+}
+
+bool LossRecovery::may_raise_cwnd(const RecoveryCtx& c, const AckOutcome& out) const {
+  if (script_ != nullptr) {
+    if (const auto r = script_->may_raise_cwnd(c, out)) {
+      return *r;
+    }
+  }
+  return out.acked_pkts > 0;  // tcp_may_raise_cwnd, FLAG_DATA_ACKED
+}
+
+std::optional<std::uint64_t> LossRecovery::next_seg_extra(RecoveryCtx& c) {
+  if (script_ != nullptr) {
+    if (auto r = script_->next_seg_extra(c)) {
+      return *r;
+    }
+  }
+  return std::nullopt;
+}
+
+TlpAction LossRecovery::on_pto(RecoveryCtx& c) {
+  if (script_ != nullptr) {
+    if (const auto r = script_->on_pto(c)) {
+      return *r;
+    }
+  }
+  return TlpAction::none;
+}
+
+void LossRecovery::on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent) {
+  if (script_ != nullptr && script_->on_tlp_sent(c, action, sent)) {
+    return;
+  }
+}
+
+bool LossRecovery::exempt_from_cwnd(const RecoveryCtx& c, const TxSeg& seg) const {
+  if (script_ != nullptr) {
+    if (const auto r = script_->exempt_from_cwnd(c, seg)) {
+      return *r;
+    }
+  }
+  return fast_rexmit_pending_ && seg.off == c.q.una();
+}
+
+std::uint32_t LossRecovery::reordering(const TcpConfig& cfg) const { return cfg.dupthresh; }
+
+std::uint32_t LossRecovery::reord_seen() const { return 0; }
+
+std::optional<std::uint64_t> LossRecovery::tlp_high_seq() const { return std::nullopt; }
 
 CaState LossRecovery::state() const { return state_; }
 

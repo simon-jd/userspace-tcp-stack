@@ -278,6 +278,33 @@ TEST(TcpTimer, TwoRtosInARowKeepSsthresh) {
   }
 }
 
+// M2-DESIGN §2.5, Linux tcp_event_data_sent: lsndtime is stamped by every
+// data transmission, retransmissions included, so tcp_info last_data_sent
+// counts from the RTO retransmission, not from the original send.
+TEST(TcpTimer, RtoRetransmissionStampsLastDataSent) {
+  for (const ProfileId profile : {ProfileId::rfc, ProfileId::linux_compat}) {
+    SCOPED_TRACE(name(profile));
+    t::TcpHarness h(config(Side::a, profile), config(Side::b, profile));
+    h.set_delay(Side::a, 10ms);
+    h.set_delay(Side::b, 10ms);
+    const auto p = open(h);
+    ASSERT_TRUE(p);
+    h.set_hook([&](Side from, t::Bytes& d) {
+      const auto q = parse(d);
+      return from == Side::a && q && is_data(q->v) ? t::Verdict::drop : t::Verdict::deliver;
+    });
+    const Duration rto = h.a().tcp_info(p->client)->rto;
+    h.clear_log();
+    const Time t0 = h.now();
+    ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(1000)));
+    h.run_for(rto + rto / 2);
+    const auto tx = times(h, Side::a, t0, is_data);
+    ASSERT_EQ(tx.size(), 2u);  // the original and the RTO retransmission
+    EXPECT_EQ(tx[1], rto);
+    EXPECT_EQ(h.a().tcp_info(p->client)->last_data_sent, rto / 2);
+  }
+}
+
 // §4.8 SYN schedule: linux_compat (syn_retries 6, syn_linear_timeouts 4)
 // retransmits at 1, 2, 3, 4, 5, 7, 11, 19, 35, 67 s and fails at 131 s; rfc
 // (7, 0, rto_max 60 s) at 1, 3, 7, 15, 31, 63, 123 s and fails at 183 s.

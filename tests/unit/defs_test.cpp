@@ -107,6 +107,11 @@ bool is_nstat_name(std::string_view s) {
   X(TcpExtTCPSackRecovery) X(TcpExtTCPRenoRecovery) X(TcpExtTCPTimeouts)              \
   X(TcpExtTCPFastRetrans) X(TcpExtTCPSlowStartRetrans) X(TcpExtTCPLossProbes)         \
   X(TcpExtTCPOrigDataSent) X(TcpExtTCPDelivered)                                      \
+  /* M2 (m2-found for m2a-recovery and m2b-cc): M2-DESIGN §1.6-1.9, §2.4 */            \
+  X(TcpExtTCPDSACKRecvSegs) X(TcpExtTCPDSACKIgnoredDubious) X(TcpExtTCPLossProbeRecovery) \
+  X(TcpExtTCPSACKReorder) X(TcpExtTCPRenoReorder) X(rack_reo_timeouts)                 \
+  X(TcpExtTCPHystartTrainDetect) X(TcpExtTCPHystartTrainCwnd)                          \
+  X(TcpExtTCPHystartDelayDetect) X(TcpExtTCPHystartDelayCwnd)                          \
   /* TCP engine (m1-tcp-core, m1-tcp-robust): §4.3, §4.4, §4.7, §4.12 */               \
   X(TcpActiveOpens) X(TcpPassiveOpens) X(TcpAttemptFails) X(TcpEstabResets)           \
   X(TcpOutSegs) X(TcpRetransSegs) X(TcpExtTCPSACKDiscard)                            \
@@ -259,7 +264,7 @@ TEST(Defs, TraceEventFields) {
       "seq",        "ack",         "len",         "wnd",         "cwnd",     "ssthresh",
       "in_flight",  "snd_wnd",     "sacked_out",  "lost_out",    "retrans_out",
       "srtt_ns",    "rttvar_ns",   "rto_ns",      "delivered",   "pacing_rate",
-      "delivery_rate", "snd_una_off", "snd_nxt_off"};
+      "delivery_rate", "snd_una_off", "snd_nxt_off", "gate_rate",  "burst_start"};
   std::vector<std::string> got;
   utcp::for_each_field(TraceEvent{}, [&](std::string_view name, const auto&) { got.emplace_back(name); });
   EXPECT_EQ(got, want);

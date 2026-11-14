@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -12,6 +13,7 @@
 
 #include "core/buffer/chunk_pool.hpp"
 #include "core/tcp/cc_newreno.hpp"
+#include "support/recovery_script.hpp"
 
 namespace {
 
@@ -58,6 +60,31 @@ public:
   std::vector<std::string> log;
 };
 
+// A CC that owns cwnd (has_cong_control, as BBR): records its hook calls and
+// the sample it got, and can write CcConn::app_limited (BBR entering
+// PROBE_RTT, tcp_bbr.c bbr_update_min_rtt).
+class OwnCc final : public utcp::CongestionControl {
+public:
+  [[nodiscard]] std::string_view name() const override { return "own"; }
+  std::uint32_t ssthresh(const utcp::CcConn& c) override { return std::max(c.cwnd / 2, 2u); }
+  void cong_avoid(utcp::CcConn&, const AckOutcome&) override { log.emplace_back("cong_avoid"); }
+  [[nodiscard]] bool has_cong_control() const override { return true; }
+  void cong_control(utcp::CcConn& c, const AckOutcome& out, const utcp::RateSample& rs) override {
+    log.push_back("cong_control " + std::to_string(out.delivered));
+    last_rs = &rs;
+    last_out_rs = out.rs;
+    if (write_app_limited) {
+      c.app_limited = c.delivered + c.in_flight > 0 ? c.delivered + c.in_flight : 1;
+      write_app_limited = false;
+    }
+  }
+
+  std::vector<std::string> log;
+  const utcp::RateSample* last_rs = nullptr;
+  const utcp::RateSample* last_out_rs = nullptr;
+  bool write_app_limited = false;
+};
+
 struct Rig {
   explicit Rig(bool sack_ok) : sack(sack_ok) {
     q.set_sack_ok(sack_ok);
@@ -67,8 +94,10 @@ struct Rig {
     cc.cwnd_limited = true;
   }
 
+  utcp::CongestionControl& a() { return own != nullptr ? *own : static_cast<utcp::CongestionControl&>(algo); }
+
   utcp::RecoveryCtx rctx() {
-    return utcp::RecoveryCtx{q, cc, algo, rtt, cfg, now, wnd, stats, sack, backoff, 0};
+    return utcp::RecoveryCtx{q, cc, a(), rtt, cfg, now, wnd, stats, sack, backoff, 0};
   }
 
   // Sends one segment of `len` bytes at `now` (new data or a retransmission).
@@ -99,8 +128,12 @@ struct Rig {
     return in;
   }
 
+  // The AckContext of the last run stays alive (AckOutcome::rs points into it).
   AckOutcome run(const AckInput& in) {
-    utcp::AckContext c{q, rec, rtt, cc, algo, rate, cfg, stats, ctr, wnd, sack, backoff, 0};
+    ctx = std::make_unique<utcp::AckContext>(
+        utcp::AckContext{q, rec, rtt, cc, a(), rate, cfg, stats, ctr, wnd, sack, backoff, 0,
+                         max_snd_wnd, ts_offset, pacing_delay});
+    utcp::AckContext& c = *ctx;
     const AckOutcome out = utcp::process_ack(c, in, [this](const TxSeg& s, bool via_sack) {
       delivered_log.emplace_back(s.off, via_sack);
     });
@@ -131,6 +164,11 @@ struct Rig {
   Time now{1'000'000'000};
   std::uint32_t wnd = 1 << 20;
   std::uint8_t backoff = 0;
+  std::uint32_t max_snd_wnd = 1 << 20;
+  std::uint32_t ts_offset = 0;
+  Duration pacing_delay{0};
+  OwnCc* own = nullptr;  // replaces `algo` when set
+  std::unique_ptr<utcp::AckContext> ctx;
   std::vector<std::pair<std::uint64_t, bool>> delivered_log;  // (off, via_sack) per delivery
 };
 
@@ -295,20 +333,39 @@ TEST(AckPipeline, MaybeDelayedFollowsCleanRtxQueue) {
   o = s.ack(500);
   EXPECT_EQ(o.flags & utcp::ack_maybe_delayed, 0u);
   EXPECT_EQ(o.seq_rtt, Duration{-1});
-  // A runt acknowledged by an ACK that carries a D-SACK: a sample, but not
-  // maybe-delayed (FLAG_CA_ALERT includes FLAG_DSACKING_ACK).
+  // A runt acknowledged by an ACK that carries a valid D-SACK: a sample, but
+  // not maybe-delayed (FLAG_CA_ALERT includes FLAG_DSACKING_ACK, which
+  // tcp_dsack_seen sets only for a D-SACK within total_retrans).
   Rig d(true);
   d.send(0, 500, TxKind::data);
   d.now += 50ms;
   d.ack(500);
   d.send(500, 500, TxKind::data);
   d.now += 40ms;
+  d.ctr.total_retrans = 1;  // the first runt was also retransmitted
   AckInput in = d.input(1000);
-  in.dsack = Range{0, 500};  // a second copy of the first runt arrived
+  in.dsack = Range{0, 500};  // its second copy arrived
   o = d.run(in);
+  EXPECT_NE(o.flags & utcp::ack_dsack, 0u);
   EXPECT_EQ(o.seq_rtt, 40ms);
   EXPECT_EQ(o.flags & utcp::ack_maybe_delayed, 0u);
   EXPECT_EQ(d.rtt.min_rtt(), 40ms);
+  // The same with nothing retransmitted (a duplicate made by the network):
+  // the D-SACK is dubious, so the ACK is not FLAG_DSACKING_ACK, and the lone
+  // runt is maybe-delayed as without a D-SACK.
+  Rig e(true);
+  e.send(0, 500, TxKind::data);
+  e.now += 50ms;
+  e.ack(500);
+  e.send(500, 500, TxKind::data);
+  e.now += 40ms;
+  in = e.input(1000);
+  in.dsack = Range{0, 500};
+  o = e.run(in);
+  EXPECT_EQ(o.flags & utcp::ack_dsack, 0u);
+  EXPECT_NE(o.flags & utcp::ack_maybe_delayed, 0u);
+  EXPECT_EQ(e.ctr.dsack_dups, 1u);
+  EXPECT_EQ(e.stats.TcpExtTCPDSACKIgnoredDubious, 1u);
 }
 
 TEST(AckPipeline, NoRttSampleWhenRetransmittedDataIsAcked) {
@@ -397,6 +454,7 @@ TEST(AckPipeline, DsackRunsTheStateMachine) {
   r.send_spaced(4);
   r.ack(1000);
   r.send(1000, mss, TxKind::rexmit);
+  r.ctr.total_retrans = 1;  // the engine counts it
   ASSERT_EQ(r.rec.state(), CaState::open);
   AckInput in = r.input(1000);
   in.dsack = Range{0, 1000};
@@ -464,6 +522,7 @@ TEST(AckPipeline, DsackIsCountedAndIsNotADupack) {
   Rig r(false);
   r.send_spaced(4);
   r.ack(1000);
+  r.ctr.total_retrans = 1;  // segment 0 was also retransmitted
   AckInput in = r.input(1000);
   in.dsack = Range{0, 1000};
   in.dupack = true;
@@ -471,6 +530,7 @@ TEST(AckPipeline, DsackIsCountedAndIsNotADupack) {
   EXPECT_NE(o.flags & utcp::ack_dsack, 0u);
   EXPECT_EQ(r.stats.TcpExtTCPDSACKRecv, 1u);
   EXPECT_EQ(r.ctr.dsack_dups, 1u);
+  EXPECT_EQ(o.delivered, 1u);  // the spurious retransmission is delivered
   EXPECT_EQ(r.q.counters().sacked_out, 0u);  // no reno dupack counted
   EXPECT_EQ(r.rec.state(), CaState::open);
 }
@@ -488,6 +548,281 @@ TEST(AckPipeline, RenoDeliveredCountsDupacksOnce) {
   EXPECT_EQ(r.q.counters().sacked_out, 0u);
   // Pacing rate follows the CC each ACK (tcp_update_pacing_rate).
   EXPECT_GT(r.cc.pacing_rate, 0u);
+}
+
+// M2-DESIGN §1.6 (tcp_dsack_seen): a D-SACK counts ceil(len / mss) segments
+// in dsack_dups unless it is longer than the max window; it is valid if
+// dsack_dups then stays within total_retrans, and only then are its segments
+// delivered (out.delivered, RateState::delivered, TcpExtTCPDelivered) and the
+// ACK flagged ack_dsack.
+TEST(AckPipeline, DsackSegmentsAreCountedAndDelivered) {
+  Rig r(true);
+  r.send_spaced(8);
+  r.ack(4000);
+  r.ctr.total_retrans = 4;  // segments 0-3 were resent too
+
+  // A 3-segment D-SACK on a duplicate ACK: 3 more dups, 3 delivered.
+  AckInput in = r.input(4000);
+  in.dsack = Range{0, 3000};
+  in.dupack = true;
+  AckOutcome o = r.run(in);
+  EXPECT_EQ(r.ctr.dsack_dups, 3u);
+  EXPECT_EQ(o.delivered, 3u);
+  EXPECT_EQ(o.acked_pkts, 0u);
+  EXPECT_EQ(r.rate.delivered, 7u);  // 4 acked + 3
+  EXPECT_EQ(r.stats.TcpExtTCPDelivered, 7u);
+  EXPECT_EQ(r.stats.TcpExtTCPDSACKRecv, 1u);
+  EXPECT_EQ(r.stats.TcpExtTCPDSACKRecvSegs, 3u);
+  EXPECT_NE(o.flags & utcp::ack_dsack, 0u);
+  ASSERT_NE(o.rs, nullptr);
+  EXPECT_EQ(o.rs->acked_sacked, 3u);
+
+  // Longer than the largest window the peer offered: ignored entirely.
+  r.max_snd_wnd = 2999;
+  in.dsack = Range{0, 3000};
+  o = r.run(in);
+  EXPECT_EQ(r.ctr.dsack_dups, 3u);
+  EXPECT_EQ(o.delivered, 0u);
+  EXPECT_EQ(o.flags & utcp::ack_dsack, 0u);
+  EXPECT_EQ(r.stats.TcpExtTCPDSACKRecv, 2u);
+  EXPECT_EQ(r.stats.TcpExtTCPDSACKIgnoredDubious, 1u);
+  r.max_snd_wnd = 1 << 20;
+
+  // 1001 bytes are 2 segments (rounded up); dsack_dups 5 would pass
+  // total_retrans 4: counted, but nothing delivered.
+  in.dsack = Range{1000, 2001};
+  o = r.run(in);
+  EXPECT_EQ(r.ctr.dsack_dups, 5u);
+  EXPECT_EQ(o.delivered, 0u);
+  EXPECT_EQ(o.flags & utcp::ack_dsack, 0u);
+  EXPECT_EQ(r.rate.delivered, 7u);
+  EXPECT_EQ(r.stats.TcpExtTCPDSACKIgnoredDubious, 2u);
+  EXPECT_EQ(r.stats.TcpExtTCPDSACKRecvSegs, 3u);
+
+  // Below one MSS: one segment. With the stub recovery no TLP is
+  // outstanding, so it is never ack_dsack_tlp.
+  r.ctr.total_retrans = 6;
+  in.dsack = Range{0, 10};
+  o = r.run(in);
+  EXPECT_EQ(r.ctr.dsack_dups, 6u);
+  EXPECT_EQ(o.delivered, 1u);
+  EXPECT_EQ(o.flags & utcp::ack_dsack_tlp, 0u);
+}
+
+// M2-DESIGN §1.8, Linux tcp_cong_control: a CC with cong_control gets the
+// ACK's rate sample (the one AckOutcome::rs points to) instead of cong_avoid,
+// PRR and the engine's pacing-rate update.
+TEST(AckPipeline, CongControlReplacesCongAvoidAndGetsTheSample) {
+  Rig r(true);
+  OwnCc own;
+  r.own = &own;
+  r.send_spaced(4);
+  r.now += 30ms;
+  r.cc.pacing_rate = 12345;
+  const AckOutcome o = r.ack(2000);
+  EXPECT_EQ(own.log, (std::vector<std::string>{"cong_control 2"}));
+  ASSERT_NE(o.rs, nullptr);
+  EXPECT_EQ(o.rs, &r.ctx->sample);
+  EXPECT_EQ(own.last_rs, o.rs);
+  EXPECT_EQ(own.last_out_rs, o.rs);
+  EXPECT_EQ(o.rs->acked_sacked, 2u);
+  EXPECT_EQ(o.rs->rtt, o.ca_rtt);
+  EXPECT_EQ(r.cc.pacing_rate, 12345u);  // left to the CC
+  EXPECT_EQ(r.cc.cwnd, 10u);
+}
+
+// M2-DESIGN §2.6: rs.rtt is the ACK's ca_rtt (tcp_ack_update_rtt) and
+// rs.is_ack_delayed its ack_maybe_delayed flag (tcp_ack), set on every
+// sample; an old ACK has no sample.
+TEST(AckPipeline, RateSampleCarriesCaRttAndMaybeDelayed) {
+  Rig r(true);
+  r.send(0, 500, TxKind::data);
+  r.now += 50ms;
+  AckOutcome o = r.ack(500);
+  ASSERT_NE(o.rs, nullptr);
+  EXPECT_NE(o.flags & utcp::ack_maybe_delayed, 0u);
+  EXPECT_TRUE(o.rs->is_ack_delayed);
+  EXPECT_EQ(o.rs->rtt, 50ms);
+  EXPECT_EQ(o.rs->rtt, o.ca_rtt);
+  r.send_spaced(3);
+  r.now += 20ms;
+  const std::vector<Range> b{{1500, 2500}};
+  o = r.ack(500, b, true);  // SACK only: ca_rtt from the SACKed segment
+  EXPECT_FALSE(o.rs->is_ack_delayed);
+  EXPECT_EQ(o.rs->rtt, o.ca_rtt);
+  EXPECT_EQ(o.rs->rtt, 22ms);  // segment 2 left 1 ms after segment 1
+  o = r.ack(500, {}, true);  // nothing new: no RTT
+  EXPECT_EQ(o.rs->rtt, Duration{-1});
+  AckInput old = r.input(500);
+  old.new_una = 500;
+  old.old_ack = true;
+  old.prior_una = 500;
+  const std::vector<Range> b2{{2500, 3500}};
+  old.sack = b2;
+  o = r.run(old);
+  EXPECT_EQ(o.rs, nullptr);
+}
+
+// The tcp_cong_control step with the stub recovery's hooks driven through
+// the test seam: cong_avoid runs exactly when may_raise_cwnd says so outside
+// CWR and Recovery; in Recovery cwnd_reduction runs with (delivered,
+// rs.losses, flags) instead, and cong_avoid and may_raise_cwnd do not.
+TEST(AckPipeline, CongControlStepAsksRecovery) {
+  Rig r(true);
+  utcp::test::ScriptedRecovery script;
+  r.rec.set_script(&script);
+  r.send_spaced(10);
+  r.now += 50ms;
+  const auto grew = [&r] {
+    for (const std::string& l : r.algo.log) {
+      if (l.rfind("cong_avoid", 0) == 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // The stub's may_raise_cwnd (M1): data cumulatively acked.
+  r.ack(1000);
+  EXPECT_EQ(script.calls_of("may_raise_cwnd").size(), 1u);
+  EXPECT_TRUE(grew());
+  // A cumulative ACK the script refuses: no cong_avoid.
+  script.may_raise = [](const utcp::RecoveryCtx&, const AckOutcome&) { return false; };
+  r.algo.log.clear();
+  const std::uint32_t cwnd = r.cc.cwnd;
+  r.ack(2000);
+  EXPECT_FALSE(grew());
+  EXPECT_EQ(r.cc.cwnd, cwnd);
+  // A SACK-only ACK: the stub says no ...
+  script.may_raise = nullptr;
+  r.algo.log.clear();
+  std::vector<Range> b{{3000, 4000}};
+  r.ack(2000, b, true);
+  EXPECT_FALSE(grew());
+  // ... a script that says yes gets cong_avoid.
+  script.may_raise = [](const utcp::RecoveryCtx&, const AckOutcome&) { return true; };
+  b = {{3000, 5000}};
+  r.ack(2000, b, true);
+  EXPECT_TRUE(grew());
+  script.may_raise = nullptr;
+  EXPECT_TRUE(script.calls_of("cwnd_reduction").empty());
+  EXPECT_EQ(script.calls_of("may_raise_cwnd").size(), 4u);
+
+  // A third SACKed segment above the hole at 2000 enters Recovery; from
+  // then on cwnd_reduction gets (delivered, rs.losses, flags) and neither
+  // may_raise_cwnd nor cong_avoid runs.
+  r.algo.log.clear();
+  b = {{3000, 6000}};
+  AckOutcome o = r.ack(2000, b, true);
+  ASSERT_EQ(r.rec.state(), CaState::recovery);
+  ASSERT_NE(o.rs, nullptr);
+  ASSERT_EQ(script.calls_of("cwnd_reduction").size(), 1u);
+  EXPECT_EQ(script.calls_of("cwnd_reduction").back(),
+            "cwnd_reduction " + std::to_string(o.delivered) + " " +
+                std::to_string(o.rs->losses) + " " + std::to_string(o.flags));
+  EXPECT_EQ(o.delivered, 1u);
+  b = {{3000, 7000}};
+  o = r.ack(2000, b, true);
+  EXPECT_EQ(script.calls_of("cwnd_reduction").back(),
+            "cwnd_reduction 1 " + std::to_string(o.rs->losses) + " " + std::to_string(o.flags));
+  EXPECT_EQ(script.calls_of("cwnd_reduction").size(), 2u);
+  EXPECT_EQ(script.calls_of("may_raise_cwnd").size(), 4u);
+  EXPECT_FALSE(grew());
+  // A script that handles the reduction writes cwnd itself.
+  script.reduce = [](utcp::RecoveryCtx& c, std::uint32_t, std::uint32_t, std::uint32_t) {
+    c.cc.cwnd = 77;
+    return true;
+  };
+  b = {{3000, 8000}};
+  r.ack(2000, b, true);
+  EXPECT_EQ(r.cc.cwnd, 77u);
+  r.rec.set_script(nullptr);
+}
+
+// Every M2 input of RecoveryCtx is filled for the hooks of one ACK
+// (M2-DESIGN §1.6 "Inputs", §1.7).
+TEST(AckPipeline, RecoveryCtxCarriesTheM2Inputs) {
+  Rig r(true);
+  utcp::test::ScriptedRecovery script;
+  r.rec.set_script(&script);
+  r.max_snd_wnd = 65535;
+  r.ts_offset = 777;
+  r.pacing_delay = 3500us;
+  r.send_spaced(4);
+  r.now += 40ms;
+  r.ctr.total_retrans = 5;
+  r.ctr.dsack_dups = 1;
+  struct Seen {
+    const AckInput* in = nullptr;
+    std::uint64_t new_una = 0;
+    std::optional<std::uint32_t> tsecr;
+    std::uint32_t ts_now = 0, ts_of_now = 0, max_snd_wnd = 0;
+    std::uint64_t total_retrans = 0, dsack_dups = 0, prior_delivered = 0, delivered = 0;
+    bool has_prior = false;
+    Duration pacing_delay{0};
+  } seen;
+  script.may_raise = [&seen](const utcp::RecoveryCtx& c, const AckOutcome&) {
+    seen.in = c.in;
+    if (c.in != nullptr) {
+      seen.new_una = c.in->new_una;
+      seen.tsecr = c.in->tsecr;
+      seen.ts_now = c.in->now_ts;
+    }
+    seen.ts_of_now = c.ts_of(c.now);
+    seen.max_snd_wnd = c.max_snd_wnd;
+    seen.total_retrans = c.total_retrans;
+    seen.dsack_dups = c.dsack_dups;
+    seen.has_prior = c.has_prior;
+    seen.prior_delivered = c.prior_delivered;
+    seen.delivered = c.delivered;
+    seen.pacing_delay = c.pacing_delay;
+    return std::nullopt;
+  };
+  AckInput in = r.input(2000);
+  in.tsecr = 4242;
+  const std::uint32_t ts_now =
+      static_cast<std::uint32_t>(static_cast<std::uint64_t>(r.now.ns) / 1'000'000u) + 777u;
+  in.now_ts = ts_now;  // ms of `now` plus the offset
+  in.dsack = Range{0, 500};  // valid: dsack_dups 2 <= 5
+  r.run(in);
+  EXPECT_NE(seen.in, nullptr);
+  EXPECT_EQ(seen.new_una, 2000u);
+  EXPECT_EQ(seen.tsecr, std::optional<std::uint32_t>{4242});
+  EXPECT_EQ(seen.ts_now, ts_now);
+  EXPECT_EQ(seen.ts_of_now, ts_now);
+  EXPECT_EQ(seen.max_snd_wnd, 65535u);
+  EXPECT_EQ(seen.total_retrans, 5u);
+  EXPECT_EQ(seen.dsack_dups, 2u);
+  EXPECT_TRUE(seen.has_prior);
+  EXPECT_EQ(seen.prior_delivered, 0u);  // segment 1 was sent with delivered 0
+  EXPECT_EQ(seen.delivered, 3u);        // 2 acked + 1 D-SACKed
+  EXPECT_EQ(seen.delivered, r.rate.delivered);
+  EXPECT_EQ(seen.pacing_delay, 3500us);
+  r.rec.set_script(nullptr);
+}
+
+// M2-DESIGN §2.1 item 7: tp->app_limited is one value. A CC that writes
+// CcConn::app_limited in cong_control (BBR entering PROBE_RTT) sets
+// RateState::app_limited, so the next segment sent carries the mark and
+// the sample of its ACK is app-limited.
+TEST(AckPipeline, CongControlAppLimitedWriteReachesTheNextSample) {
+  for (const bool write : {false, true}) {
+    SCOPED_TRACE(write);
+    Rig r(true);
+    OwnCc own;
+    r.own = &own;
+    r.send_spaced(2);
+    r.now += 30ms;
+    own.write_app_limited = write;
+    r.ack(1000);
+    EXPECT_EQ(r.rate.app_limited, write ? 2u : 0u);  // delivered 1 + in flight 1
+    EXPECT_EQ(r.cc.app_limited, r.rate.app_limited);
+    r.send(r.q.nxt(), mss, TxKind::data);
+    r.now += 30ms;
+    const AckOutcome o = r.ack(3000);
+    ASSERT_NE(o.rs, nullptr);
+    EXPECT_EQ(o.rs->is_app_limited, write);
+  }
 }
 
 }  // namespace

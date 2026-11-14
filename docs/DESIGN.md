@@ -382,9 +382,10 @@ Linux buffer of nominal size N holds less than N bytes of payload.
 | `cwnd_growth_needs_cwnd_limited` | same: yes | | Linux `tcp_is_cwnd_limited`; RFC 7661 |
 | `recovery_reduction` (M2a) | `rfc6675` (cwnd = ssthresh on entry) | `prr` (SafeACK, as Linux 7.0) | RFC 6675 §5; RFC 9937; `tcp_cwnd_reduction` |
 | `frto`, `undo` | same: not modelled | | Linux `tcp_frto = 2` and `tcp_try_undo_*` are on; named in M2 results (§1.2) |
-| `rack_tlp` (M2a) | same: on | | RFC 8985; Linux `tcp_recovery=1`, `tcp_early_retrans=3` |
+| `rack_tlp` (M2a) | off (RFC 6675 loss detection) | on | RFC 8985 (§9.2: RFC 6675 recovery MUST NOT be used with RACK-TLP, so `check_tcp_config` rejects `rack_tlp` with `recovery_reduction = rfc6675`); Linux `tcp_recovery=1`, `tcp_early_retrans=3` |
 | `dupthresh` / adaptive reordering | 3 / fixed | 3 / adaptive up to 300 (M2a; M1: fixed 3) | RFC 5681; `tcp_reordering`, `tcp_max_reordering` |
 | `cc` | same: `newreno` in M1; `cubic` from M2b | | |
+| `cc_flavor` | `rfc` (RFC 5681 eq. 4 for NewReno, RFC 9438 for CUBIC) | `linux` (`tcp_reno_ssthresh`, `tcp_cubic.c`) | read by the CC through `CcConn::flavor` |
 | `hystart` (M2b) | `hystart_pp` | `hystart_classic` (ACK train + delay, low window 16, ack delta 2 ms) | RFC 9406; `tcp_cubic.c` |
 | `pacing`, `pacing_ss_ratio`/`_ca_ratio` | same: rate always computed (§5.5), applied only if the CC requests it (BBR); 200 % / 120 % | | the 2d sender has no fq qdisc, so Linux CUBIC is unpaced; `tcp_update_pacing_rate` |
 | `gso_max_size` (M2b) | same: testbed veth `gso_ipv4_max_size` − `MAX_TCP_HEADER` − 1, recorded | | `sk_setup_caps` (TCP always has GSO); pacing quantum, HyStart ACK delay |
@@ -905,34 +906,56 @@ side), which the engine calls. It runs Linux `tcp_ack` order: `SendQueue::on_sac
 `on_cumulative_ack` (`tcp_clean_rtx_queue`), whose per-segment callbacks feed `LossRecovery::on_delivered` (RACK
 advance, reordering detection) and the rate sampler (`tcp_rate_skb_delivered`); RTT samples (§4.8) and
 `pkts_acked`; `LossRecovery::on_ack` (`tcp_fastretrans_alert`); delivered and lost counts; the rate sample
-(`tcp_rate_gen`); then `cong_control`, or `cong_avoid` outside cwnd reduction, and the pacing rate
-(`tcp_cong_control`). `delivered` = newly cumulatively acked packets not already SACKed + newly SACKed ones; it is
-`cong_avoid`'s count and PRR's DeliveredData (Linux `tcp_newly_delivered`). For an ACK below SND.UNA
+(`tcp_rate_gen`, with `rs.rtt` = ca_rtt and `rs.is_ack_delayed` = `ack_maybe_delayed`); then the
+`tcp_cong_control` step: `cong_control` when the CC has one (it also owns the pacing rate, and its
+`CcConn::app_limited` is copied back to the rate sampler); else `LossRecovery::cwnd_reduction` in CWR and Recovery
+(PRR, `tcp_cwnd_reduction`); else `cong_avoid` if `LossRecovery::may_raise_cwnd`; then the pacing rate. A D-SACK
+runs `tcp_dsack_seen` first: ignored when longer than the largest window the peer offered, else `dsack_dups` +=
+⌈len / MSS⌉, and only while `dsack_dups ≤ total_retrans` is it valid (`ack_dsack`, `TCPDSACKRecvSegs`; else
+`TCPDSACKIgnoredDubious`), its segments then counted as delivered. `delivered` = newly cumulatively acked packets not already SACKed + newly SACKed ones; it is
+`cong_avoid`'s count and PRR's DeliveredData (Linux `tcp_newly_delivered`), plus a valid D-SACK's segments. For an ACK below SND.UNA
 (`old_ack`, §4.4 step 6; `new_una` = `prior_una`) only the SACK and D-SACK tagging, `LossRecovery::on_ack` and the
 delivered count run: no RTT sample, no `pkts_acked`, no rate sample and no CC (Linux `tcp_ack`, `old_ack`).
 
 ```cpp
 struct AckInput { Time now; std::uint64_t prior_una, new_una; std::optional<std::uint32_t> tsecr;  // to recovery
-                  std::span<const Range> sack; std::optional<Range> dsack; bool window_update, dupack,
-                  old_ack; };                     // old_ack: SEG.ACK < SND.UNA, SACK/D-SACK and recovery only
+                  std::uint32_t now_ts; std::span<const Range> sack; std::optional<Range> dsack;
+                  bool window_update, dupack, old_ack; };  // old_ack: SEG.ACK < SND.UNA, SACK/D-SACK and recovery only
 struct AckOutcome {                                 // after tagging, cleanup and loss marking; to CC and PRR
   std::uint32_t delivered, acked_pkts, newly_sacked, newly_lost, prior_in_flight, in_flight;   // packets
-  std::uint32_t flags;   // AckFlag bits: una_advanced, retrans_data_acked, orig_sack_acked, sack_reneging, maybe_delayed
-  Duration seq_rtt, ca_rtt;  const RateSample* rs;  // Duration{-1}: none; rs: M2b, nullptr in M1
+  std::uint32_t flags;   // AckFlag bits: una_advanced, retrans_data_acked, orig_sack_acked, sack_reneging,
+                         // maybe_delayed, fin_acked, dsack (valid D-SACK), dsack_tlp
+  Duration seq_rtt, ca_rtt;  const RateSample* rs;  // Duration{-1}: none; rs: the ACK's sample, nullptr for old_ack
 };
 struct AckSample { std::uint32_t pkts_acked; Duration rtt; std::uint32_t in_flight; };    // Linux ack_sample (ca_rtt)
 struct RecoveryCtx { SendQueue& q; CcConn& cc; CongestionControl& algo; const RttEstimator& rtt;
-                     const TcpConfig& cfg; Time now; std::uint32_t snd_wnd; };
+                     const TcpConfig& cfg; Time now; std::uint32_t snd_wnd; StackStats& stats; bool sack_ok;
+                     std::uint8_t backoff, rto_count;
+                     const AckInput* in;                // the ACK being processed, else nullptr
+                     std::uint32_t ts_offset, max_snd_wnd; std::uint64_t total_retrans, dsack_dups;
+                     bool has_prior; std::uint64_t prior_delivered, delivered;  // rate snapshot (reo_wnd)
+                     Duration pacing_delay;             // pacing_next - now while the pacing gate applies, else 0
+                     std::uint32_t ts_of(Time) const; };
 enum class XmitTimer : std::uint8_t { none, rto, persist, reo, pto };   // one timer, RFC 8985 §8, Linux icsk_pending
+enum class TlpAction : std::uint8_t { none, new_data, retransmit_last };
 class LossRecovery {                                // M1: NewReno; M2a: RFC 6675 scoreboard + RACK-TLP + PRR
  public:
   void on_delivered(RecoveryCtx&, const TxSeg&, bool via_sack);   // from the SendQueue callbacks
-  void on_ack(RecoveryCtx&, const AckInput&, AckOutcome&);        // marks lost, moves CaState; PRR writes cwnd
+  void on_ack(RecoveryCtx&, const AckInput&, AckOutcome&);        // marks lost, moves CaState
   void on_transmit(RecoveryCtx&, const TxSeg&, TxKind);           // every (re)transmission: prr_out, HighRxt, TLP
-  void on_burst_end(RecoveryCtx&);                                // end of transmit(): schedule the PTO
+  void on_burst_end(RecoveryCtx&, bool new_data_sent);            // end of transmit(): schedule the PTO
   void on_rto(RecoveryCtx&); void on_pmtu_drop(RecoveryCtx&);     // enter Loss and mark (§5.3); simple retransmit
   std::pair<XmitTimer, Time> xmit_timer(const RecoveryCtx&) const;  // M1: RFC 6298 rto, or persist (§4.9)
   void on_xmit_timer(RecoveryCtx&, XmitTimer);                    // M2a: reo, pto; the engine handles rto/persist
+  void cwnd_reduction(RecoveryCtx&, std::uint32_t newly_acked_sacked, std::uint32_t newly_lost,
+                      std::uint32_t flags);                       // CC step in CWR/Recovery: PRR writes cwnd
+  bool may_raise_cwnd(const RecoveryCtx&, const AckOutcome&) const;  // tcp_may_raise_cwnd (M1: acked_pkts > 0)
+  std::optional<std::uint64_t> next_seg_extra(RecoveryCtx&);     // RFC 6675 NextSeg rules 3-4 after new data
+  TlpAction on_pto(RecoveryCtx&); void on_tlp_sent(RecoveryCtx&, TlpAction, bool sent);
+  bool exempt_from_cwnd(const RecoveryCtx&, const TxSeg&) const;  // M1: the pending fast retransmission
+  std::uint32_t reordering(const TcpConfig&) const; std::uint32_t reord_seen() const;  // tcp_info
+  std::optional<std::uint64_t> tlp_high_seq() const;
+  void set_script(RecoveryScript*);                              // test seam (tests/support), null in production
   CaState state() const;
 };
 ```
@@ -957,7 +980,9 @@ struct CcConn {                                     // the part of the TCB a CC 
   std::uint32_t cwnd, ssthresh, cwnd_cnt, cwnd_clamp, prior_cwnd, prior_ssthresh;
   std::uint64_t pacing_rate, max_pacing_rate;       // bytes/s; always computed (§5.5)
   bool pacing_needed;                               // Linux sk_pacing_status; BBR sets it
-  std::uint64_t app_limited;                        // tcp_rate marker (§5.4); BBR writes it entering PROBE_RTT
+  std::uint64_t app_limited;                        // tcp_rate marker (§5.4), copied from and back to RateState
+                                                    // around the CC hooks; BBR writes it entering PROBE_RTT
+  bool paced; CcFlavor flavor;                      // pacing gate applies (tcp_needs_internal_pacing); cc_flavor
   // read-only views refreshed before each hook
   CaState ca_state; std::uint32_t mss, in_flight, max_packets_out, gso_max_size; bool cwnd_limited;
   std::uint64_t snd_una, snd_nxt, delivered, lost;  // offsets (HyStart rounds, RFC 9406 windowEnd); packets
@@ -976,10 +1001,12 @@ class CongestionControl {
   virtual std::uint32_t undo_cwnd(const CcConn& c) { return std::max(c.cwnd, c.prior_cwnd); }
   virtual bool has_cong_control() const { return false; }               // BBR owns cwnd and pacing
   virtual void cong_control(CcConn&, const AckOutcome&, const RateSample&) {}
-  virtual std::uint32_t sndbuf_expand() const { return 2; } virtual std::uint32_t min_tso_segs() const { return 2; }
+  virtual std::uint32_t sndbuf_expand() const { return 2; }
+  virtual std::uint32_t min_tso_segs(const CcConn&) const { return 2; }  // BBR: by pacing rate
 };
-using CcStorage = std::variant<NewReno /*, Cubic (M2b), Bbr (M2c) */>;  // in the TCB, no heap
+using CcStorage = std::variant<NewReno, Cubic, Bbr>;  // in the TCB, no heap; Cubic M2b, Bbr M2c
 CongestionControl& cc_of(CcStorage&);               // std::visit to the base reference
+constexpr std::uint32_t jiffies(Time);              // tcp_jiffies32: now_ns / 1'000'000, wrapping (HZ 1000)
 ```
 
 When `has_cong_control()` is true the engine skips `cong_avoid` and PRR and calls `cong_control` after rate

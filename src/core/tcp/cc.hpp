@@ -1,11 +1,11 @@
 // The per-ACK structures shared by the ACK pipeline, loss recovery and
 // congestion control (DESIGN §5.1), and the congestion-control interface
-// (§5.2). Interface declared by m1-found; owned by m1-tx.
+// (§5.2). Interface declared by m1-found, extended by m2-found (M2-DESIGN
+// §2.1); a contract from M2 on (M2-TASKS "Rules for all M2 tasks").
 //
 // Hooks mirror Linux struct tcp_congestion_ops so that tcp_cubic.c and
 // tcp_bbr.c port with little change. cwnd and ssthresh are in packets, as in
-// Linux and RFC 9438. Algorithms live in the TCB (CcStorage, cc_newreno.hpp),
-// not on the heap.
+// Linux and RFC 9438. Algorithms live in the TCB (CcStorage), not on the heap.
 #pragma once
 
 #include <algorithm>
@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <variant>
 
 #include "core/tcp/rate.hpp"
 #include "utcp/config.hpp"
@@ -55,7 +56,10 @@ enum AckFlag : std::uint32_t {
   ack_maybe_delayed = 1u << 4,      // the RTT sample may include a delayed ACK (tcp_clean_rtx_queue)
   ack_fin_acked = 1u << 5,          // the ACK newly covered our FIN (§3.2, fin_acked); not
                                     // set again by later ACKs (SendQueue::fin_acked is the state)
-  ack_dsack = 1u << 6,              // the ACK carried a D-SACK (FLAG_DSACKING_ACK)
+  ack_dsack = 1u << 6,              // the ACK carried a valid D-SACK (FLAG_DSACKING_ACK,
+                                    // tcp_dsack_seen; M2-DESIGN §1.6)
+  ack_dsack_tlp = 1u << 7,          // the D-SACK covers at most one MSS ending at tlp_high_seq
+                                    // (FLAG_DSACK_TLP): a TLP's duplicate, not reordering
 };
 
 // After SACK tagging, cumulative cleanup and loss marking; input to the CC and
@@ -69,7 +73,10 @@ struct AckOutcome {
   std::uint32_t flags = 0;    // AckFlag bits
   Duration seq_rtt{-1};       // SRTT/RTO sample; -1 = none
   Duration ca_rtt{-1};        // min_rtt and CC sample; -1 = none
-  const RateSample* rs = nullptr;  // M2b; nullptr in M1
+  // The ACK's rate sample (tcp_rate_gen), set by process_ack before the CC
+  // step; it lives in the AckContext (AckContext::sample), so it is valid
+  // while that lives. nullptr for an old ACK (no sample, Linux old_ack).
+  const RateSample* rs = nullptr;
 };
 
 // Linux struct ack_sample (pkts_acked hook).
@@ -86,12 +93,15 @@ struct CcConn {  // the part of the TCB a CC may read and write
   std::uint32_t prior_cwnd = 0, prior_ssthresh = 0;  // for undo (§1.2) and repeated RTOs
   std::uint64_t pacing_rate = 0, max_pacing_rate = 0;  // bytes/s; always computed (§5.5)
   bool pacing_needed = false;                          // Linux sk_pacing_status; BBR sets it
-  std::uint64_t app_limited = 0;  // tcp_rate marker (§5.4); BBR writes it entering PROBE_RTT
+  // tcp_rate marker (§5.4), one value with RateState::app_limited: copied in
+  // before every hook and back after cong_control (M2-DESIGN §2.1 item 7);
+  // BBR writes it entering PROBE_RTT.
+  std::uint64_t app_limited = 0;
   // Read-only views, refreshed before each hook. LossRecovery refreshes
   // ca_state, in_flight, packets_out, snd_una, snd_nxt, lost, now, srtt and
   // min_rtt; process_ack also delivered and delivered_time (from RateState);
   // the engine keeps the others (mss = mss_cache, max_packets_out,
-  // gso_max_size, cwnd_limited, lsndtime, wstamp, rng) current.
+  // gso_max_size, cwnd_limited, lsndtime, wstamp, rng, paced, flavor) current.
   CaState ca_state = CaState::open;
   // max_packets_out: Linux tp->max_packets_out, the most packets out in the
   // current cwnd-usage window, as tcp_cwnd_validate keeps it.
@@ -109,7 +119,27 @@ struct CcConn {  // the part of the TCB a CC may read and write
   Time now, lsndtime, delivered_time, wstamp;
   Duration srtt{}, min_rtt{};
   Rng* rng = nullptr;  // the stack's runtime stream (BBR's random PROBE_BW phase)
+  // The pacing gate applies (Linux sk_pacing_status != SK_PACING_NONE;
+  // HyStart reads it, tcp_cubic.c hystart_update).
+  bool paced = false;
+  CcFlavor flavor = CcFlavor::linux;  // TcpConfig::cc_flavor (M2-DESIGN §2.1 item 5)
 };
+
+// Linux tcp_jiffies32 at HZ = 1000 (the server's CONFIG_HZ): whole
+// milliseconds of `t`, wrapping. tcp_cubic.c and tcp_bbr.c time several
+// rules in jiffies; the ports use this so the once-per-jiffy rules match.
+[[nodiscard]] constexpr std::uint32_t jiffies(Time t) noexcept {
+  return static_cast<std::uint32_t>(static_cast<std::uint64_t>(t.ns) / 1'000'000u);
+}
+
+// The algorithms (cc_newreno.hpp, cc_cubic.hpp, cc_bbr.hpp) and the storage
+// of one connection's algorithm, in the TCB (no heap). Declared here so that
+// cc_cubic.hpp and cc_bbr.hpp need only this header; include cc_newreno.hpp,
+// which includes the other two, to use the variant.
+class NewReno;
+class Cubic;
+class Bbr;
+using CcStorage = std::variant<NewReno, Cubic, Bbr>;
 
 // cwnd_clamp 0 means no clamp (Linux snd_cwnd_clamp defaults to ~0).
 [[nodiscard]] constexpr std::uint32_t effective_cwnd_clamp(const CcConn& c) noexcept {
@@ -148,7 +178,9 @@ public:
   [[nodiscard]] virtual bool has_cong_control() const { return false; }
   virtual void cong_control(CcConn&, const AckOutcome&, const RateSample&) {}
   [[nodiscard]] virtual std::uint32_t sndbuf_expand() const { return 2; }
-  [[nodiscard]] virtual std::uint32_t min_tso_segs() const { return 2; }
+  // Linux min_tso_segs: the floor of a paced burst in packets (tcp_min_tso_segs
+  // = 2; BBR's depends on the pacing rate, bbr_min_tso_segs).
+  [[nodiscard]] virtual std::uint32_t min_tso_segs(const CcConn&) const { return 2; }
 
 protected:
   CongestionControl() = default;

@@ -185,6 +185,14 @@ struct Tcb {
     }
   }
   [[nodiscard]] CongestionControl& algo() noexcept { return cc_of(cc); }
+  // Linux tcp_pacing_delay before truncation (M2-DESIGN §1.7): the time until
+  // the next paced send while the pacing gate applies, else 0.
+  [[nodiscard]] Duration pacing_delay(Time now) const {
+    if (!txp.pacing_applies(cc_conn, ctr.data_segs_out) || pacing_next <= now) {
+      return Duration{0};
+    }
+    return pacing_next - now;
+  }
 
   // snd_una <= snd_nxt, SendQueue counters against a recount, the receive
   // side consistent; aborts on failure.

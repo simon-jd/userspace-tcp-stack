@@ -616,6 +616,9 @@ std::uint32_t TcpEngine::peer_window(const Tcb& t, std::uint16_t field) const {
     case TestFault::overscaled_peer_window:
       return std::uint32_t{field} << max_wscale;
     case TestFault::none:
+    case TestFault::prr_skip_force:      // LossRecovery (M2a)
+    case TestFault::double_tlp:          // LossRecovery (M2a)
+    case TestFault::ignore_pacing_gate:  // transmit()
       break;
   }
   return std::uint32_t{field} << t.snd_wscale;
@@ -745,6 +748,9 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   const std::uint32_t prior_packets = t.sndq.counters().packets_out;
   AckContext c{t.sndq,  t.recovery, t.rtt,     t.cc_conn, t.algo(),  t.rate,      cfg_,
                st,      t.ctr,      t.snd_wnd, t.sack_ok, t.backoff, t.rto_count};
+  c.max_snd_wnd = t.max_snd_wnd;
+  c.ts_offset = t.ts_offset;
+  c.pacing_delay = t.pacing_delay(now);
   const AckOutcome out = process_ack(c, in);
   if (old_ack) {
     return true;

@@ -11,7 +11,11 @@
 namespace utcp {
 
 TcpEngine::TcpEngine(StackCore& core)
-    : core_(core), cfg_(core.config().tcp), conns_(core.hash_key()), tw_(core.hash_key()) {}
+    : core_(core), cfg_(core.config().tcp), conns_(core.hash_key()), tw_(core.hash_key()) {
+  // Forbidden field combinations (RFC 8985 §9.2: no RFC 6675 recovery with
+  // RACK-TLP); callers check with check_tcp_config first.
+  UTCP_CHECK(!check_tcp_config(cfg_).has_value());
+}
 
 TcpEngine::~TcpEngine() = default;
 
@@ -306,8 +310,16 @@ void TcpEngine::update_mss(Tcb& t) {
 }
 
 RecoveryCtx TcpEngine::rctx(Tcb& t, Time now) {
-  return RecoveryCtx{t.sndq,    t.cc_conn,          t.algo(), t.rtt,   cfg_,       now,
-                     t.snd_wnd, core_.stats(),      t.sack_ok, t.backoff, t.rto_count};
+  RecoveryCtx c{t.sndq,    t.cc_conn,     t.algo(),  t.rtt,     cfg_,        now,
+                t.snd_wnd, core_.stats(), t.sack_ok, t.backoff, t.rto_count};
+  // M2-DESIGN §1.6 inputs; no ACK and no rate snapshot outside process_ack.
+  c.ts_offset = t.ts_offset;
+  c.max_snd_wnd = t.max_snd_wnd;
+  c.total_retrans = t.ctr.total_retrans;
+  c.dsack_dups = t.ctr.dsack_dups;
+  c.delivered = t.rate.delivered;
+  c.pacing_delay = t.pacing_delay(now);
+  return c;
 }
 
 void TcpEngine::refresh_cc(Tcb& t, Time now) {
@@ -326,6 +338,11 @@ void TcpEngine::refresh_cc(Tcb& t, Time now) {
   c.snd_nxt = t.sndq.nxt();
   c.srtt = t.rtt.srtt();
   c.min_rtt = t.rtt.min_rtt();
+  c.app_limited = t.rate.app_limited;  // one value (M2-DESIGN §2.1 item 7)
+  c.flavor = cfg_.cc_flavor;
+  // The connection's pacing status (sk_pacing_status), not the per-segment
+  // gate: the rule that leaves the first 10 segments unpaced does not count.
+  c.paced = t.txp.pacing_applies(c, std::max<std::uint64_t>(t.ctr.data_segs_out, 10));
 }
 
 // §10.1, Linux tcp_chrono_start/tcp_chrono_stop.

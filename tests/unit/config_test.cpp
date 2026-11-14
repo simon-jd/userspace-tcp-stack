@@ -8,6 +8,9 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #include "support/field_count.hpp"
 
@@ -38,11 +41,12 @@ constexpr std::uint32_t MiB = 1024 * 1024;
   ROW(idle_restart, IdleRestart::rfc5681, IdleRestart::linux)                     \
   ROW(cwnd_growth_needs_cwnd_limited, true, true)                                 \
   ROW(recovery_reduction, RecoveryReduction::rfc6675, RecoveryReduction::prr)     \
-  ROW(rack_tlp, true, true)                                                       \
+  ROW(rack_tlp, false, true)                                                      \
   ROW(dupthresh, 3u, 3u)                                                          \
   ROW(adaptive_reordering, false, true)                                           \
   ROW(max_reordering, 300u, 300u)                                                 \
   ROW(cc, CcAlgo::newreno, CcAlgo::newreno)                                       \
+  ROW(cc_flavor, CcFlavor::rfc, CcFlavor::linux)                                  \
   ROW(hystart, Hystart::hystart_pp, Hystart::hystart_classic)                     \
   ROW(hystart_low_window, 16u, 16u)                                               \
   ROW(hystart_ack_delta, 2ms, 2ms)                                                \
@@ -269,6 +273,214 @@ TEST(Config, PortRangeSize) {
   EXPECT_EQ((PortRange{8, 7}).size(), 0u);
 }
 
+// M2-DESIGN §1.2: RFC 8985 §9.2 forbids RFC 6675 recovery with RACK-TLP.
+// Both profiles are usable; rfc with PRR (the ablation's PRR row) is too.
+TEST(Config, ForbiddenPairingIsRejected) {
+  EXPECT_EQ(check_tcp_config(tcp_config(ProfileId::rfc)), std::nullopt);
+  EXPECT_EQ(check_tcp_config(tcp_config(ProfileId::linux_compat)), std::nullopt);
+  TcpConfig c = tcp_config(ProfileId::rfc);
+  c.recovery_reduction = RecoveryReduction::prr;
+  EXPECT_EQ(check_tcp_config(c), std::nullopt);
+  c = tcp_config(ProfileId::linux_compat);
+  c.rack_tlp = false;
+  c.recovery_reduction = RecoveryReduction::rfc6675;
+  EXPECT_EQ(check_tcp_config(c), std::nullopt);
+  c.rack_tlp = true;
+  const auto err = check_tcp_config(c);
+  ASSERT_TRUE(err.has_value());
+  EXPECT_NE(err->find("RFC 8985 §9.2"), std::string::npos) << *err;
+  EXPECT_NE(err->find("rack_tlp"), std::string::npos) << *err;
+  EXPECT_NE(err->find("rfc6675"), std::string::npos) << *err;
+  c = tcp_config(ProfileId::rfc);
+  c.rack_tlp = true;
+  EXPECT_TRUE(check_tcp_config(c).has_value());
+}
+
+// set_config_field knows every TcpConfig field, rows and def-file knobs, in
+// declaration order.
+TEST(Config, FieldNamesCoverEveryField) {
+  const auto names = config_field_names();
+  EXPECT_EQ(names.size(), utcp::test::field_count<TcpConfig>());
+  EXPECT_EQ(std::set<std::string_view>(names.begin(), names.end()).size(), names.size());
+  std::vector<std::string_view> want;
+#define NAME_ROW(field, rfc_value, linux_value) want.emplace_back(#field);
+  CONFIG_ROWS(NAME_ROW)
+#undef NAME_ROW
+#define UTCP_TCP_KNOB(type, name, rfc_value, linux_value, doc) want.emplace_back(#name);
+#define UTCP_STACK_KNOB(type, name, value, doc)
+#include "utcp/defs/config_ip.def"
+#include "utcp/defs/config_rx.def"
+#include "utcp/defs/config_tx.def"
+#include "utcp/defs/config_tcp.def"
+#undef UTCP_TCP_KNOB
+#undef UTCP_STACK_KNOB
+  EXPECT_EQ(std::vector<std::string_view>(names.begin(), names.end()), want);
+}
+
+// Every field's text form sets the same value again: copying all fields of
+// one profile into the other through text gives that profile, and the text
+// of each field reads back unchanged.
+TEST(Config, SetConfigFieldRoundTripsEveryField) {
+  for (const auto& [from_id, to_id] : {std::pair{ProfileId::rfc, ProfileId::linux_compat},
+                                      std::pair{ProfileId::linux_compat, ProfileId::rfc}}) {
+    const TcpConfig from = tcp_config(from_id);
+    TcpConfig to = tcp_config(to_id);
+    for (const std::string_view name : config_field_names()) {
+      const auto text = get_config_field(from, name);
+      ASSERT_TRUE(text.has_value()) << name;
+      const auto r = set_config_field(to, name, *text);
+      ASSERT_TRUE(r.has_value()) << name << " = " << *text << ": " << r.error();
+      EXPECT_EQ(get_config_field(to, name), text) << name;
+    }
+    EXPECT_EQ(to, from);
+  }
+  // Values away from the profiles, so optionals with a value, test knobs
+  // and other enumerators are covered too.
+  TcpConfig c;
+  c.initial_cwnd = std::nullopt;
+  c.mss_clamp = 1200;
+  c.rcv_wscale = 9;
+  c.test_isn = 0xffff0000u;
+  c.test_fixed_pacing_rate = 6'250'000;
+  c.test_fault = TestFault::double_tlp;
+  c.orphan_retries = std::nullopt;
+  c.cc = CcAlgo::bbr;
+  c.pacing = Pacing::never;
+  c.delack_ato_min = 1500us;
+  c.pmtu_expiry = 7ns;
+  TcpConfig d = tcp_config(ProfileId::rfc);
+  for (const std::string_view name : config_field_names()) {
+    const auto text = get_config_field(c, name);
+    ASSERT_TRUE(text.has_value()) << name;
+    ASSERT_TRUE(set_config_field(d, name, *text).has_value()) << name << " = " << *text;
+  }
+  EXPECT_EQ(d, c);
+}
+
+// The accepted text forms, one or more per field type.
+TEST(Config, SetConfigFieldParsesEachType) {
+  TcpConfig c;
+  auto set = [&c](std::string_view name, std::string_view value) {
+    const auto r = set_config_field(c, name, value);
+    EXPECT_TRUE(r.has_value()) << name << " = " << value << ": " << (r ? "" : r.error());
+  };
+  set("rto_min", "300ms");  // Duration
+  EXPECT_EQ(c.rto_min, 300ms);
+  set("rto_max", "2min");
+  EXPECT_EQ(c.rto_max, 120s);
+  set("hystart_ack_delta", "1500us");
+  EXPECT_EQ(c.hystart_ack_delta, 1500us);
+  set("delack_ato_min", "40000000ns");
+  EXPECT_EQ(c.delack_ato_min, 40ms);
+  set("time_wait", "60s");
+  EXPECT_EQ(c.time_wait, 60s);
+  set("recovery_reduction", "rfc6675");  // enums
+  EXPECT_EQ(c.recovery_reduction, RecoveryReduction::rfc6675);
+  set("hystart", "hystart_pp");
+  EXPECT_EQ(c.hystart, Hystart::hystart_pp);
+  set("cc", "reno");
+  EXPECT_EQ(c.cc, CcAlgo::newreno);
+  set("cc", "cubic");
+  EXPECT_EQ(c.cc, CcAlgo::cubic);
+  set("cc_flavor", "rfc");
+  EXPECT_EQ(c.cc_flavor, CcFlavor::rfc);
+  set("test_fault", "ignore_pacing_gate");
+  EXPECT_EQ(c.test_fault, TestFault::ignore_pacing_gate);
+  set("rack_tlp", "off");  // bool
+  EXPECT_FALSE(c.rack_tlp);
+  set("rack_tlp", "1");
+  EXPECT_TRUE(c.rack_tlp);
+  set("sack", "false");
+  EXPECT_FALSE(c.sack);
+  set("dupthresh", "5");  // integers
+  EXPECT_EQ(c.dupthresh, 5u);
+  set("syn_retries", "255");
+  EXPECT_EQ(c.syn_retries, 255);
+  set("min_pmtu", "1280");
+  EXPECT_EQ(c.min_pmtu, 1280);
+  set("snd_buf_max", "64Mi");  // sizes
+  EXPECT_EQ(c.snd_buf_max, 64 * MiB);
+  set("rcv_buf_max", "32Mi");
+  EXPECT_EQ(c.rcv_buf_max, 32 * MiB);
+  set("snd_buf_init", "16Ki");
+  EXPECT_EQ(c.snd_buf_init, 16 * KiB);
+  set("gso_max_size", "65215");
+  EXPECT_EQ(c.gso_max_size, 65215u);
+  set("test_fixed_pacing_rate", "50Mbit");  // rates: payload bytes/s
+  EXPECT_EQ(c.test_fixed_pacing_rate, std::optional<std::uint64_t>{6'250'000});
+  set("test_fixed_pacing_rate", "1Gbit");
+  EXPECT_EQ(c.test_fixed_pacing_rate, std::optional<std::uint64_t>{125'000'000});
+  set("test_fixed_pacing_rate", "800kbit");
+  EXPECT_EQ(c.test_fixed_pacing_rate, std::optional<std::uint64_t>{100'000});
+  set("test_fixed_pacing_rate", "1448000");
+  EXPECT_EQ(c.test_fixed_pacing_rate, std::optional<std::uint64_t>{1'448'000});
+  set("test_fixed_pacing_rate", "none");  // optionals
+  EXPECT_EQ(c.test_fixed_pacing_rate, std::nullopt);
+  set("initial_cwnd", "none");
+  EXPECT_EQ(c.initial_cwnd, std::nullopt);
+  set("initial_cwnd", "4");
+  EXPECT_EQ(c.initial_cwnd, OptU32{4u});
+  set("mss_clamp", "1400");
+  EXPECT_EQ(c.mss_clamp, OptU16{1400});
+  set("rcv_wscale", "14");
+  EXPECT_EQ(c.rcv_wscale, OptU8{14});
+  set("ephemeral_ports", "40000-40009");  // PortRange
+  EXPECT_EQ(c.ephemeral_ports, (PortRange{40000, 40009}));
+
+  EXPECT_EQ(get_config_field(c, "rto_max"), "2min");
+  EXPECT_EQ(get_config_field(c, "hystart_ack_delta"), "1500us");
+  EXPECT_EQ(get_config_field(c, "snd_buf_max"), "67108864");
+  EXPECT_EQ(get_config_field(c, "ephemeral_ports"), "40000-40009");
+  EXPECT_EQ(get_config_field(c, "test_fixed_pacing_rate"), "none");
+  EXPECT_EQ(get_config_field(c, "rack_tlp"), "true");
+  EXPECT_EQ(get_config_field(c, "no_such_field"), std::nullopt);
+}
+
+// Unknown names and values that do not parse or do not fit are errors that
+// name the field, and leave the configuration unchanged.
+TEST(Config, SetConfigFieldRejectsUnknownNamesAndBadValues) {
+  const TcpConfig before = tcp_config(ProfileId::linux_compat);
+  TcpConfig c = before;
+  const auto unknown = set_config_field(c, "rack", "on");
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_NE(unknown.error().find("rack"), std::string::npos);
+  const std::pair<std::string_view, std::string_view> bad[] = {
+      {"rto_min", "200"},            // a duration needs a unit
+      {"rto_min", "200 ms"},
+      {"rto_min", "-1ms"},
+      {"rto_min", "2h"},
+      {"rto_min", "999999999999min"},  // beyond the Duration range
+      {"rto_min", ""},
+      {"recovery_reduction", "fast"},
+      {"recovery_reduction", "PRR"},
+      {"cc", "vegas"},
+      {"test_fault", "nothing"},
+      {"rack_tlp", "yes"},
+      {"dupthresh", "3x"},
+      {"dupthresh", "64Ki"},        // sizes only on byte fields
+      {"dupthresh", "4294967296"},  // above std::uint32_t
+      {"dupthresh", "-3"},
+      {"dupthresh", "99999999999999999999999"},
+      {"syn_retries", "256"},       // above std::uint8_t
+      {"mss_clamp", "65536"},
+      {"snd_buf_max", "4Gi"},       // above std::uint32_t
+      {"snd_buf_max", "64Mbit"},    // rates only on rate fields
+      {"snd_buf_max", "64MB"},
+      {"test_fixed_pacing_rate", "1bit"},  // not whole bytes/s
+      {"test_fixed_pacing_rate", "50Mi"},
+      {"test_fixed_pacing_rate", "50mbit"},
+      {"initial_cwnd", "nil"},
+      {"ephemeral_ports", "1024"},
+      {"ephemeral_ports", "1024-70000"},
+  };
+  for (const auto& [name, value] : bad) {
+    const auto r = set_config_field(c, name, value);
+    ASSERT_FALSE(r.has_value()) << name << " = '" << value << "'";
+    EXPECT_TRUE(r.error().starts_with(std::string(name) + ": ")) << r.error();
+    EXPECT_EQ(c, before) << name << " = '" << value << "'";
+  }
+}
+
 TEST(Config, NamesRoundTrip) {
   for (const ProfileId p : {ProfileId::rfc, ProfileId::linux_compat}) {
     EXPECT_EQ(profile_from_string(to_string(p)), p);
@@ -280,6 +492,8 @@ TEST(Config, NamesRoundTrip) {
   }
   EXPECT_EQ(cc_from_string("reno"), CcAlgo::newreno);
   EXPECT_EQ(cc_from_string("vegas"), std::nullopt);
+  EXPECT_EQ(to_string(CcFlavor::rfc), "rfc");
+  EXPECT_EQ(to_string(CcFlavor::linux), "linux");
 }
 
 }  // namespace
