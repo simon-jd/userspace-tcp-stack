@@ -835,10 +835,10 @@ void TcpEngine::sndbuf_expand(Tcb& t) {
   }
 }
 
-// ev_writable once free send space is at least half the queued bytes (Linux
+// ev_writable once free send space is at least half the space in use (Linux
 // sk_stream_is_writeable).
 void TcpEngine::window_writable(Tcb& t, Time now) {
-  const std::uint64_t queued = t.sndq.end() - t.sndq.una();
+  const std::uint64_t queued = t.sndq.held();
   if (t.sndq.free_space() > 0 && t.sndq.free_space() >= queued / 2) {
     chrono_stop(t, ChronoType::sndbuf_limited, now);
     if (t.send_blocked) {

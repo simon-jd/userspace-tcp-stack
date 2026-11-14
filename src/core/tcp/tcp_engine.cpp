@@ -301,6 +301,8 @@ void TcpEngine::update_mss(Tcb& t) {
   }
   t.mss_cache = static_cast<std::uint16_t>(std::min<std::uint32_t>(m, 0xffff));
   t.cc_conn.mss = t.mss_cache;
+  // §4.11: the TxSegs held take at least mss_cache / 2 each of the send buffer.
+  t.sndq.set_seg_charge(t.mss_cache / 2u);
 }
 
 RecoveryCtx TcpEngine::rctx(Tcb& t, Time now) {

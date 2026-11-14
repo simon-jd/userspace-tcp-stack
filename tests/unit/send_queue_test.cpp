@@ -64,6 +64,32 @@ Counters recount(const SendQueue& q) {
   return c;
 }
 
+// held() charges the TxSegs held at least seg_charge() each (DESIGN §4.11;
+// sweep seeds 13775, 34664, 73713, 81519): unsent bytes count as bytes, and
+// segments of at least the charge count as their payload.
+TEST(SendQueue, SegChargeCountsSmallSegments) {
+  ChunkPool pool(64);
+  SendQueue q(pool, 10'000);
+  q.set_seg_charge(500);
+  EXPECT_EQ(q.write(pattern(3000, 0)), 3000u);
+  EXPECT_EQ(q.held(), 3000u);  // unsent
+  send_all(q, 1000, at(0));
+  EXPECT_EQ(q.held(), 3000u);  // 3 segments of 1000 bytes
+  EXPECT_EQ(q.free_space(), 7000u);
+  EXPECT_EQ(q.write(pattern(20, 3000)), 20u);
+  send_all(q, 1, at(1));       // 20 one-byte segments: 23 held
+  EXPECT_EQ(q.held(), 23u * 500u);
+  EXPECT_EQ(q.free_space(), 0u);
+  EXPECT_EQ(q.write(pattern(1, 3020)), 0u);
+  Deliveries d;
+  q.on_cumulative_ack(3010, at(2), d.fn());  // 10 one-byte segments left
+  EXPECT_EQ(q.held(), 5000u);
+  EXPECT_EQ(q.free_space(), 5000u);
+  q.set_seg_charge(0);
+  EXPECT_EQ(q.held(), 10u);
+  q.check_invariants();
+}
+
 TEST(SendQueue, WriteAndCopyOutAcrossRingWrap) {
   ChunkPool pool(64);
   SendQueue q(pool, 10'000);

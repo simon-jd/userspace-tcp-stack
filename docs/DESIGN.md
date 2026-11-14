@@ -363,8 +363,9 @@ struct StackConfig {
 };
 ```
 
-`TcpConfig` fields (names as in the code). "Same" means both profiles use the value. Sizes are payload bytes;
-Linux limits count `skb->truesize`, so a Linux buffer of nominal size N holds less than N bytes of payload.
+`TcpConfig` fields (names as in the code). "Same" means both profiles use the value. Sizes are payload bytes
+(the send buffer charges each segment held at least half an MSS, §4.11); Linux limits count `skb->truesize`, so a
+Linux buffer of nominal size N holds less than N bytes of payload.
 
 | Field | `rfc` | `linux_compat` | Basis |
 |---|---|---|---|
@@ -858,6 +859,14 @@ Without SACK, a duplicate ACK adds to `sacked_out`, capped so that `sacked_out +
 FIFO of (id, last_tx), pushed on every transmission, stale entries skipped, so RACK walks from the oldest send and
 stops early (Linux `tsorted_sent_queue`). `RateState` holds `delivered`, `delivered_time`, `first_tx_time` and the
 `app_limited` marker (§5.4).
+
+Send-buffer space in use (`SendQueue::held`) is the unsent bytes plus max(sent bytes, `packets_out` ·
+`mss_cache`/2): the TxSegs held are charged at least half an MSS each, so full-sized segments count as their
+payload and a buffer of `snd_buf` bytes holds at most about 2 · `snd_buf`/`mss_cache` packets. Linux charges each
+skb its truesize (`sk_wmem_queued`), so tiny segments fill its send buffer long before their payload does; without
+the charge, an application writing one byte at a time with `nodelay` kept one TxSeg per buffered byte in flight
+(sweep seeds 13775, 34664, 73713, 81519 in `docs/SIM-BUGS.md`). `free_space`, `tcp_send` and the writable rule
+(free ≥ half of the space in use) use this charge.
 
 ### 4.12 Closing
 

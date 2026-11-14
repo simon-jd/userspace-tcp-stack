@@ -3,10 +3,12 @@
 // §4.4, §4.10).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -467,6 +469,49 @@ TEST(TcpTransfer, AdvancingAckWithOlderSeqTakesItsWindow) {
   }
   EXPECT_EQ(tc::drain(c.stack(), c.h).size(), 300u);
   c.stack().debug_check();
+}
+
+// Sweep seeds 13775, 34664, 73713, 81519 (docs/SIM-BUGS.md): one-byte writes
+// with nodelay. Each TxSeg takes at least mss / 2 of the send buffer (DESIGN
+// §4.11, as Linux charges every skb its truesize), so the segments held stay
+// below 2 * snd_buf / mss + 1 instead of one per buffered byte, and the data
+// arrives intact.
+TEST(TcpTransfer, OneByteWritesHoldFewSegments) {
+  namespace tc = utcp::test::tcpt;
+  t::TcpHarness h(t::TcpHarness::default_config(Side::a), t::TcpHarness::default_config(Side::b));
+  h.set_delay(Side::a, 5ms);
+  h.set_delay(Side::b, 5ms);
+  utcp::TcpSocketOptions o;
+  o.nodelay = true;
+  o.snd_buf = 16384;
+  const auto p = tc::open(h, 100ms, o);
+  ASSERT_TRUE(p);
+  const std::uint32_t mss = h.a().tcp_info(p->client)->snd_mss;
+  const std::uint32_t bound = *o.snd_buf / (mss / 2) + 1;
+  const t::Bytes data = t::pattern(40'000, 3);
+  t::Bytes got;
+  std::size_t sent = 0;
+  std::uint32_t most = 0;
+  const Time end = h.now() + 60s;
+  while (got.size() < data.size() && h.now() < end) {
+    while (sent < data.size()) {
+      const auto r = h.a().tcp_send(p->client, std::span(data).subspan(sent, 1));
+      if (!r) {
+        break;
+      }
+      sent += *r;
+      const std::uint32_t held = h.a().tcp_info(p->client)->unacked;
+      most = std::max(most, held);
+      ASSERT_LE(held, bound);
+    }
+    const t::Bytes in = tc::drain(h.b(), p->server);
+    got.insert(got.end(), in.begin(), in.end());
+    h.run_for(1ms);
+  }
+  EXPECT_EQ(got, data);
+  EXPECT_GT(most, bound / 2);  // the buffer did fill with small segments
+  h.a().debug_check();
+  h.b().debug_check();
 }
 
 }  // namespace
