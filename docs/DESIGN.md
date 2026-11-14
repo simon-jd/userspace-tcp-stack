@@ -871,11 +871,14 @@ advance, reordering detection) and the rate sampler (`tcp_rate_skb_delivered`); 
 `pkts_acked`; `LossRecovery::on_ack` (`tcp_fastretrans_alert`); delivered and lost counts; the rate sample
 (`tcp_rate_gen`); then `cong_control`, or `cong_avoid` outside cwnd reduction, and the pacing rate
 (`tcp_cong_control`). `delivered` = newly cumulatively acked packets not already SACKed + newly SACKed ones; it is
-`cong_avoid`'s count and PRR's DeliveredData (Linux `tcp_newly_delivered`).
+`cong_avoid`'s count and PRR's DeliveredData (Linux `tcp_newly_delivered`). For an ACK below SND.UNA
+(`old_ack`, §4.4 step 6; `new_una` = `prior_una`) only the SACK and D-SACK tagging, `LossRecovery::on_ack` and the
+delivered count run: no RTT sample, no `pkts_acked`, no rate sample and no CC (Linux `tcp_ack`, `old_ack`).
 
 ```cpp
 struct AckInput { Time now; std::uint64_t prior_una, new_una; std::optional<std::uint32_t> tsecr;  // to recovery
-                  std::span<const Range> sack; std::optional<Range> dsack; bool window_update, dupack; };
+                  std::span<const Range> sack; std::optional<Range> dsack; bool window_update, dupack,
+                  old_ack; };                     // old_ack: SEG.ACK < SND.UNA, SACK/D-SACK and recovery only
 struct AckOutcome {                                 // after tagging, cleanup and loss marking; to CC and PRR
   std::uint32_t delivered, acked_pkts, newly_sacked, newly_lost, prior_in_flight, in_flight;   // packets
   std::uint32_t flags;   // AckFlag bits: una_advanced, retrans_data_acked, orig_sack_acked, sack_reneging, maybe_delayed
