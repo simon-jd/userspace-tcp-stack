@@ -26,13 +26,16 @@ whether a D-SACK block is counted in TcpExtTCPSACKDiscard
     ordinary SACK block (tcp_is_sackblock_valid): a block above snd_una is
     valid; one at or below snd_una is counted in TCPSACKDiscard unless the
     ACK is older than snd_una ("Don't count olds caused by ACK reordering")
-total_retrans is the number of data segments the sender sent at or below
-its highest sequence sent so far (tso/gso are off on the sender, so one
-capture record is one segment). A D-SACK block is the first block when it
+total_retrans is the number of segments the sender sent at or below its
+highest sequence sent so far, counting SYN and FIN in the sequence space:
+__tcp_retransmit_skb (net/ipv4/tcp_output.c) adds every retransmitted skb to
+it, a SYN retransmitted after a lost SYN or SYN-ACK and a bare FIN included
+(tso/gso are off on the sender, so one capture record is one segment). A D-SACK block is the first block when it
 lies below the ACK or inside the second block (RFC 2883 §4).
 
 Output (JSON on stdout):
-  sender:   data_segs, retrans_segs, acks, dsack_acks, dsack_acks_old,
+  sender:   data_segs, retrans_segs (data and SYN/FIN), retrans_syn_fin
+            (of them without payload), acks, dsack_acks, dsack_acks_old,
             pred_dubious, pred_discard, dsack_never_retransmitted (D-SACK
             blocks whose range the sender sent only once),
             pred_discard_never_retransmitted, and with RECEIVER_SIDE
@@ -96,12 +99,17 @@ def dsack_block(ack, le, re):
 
 
 def segments(path, sender, flow, isn):
-    """Yields ('data', seq, len) and ('ack', ack, le, re) in capture order."""
+    """Yields ('data', seq, len, ctl) and ('ack', ack, le, re) in capture
+    order; ctl is the sequence space taken by SYN and FIN (0-2). Segments
+    from the sender without payload, SYN or FIN (pure ACKs, window probes
+    at SND.UNA-1) are skipped."""
     for p in rows(path):
         if p[0] == sender and (p[2], p[3]) == flow:
             ln = int(p[6]) if p[6] else 0
-            if ln > 0:
-                yield ("data", (int(p[5]) - isn) % M, ln)
+            flags = int(p[4], 16) if p[4] else 0
+            ctl = (1 if flags & 0x02 else 0) + (1 if flags & 0x01 else 0)
+            if ln > 0 or ctl:
+                yield ("data", (int(p[5]) - isn) % M, ln, ctl)
         elif p[1] == sender and (p[3], p[2]) == flow and p[7]:
             flags = int(p[4], 16)
             if not flags & 0x10:
@@ -113,7 +121,7 @@ def segments(path, sender, flow, isn):
 
 
 def sender_side(path, sender, flow, isn, dup_ranges=None):
-    out = {"data_segs": 0, "retrans_segs": 0, "acks": 0, "dsack_acks": 0,
+    out = {"data_segs": 0, "retrans_segs": 0, "retrans_syn_fin": 0, "acks": 0, "dsack_acks": 0,
            "dsack_acks_old": 0, "pred_dubious": 0, "pred_discard": 0,
            "dsack_never_retransmitted": 0, "pred_discard_never_retransmitted": 0}
     if dup_ranges is not None:
@@ -125,13 +133,19 @@ def sender_side(path, sender, flow, isn, dup_ranges=None):
     dsack_dups = 0
     for s in segments(path, sender, flow, isn):
         if s[0] == "data":
-            _, seq, ln = s
+            _, seq, ln, ctl = s
+            # Every retransmitted skb counts, SYN and bare FIN included
+            # (__tcp_retransmit_skb: total_retrans += segs).
+            if seq + ln + ctl <= snd_max:
+                out["retrans_segs"] += 1
+                if ln == 0:
+                    out["retrans_syn_fin"] += 1
+            snd_max = max(snd_max, seq + ln + ctl)
+            if ln == 0:
+                continue
             out["data_segs"] += 1
             mss = max(mss, ln)
             sent[seq] = sent.get(seq, 0) + 1
-            if seq + ln <= snd_max:
-                out["retrans_segs"] += 1
-            snd_max = max(snd_max, seq + ln)
             continue
         _, ack, le, re = s
         out["acks"] += 1
@@ -170,7 +184,9 @@ def receiver_side(path, sender, flow, isn, dup_ranges):
     seen = {}
     for s in segments(path, sender, flow, isn):
         if s[0] == "data":
-            _, seq, ln = s
+            _, seq, ln, _ = s
+            if ln == 0:
+                continue
             out["data_segs"] += 1
             k = (seq, seq + ln)
             seen[k] = seen.get(k, 0) + 1

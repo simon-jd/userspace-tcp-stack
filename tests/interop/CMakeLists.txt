@@ -29,3 +29,9 @@ add_test(NAME interop.backend_transport_check_stack
 find_package(Python3 3.10 COMPONENTS Interpreter REQUIRED)
 add_test(NAME interop.m1_pcap_summary_check
          COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/m1_pcap_summary_check.py)
+
+# The D-SACK replay of the interop runs (m1_dsack.py) over hand-written tshark
+# field lines: a retransmitted SYN or bare FIN counts in the sender's
+# total_retrans, a window probe does not (docs/INTEROP.md).
+add_test(NAME interop.m1_dsack_check
+         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/m1_dsack_check.py)
