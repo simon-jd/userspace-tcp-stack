@@ -205,6 +205,8 @@ TEST(TcpZeroWindow, SwsOverrideSendsWhatTheWindowTakes) {
     EXPECT_EQ(c.d().now() - t1, 8 * rto0);  // the backed-off persist interval
     EXPECT_EQ(seg[0].v.h.seq, c.their);
     EXPECT_EQ(seg[0].v.payload.size(), 300u);
+    // out() views die at the next out(): keep the payload.
+    t::Bytes got(seg[0].v.payload.begin(), seg[0].v.payload.end());
     // The data is in flight: the RTO, without the probing backoff, resends
     // it (Linux tcp_send_probe0).
     c.d().run_for(rto0 - 1ms);
@@ -216,7 +218,6 @@ TEST(TcpZeroWindow, SwsOverrideSendsWhatTheWindowTakes) {
     EXPECT_EQ(again[0].v.payload.size(), 300u);
     // The peer takes each segment with the window kept at 300 bytes; the
     // rest goes out 300 bytes at a time, each inside the window.
-    t::Bytes got(seg[0].v.payload.begin(), seg[0].v.payload.end());
     c.their = c.their + 300;
     c.send(c.spec(w::tcp_ack));
     for (int ms = 0; ms < 60'000 && got.size() < data.size(); ms += 10) {
