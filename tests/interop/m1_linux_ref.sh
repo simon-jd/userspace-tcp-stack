@@ -17,6 +17,8 @@
 #
 #   R-N0-l2l, R-N1-l2l, R-N3-l2l, R-N4-l2l   1 GB
 #   R-N4-100M-{1,2,3}-l2l                    100 MB under N4 (the size of the B rows)
+#   R-N4-100M-sack0-ts{0,1}-ws{0,1}-l2l      100 MB under N4, the sender (peer) with
+#                                            combo.sh's sack/ts/ws combination, as in B
 #   R-pause200-l2l, R-pause500-l2l           100 MB under N0, the receiver
 #                                            with --recv-pause 200:1048576 / 500:1048576
 # Under N3 and N4, m1_dsack.py replays the sender's D-SACK accounting from the
@@ -41,7 +43,8 @@ ref_ip=198.19.9.3
 
 all_cases() {
   printf '%s\n' R-N0-l2l R-N1-l2l R-N3-l2l R-N4-l2l R-N4-100M-1-l2l R-N4-100M-2-l2l R-N4-100M-3-l2l \
-    R-pause200-l2l R-pause500-l2l
+    R-pause200-l2l R-pause500-l2l R-N4-100M-sack0-ts0-ws0-l2l R-N4-100M-sack0-ts0-ws1-l2l \
+    R-N4-100M-sack0-ts1-ws0-l2l R-N4-100M-sack0-ts1-ws1-l2l
 }
 
 netem_params() {
@@ -93,9 +96,15 @@ ref_case() {
     netem=N0 bytes=100M bytes_n=100000000
   fi
   [[ $c == *-100M-* ]] && bytes=100M bytes_n=100000000
-  m1_peer_for default
+  local combo=default
+  if [[ $c =~ ^R-N4-100M-(sack[01]-ts[01]-ws[01])-l2l$ ]]; then
+    combo=${BASH_REMATCH[1]} opts=${BASH_REMATCH[1]}
+  fi
+  m1_peer_for "$combo"
   m1_pmtu down
   ref_up
+  # A peer that combo.sh just started has no route to the reference network.
+  tb_exec "$tb_peer" ip route replace "$refnet_subnet" via "$tb_dut_ip"
   m1_case_dir "$c"
   local r=$M1_RESULTS/$c
   m1_netem "$netem" >"$r/netem.txt" 2>&1
