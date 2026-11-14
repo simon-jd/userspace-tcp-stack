@@ -2,7 +2,7 @@
 
 Every invariant violation the simulator sweeps found (DESIGN §7.3, §7.4), with its root cause and fix, and the
 tshark expert analysis of the sampled seeds. Each entry's dumped scenario is in `tests/sim/corpus/` as
-`<entry>-<seed>.scenario`; CI replays all of them (`sim.SimCorpus.EveryEntryPasses`).
+`<entry>-<seed>.scenario`; CI replays each of them as its own test (`sim.Corpus/SimCorpusEntry.Passes/*`).
 
 ## Violations
 

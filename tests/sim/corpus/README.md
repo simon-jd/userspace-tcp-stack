@@ -2,7 +2,7 @@
 
 One file per SIM-BUGS entry: the dumped scenario of the failing seed, named
 `<entry>-<seed>.scenario` (for example `sb-0007-123456.scenario`). The test
-`sim.SimCorpus.EveryEntryPasses` and `utcp-sim --corpus tests/sim/corpus`
+`sim.Corpus/SimCorpusEntry.Passes/*` (one test per file) and `utcp-sim --corpus tests/sim/corpus`
 replay every `*.scenario` file here, sorted by name, and expect verdict `ok`.
 
 Format: the `key=value` lines of `utcp::sim::to_kv` (one key per line, `#`
