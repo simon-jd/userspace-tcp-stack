@@ -1,8 +1,9 @@
 # Simulator bugs
 
 Every invariant violation the simulator sweeps found (DESIGN §7.3, §7.4), with its root cause and fix, and the
-tshark expert analysis of the sampled seeds. Each entry's dumped scenario is in `tests/sim/corpus/` as
-`<entry>-<seed>.scenario`; CI replays each of them as its own test (`sim.Corpus/SimCorpusEntry.Passes/*`).
+tshark expert analysis of the sampled seeds. Each entry found by a simulator checker or the sweep's limits has its
+dumped scenario in `tests/sim/corpus/` as `<entry>-<seed>.scenario`; CI replays each of them as its own test
+(`sim.Corpus/SimCorpusEntry.Passes/*`). Entries found by the tshark check have no corpus file (see sb-0010).
 
 ## Violations
 
@@ -17,6 +18,7 @@ tshark expert analysis of the sampled seeds. Each entry's dumped scenario is in 
 | sb-0007 | 34664 | m1-accept-sweep 1e5 sweep 1 | timeout | as sb-0006 | as sb-0006 | 76ee00a |
 | sb-0008 | 73713 | m1-accept-sweep 1e5 sweep 1 | timeout | as sb-0006 | as sb-0006 | 76ee00a |
 | sb-0009 | 81519 | m1-accept-sweep 1e5 sweep 1 | timeout | as sb-0006 | as sb-0006 | 76ee00a |
+| sb-0010 | 76 sampled seeds (listed below) | m1-accept-sweep tshark run 1 | tshark expert (`tools/tshark_expert.sh`, rule below) | Error-severity items in 149 of the 654 files checked, all Malformed/Protocol items of RSL, GSM over IP, A-bis OML, LBMSRS, SCCP, GSM DTAP, H1, GSUP, LBT-TCP and GSM Cell Broadcast; none in IPv4, ICMP, TCP or UDP | checker: TShark decoded the simulator's byte-pattern TCP payload as application protocols, by port (`tcp.port 5000` → `gsm_ipa`) and by heuristics (`lbmsrs_tcp`, `lbttcp_tcp`, `hi_tcp`); TCP payload is opaque application data (RFC 9293 §2.2) and a port number does not identify the protocol carried (RFC 7605 §5, §7.1) | 6519c25 (checker) |
 
 sb-0006..sb-0009 in detail. A timeout gives no digest, so each seed was replayed twice without the wall-clock
 limit (`utcp-sim --seed N`, gcc-sweep build): both runs ended with verdict `ok` and the same digest and event
@@ -32,6 +34,16 @@ segments still count as their payload. After it the four seeds take 7-17 s (gcc-
 `ev_writable` uses the charged space, as `sk_stream_is_writeable` uses `sk_wmem_queued`; fails if either rule
 counts payload bytes only).
 Under gcc-asan the four corpus entries take 390-820 s each, so dbbd47c runs each corpus entry as its own test.
+
+sb-0010 in detail (tshark run 1 below). Seeds with an Error item (all `seed % 500 == 0` of sweep 2, code dbbd47c):
+1500 2000 2500 3000 4000 5000 7500 9500 10500 11500 12500 13500 14000 16500 17000 18500 19500 22000 22500 25500
+26000 26500 27000 29000 29500 30000 31500 32000 34000 35500 40500 41500 43500 45000 45500 46000 47000 47500 48000
+48500 49500 50000 51000 54500 56000 58000 59500 61500 62000 63000 63500 64000 66500 67000 67500 68000 68500 69500
+71000 74000 74500 77500 78500 80000 80500 82500 84000 86000 86500 89000 89500 91500 92000 97000 97500 98000.
+Files: 49 `a.egress`, 42 `b.egress`, 26 `a.ingress`, 32 `b.ingress` (149). Every one of these seeds had verdict
+`ok` in sweep 2, so a corpus replay would not exercise the tshark check; the regression tests are
+`SimPcap.ExpertScriptIgnoresPayloadDissectors` (the 6-byte payload that reproduces the RSL error) and
+`SimPcap.ExpertScriptFailsOnBadTcpChecksum` (the narrowed check still fails on an Error in the stack's layers).
 
 ## 1e5-seed acceptance sweep (m1-accept-sweep, test F)
 
@@ -92,6 +104,17 @@ decodes` lists `tcp.port 5000 gsm_ipa` (the IPA dissector, which hands the bytes
 SCCP and GSUP), and `tshark -G heuristic-decodes` lists the TCP heuristics `lbmsrs_tcp`, `lbttcp_tcp` and
 `hi_tcp` (H1), all enabled. The workload's server ports are 5000-5007. The 6-byte payload `00 40 00 08 01 02` to
 port 5000 gives the same RSL error (`SimPcap.ExpertScriptIgnoresPayloadDissectors`).
+
+Why the dissector is wrong here. RFC 9293 §2.2: "TCP provides a reliable, in-order, byte-stream service to
+applications. The application byte-stream is conveyed over the network via TCP segments"; the stack carries the
+application's bytes and gives them no meaning, so it cannot be at fault for what the payload decodes to. The
+simulator's application writes the generator's byte pattern, not IPA, RSL or LBM. The decoding by port is an
+observer's guess that the RFCs on port numbers say is unreliable: RFC 7605 §5, "any interpretation of port numbers
+-- except at the endpoints -- may be incorrect, because port numbers are meaningful only at the endpoints", and
+§7.1, "an assigned port number is not a guarantee of exclusive use. Traffic for any service might appear on any
+port number". The heuristic dissectors guess from the content, and that content is the byte pattern. The
+Error items are therefore TShark's reading of payload as a protocol it is not, not a fault in the IPv4, ICMP, TCP or
+UDP the stack produces; those layers had no Error item in run 1 either.
 
 Change (amended rule, committed before run 2): `tools/tshark_expert.sh` dissects only the layers the stack
 produces, `--only-protocols frame,raw,ip,icmp,tcp,udp,data`, and validates the checksums those layers carry
