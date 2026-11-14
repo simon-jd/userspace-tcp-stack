@@ -237,7 +237,9 @@ int main(int argc, char** argv) {
       .option("plant-hang", "LIST", "seeds that hang after --plant-after events")
       .option("plant-segv", "LIST", "seeds that get SIGSEGV after --plant-after events")
       .option("plant-after", "N", "events before a planted abort or hang")
-      .option("test-fault", "NAME", "set TcpConfig::test_fault on every node (none, unscaled_peer_window)")
+      .option("test-fault", "NAME",
+              "set TcpConfig::test_fault on every node (none, unscaled_peer_window, "
+              "overscaled_peer_window)")
       .option("max-events", "N", "livelock limit per run");
   auto args = cli.parse(argc, argv);
   if (!args) {
@@ -286,8 +288,10 @@ int main(int argc, char** argv) {
       o.test_fault = TestFault::none;
     } else if (*v == "unscaled_peer_window") {
       o.test_fault = TestFault::unscaled_peer_window;
+    } else if (*v == "overscaled_peer_window") {
+      o.test_fault = TestFault::overscaled_peer_window;
     } else {
-      return usage_error("--test-fault: none or unscaled_peer_window");
+      return usage_error("--test-fault: none, unscaled_peer_window or overscaled_peer_window");
     }
   }
   {

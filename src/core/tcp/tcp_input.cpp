@@ -493,9 +493,7 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
     handshake_done(t, s);
     // The window of the completing ACK is scaled; that of a crossing
     // SYN-ACK is not (RFC 7323 §2.2).
-    t.snd_wnd = cfg_.test_fault == TestFault::unscaled_peer_window || s.has(tcp_syn)
-                    ? s.v->h.window
-                    : static_cast<std::uint32_t>(s.v->h.window) << t.snd_wscale;
+    t.snd_wnd = s.has(tcp_syn) ? s.v->h.window : peer_window(t, s.v->h.window);
     t.max_snd_wnd = std::max(t.max_snd_wnd, t.snd_wnd);
     t.snd_wl1 = s.seq;
     t.snd_wl2 = s.ack;
@@ -518,6 +516,20 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
     return;
   }
   transmit(t, now);
+}
+
+// The window field of a non-SYN segment in bytes (RFC 7323 §2.3), or as a
+// planted fault gets it wrong (§7.3, TcpConfig::test_fault).
+std::uint32_t TcpEngine::peer_window(const Tcb& t, std::uint16_t field) const {
+  switch (cfg_.test_fault) {
+    case TestFault::unscaled_peer_window:
+      return field;
+    case TestFault::overscaled_peer_window:
+      return std::uint32_t{field} << max_wscale;
+    case TestFault::none:
+      break;
+  }
+  return std::uint32_t{field} << t.snd_wscale;
 }
 
 // RFC 7323 §4.3 (2), §5.3 R3: TS.Recent, for a segment that passed every
@@ -544,14 +556,18 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
     transmit(t, now);
     return false;
   }
-  t.last_ack_recv = now;
-  t.probes_out = 0;
   const bool old_ack = before(s.ack, una);
   if (!old_ack) {
     // R3 (RFC 7323 §4.3, §5.3) only now that the ACK is accepted, as Linux
     // (tcp_ack, FLAG_UPDATE_TS_RECENT): an in-window SYN or an ACK above
     // SND.NXT must not move TS.Recent. Linux skips it for an old ACK too.
     update_ts_recent(t, s);
+    // Linux tcp_ack after the old_ack branch: the peer is alive, so the
+    // probe count, the receive stamp (tcp_rtx_probe0_timed_out) and any soft
+    // error (sk_err_soft, §4.7) are reset.
+    t.last_ack_recv = now;
+    t.probes_out = 0;
+    t.soft_error.reset();
   }
   // MUST-20 (RFC 9293 §3.10.7.4): window update. As Linux
   // tcp_may_update_window, an ACK that advances SND.UNA always takes the
@@ -559,9 +575,7 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   // Linux tcp_wnd_end), so a window kept from an older ACK would move the
   // right edge past the one the peer offered (e.g. a retransmitted peer
   // segment with a lower SEQ than SND.WL1 that acknowledges new data).
-  const std::uint32_t nwin = cfg_.test_fault == TestFault::unscaled_peer_window
-                                 ? s.v->h.window
-                                 : static_cast<std::uint32_t>(s.v->h.window) << t.snd_wscale;
+  const std::uint32_t nwin = peer_window(t, s.v->h.window);
   bool window_update = false;
   if (!old_ack && (after(s.ack, una) || before(t.snd_wl1, s.seq) ||
                    (t.snd_wl1 == s.seq && before_eq(t.snd_wl2, s.ack)))) {

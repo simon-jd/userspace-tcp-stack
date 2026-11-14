@@ -180,6 +180,7 @@ private:
   void handshake_done(Tcb& t, const InSeg& s);
   [[nodiscard]] bool paws_reject(const Tcb& t, const InSeg& s) const;
   void update_ts_recent(Tcb& t, const InSeg& s);
+  [[nodiscard]] std::uint32_t peer_window(const Tcb& t, std::uint16_t field) const;
   // RFC 5961 §7 / Linux tcp_oow_rate_limited: false (and `skipped` counted)
   // within oow_ack_interval of the last such ACK; segments with data or FIN
   // and no SYN are never limited.

@@ -133,7 +133,8 @@ enum class RstInTimeWait : std::uint8_t {
 // Deliberate bugs that test the simulator's checkers (§7.3).
 enum class TestFault : std::uint8_t {
   none,
-  unscaled_peer_window,  // treat the peer's window field as unscaled
+  unscaled_peer_window,   // treat the peer's window field as unscaled (sends less)
+  overscaled_peer_window,  // scale the peer's window field by 14, whatever was negotiated
 };
 
 // Inclusive port range.

@@ -367,8 +367,10 @@ constexpr std::array<EnumName<CloseMode>, 5> close_modes{{{CloseMode::close, "cl
                                                           {CloseMode::simultaneous, "simultaneous"}}};
 constexpr std::array<EnumName<ProfileId>, 2> profiles{
     {{ProfileId::rfc, "rfc"}, {ProfileId::linux_compat, "linux_compat"}}};
-constexpr std::array<EnumName<TestFault>, 2> test_faults{
-    {{TestFault::none, "none"}, {TestFault::unscaled_peer_window, "unscaled_peer_window"}}};
+constexpr std::array<EnumName<TestFault>, 3> test_faults{
+    {{TestFault::none, "none"},
+     {TestFault::unscaled_peer_window, "unscaled_peer_window"},
+     {TestFault::overscaled_peer_window, "overscaled_peer_window"}}};
 
 std::string idx_prefix(std::string_view list, std::size_t i) {
   std::string s(list);

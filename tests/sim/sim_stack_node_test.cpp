@@ -1,6 +1,5 @@
-// StackNode scenarios over UDP, ICMP and TCP. The UDP and ICMP ones run on
-// the Stack's IPv4, UDP and ICMP; the TCP one needs the TCP engine and stays
-// disabled until it exists (see that test).
+// StackNode scenarios over UDP, ICMP and TCP, run on the Stack's IPv4, UDP,
+// ICMP and TCP engine.
 #include <gtest/gtest.h>
 
 #include "utcp/sim/datagram.hpp"
@@ -107,10 +106,7 @@ TEST(SimStackNode, UdpThroughNarrowRouterLearnsPmtu) {
 // listener with backlog 1. SYNs beyond the backlog are dropped and
 // retransmitted (§3.5); the listener accepts each client, told apart by its
 // fixed client port, and every byte arrives at the right connection.
-// Disabled: the Stack's TCP engine is still a stub (tcp_listen fails, so the
-// run ends with verdict `workload`). TODO(m1-tcp-core): enable once the Stack
-// has the TCP engine.
-TEST(SimStackNode, DISABLED_SharedListenerAcceptsEveryClientBeyondItsBacklog) {
+TEST(SimStackNode, SharedListenerAcceptsEveryClientBeyondItsBacklog) {
   Scenario s = two_node_scenario(6, path(10ms), path(10ms));
   for (std::uint32_t i = 0; i < 4; ++i) {
     ConnSpec c;
