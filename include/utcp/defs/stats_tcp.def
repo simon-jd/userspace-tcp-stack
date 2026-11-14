@@ -28,6 +28,11 @@ UTCP_STACK_STAT(TcpExtTCPACKSkippedSynRecv,
                 "SYN-ACK retransmissions in SYN-RECEIVED suppressed by the limiter")
 UTCP_STACK_STAT(TcpExtTCPACKSkippedTimeWait, "TIME-WAIT ACKs suppressed by the limiter")
 UTCP_STACK_STAT(TcpExtPAWSEstab, "segments dropped by PAWS in synchronized states (RFC 7323 5.3)")
+UTCP_STACK_STAT(TcpExtPAWSOldAck,
+                "old pure ACKs dropped by PAWS without a reply (linux paws_disordered_ack, DESIGN 4.4)")
+UTCP_STACK_STAT(TcpExtPAWSActive,
+                "SYN-SENT segments whose TSecr echoes no TSval we sent (DESIGN 4.4)")
+UTCP_STACK_STAT(TcpExtTCPACKSkippedPAWS, "ACKs to PAWS-rejected segments suppressed by the limiter")
 UTCP_STACK_STAT(TcpExtListenOverflows, "SYNs dropped: backlog exhausted")
 UTCP_STACK_STAT(TcpExtListenDrops, "SYNs dropped by a listener for any reason")
 UTCP_STACK_STAT(TcpExtTW, "TIME-WAIT entries that expired")

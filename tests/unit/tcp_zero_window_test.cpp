@@ -168,24 +168,52 @@ TEST(TcpZeroWindow, UnansweredProbesAbortAfterDataRetries) {
 // RFC 9293 §3.8.6.2.1: a usable window below the sender SWS threshold (less
 // than an MSS and less than max_snd_wnd / 2) sends nothing until the persist
 // timer, which then sends min(D, U) bytes inside the window (Linux
-// tcp_write_wakeup). No segment ever passes the peer's right edge.
+// tcp_write_wakeup); that data then has the RTO. No segment ever passes the
+// peer's right edge.
 TEST(TcpZeroWindow, SwsOverrideSendsWhatTheWindowTakes) {
   for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
     SCOPED_TRACE(name(profile));
     Scripted c(profile);
     c.po.wscale = std::nullopt;
-    ASSERT_TRUE(c.accept(Seq32{10'000}, 300));
+    ASSERT_TRUE(c.accept(Seq32{10'000}, 0));
     const Duration rto0 = c.stack().tcp_info(c.h)->rto;
     const t::Bytes data = t::pattern(2000, 3);
     ASSERT_TRUE(c.stack().tcp_send(c.h, data));
+    // Three zero-window probes build up the probing backoff.
+    std::vector<Time> probes;
+    for (int ms = 0; ms < 60'000 && probes.size() < 3; ++ms) {
+      c.d().run_for(1ms);
+      for (const Parsed& p : c.out()) {
+        ASSERT_FALSE(is_data(p.v));
+        probes.push_back(c.d().now());
+        c.send(c.spec(w::tcp_ack));
+      }
+    }
+    ASSERT_EQ(probes.size(), 3u);
+    // The window opens to 300 bytes: below an MSS and below max_snd_wnd / 2,
+    // so the sender SWS rule holds the data until the persist timer.
+    c.window = 300;
+    c.send(c.spec(w::tcp_ack));
     EXPECT_TRUE(c.out().empty());
+    const Time t1 = c.d().now();
+    std::vector<Parsed> seg;
+    for (int ms = 0; ms < 60'000 && seg.empty(); ++ms) {
+      c.d().run_for(1ms);
+      seg = c.out();
+    }
+    ASSERT_EQ(seg.size(), 1u);
+    EXPECT_EQ(c.d().now() - t1, 8 * rto0);  // the backed-off persist interval
+    EXPECT_EQ(seg[0].v.h.seq, c.their);
+    EXPECT_EQ(seg[0].v.payload.size(), 300u);
+    // The data is in flight: the RTO, without the probing backoff, resends
+    // it (Linux tcp_send_probe0).
     c.d().run_for(rto0 - 1ms);
     EXPECT_TRUE(c.out().empty());
     c.d().run_for(1ms);
-    auto seg = c.out();
-    ASSERT_EQ(seg.size(), 1u);
-    EXPECT_EQ(seg[0].v.h.seq, c.their);
-    EXPECT_EQ(seg[0].v.payload.size(), 300u);
+    const auto again = c.out();
+    ASSERT_EQ(again.size(), 1u);
+    EXPECT_EQ(again[0].v.h.seq, c.their);
+    EXPECT_EQ(again[0].v.payload.size(), 300u);
     // The peer takes each segment with the window kept at 300 bytes; the
     // rest goes out 300 bytes at a time, each inside the window.
     t::Bytes got(seg[0].v.payload.begin(), seg[0].v.payload.end());
@@ -205,7 +233,7 @@ TEST(TcpZeroWindow, SwsOverrideSendsWhatTheWindowTakes) {
       }
     }
     EXPECT_EQ(got, data);
-    EXPECT_EQ(c.stack().stats().TcpExtTCPWinProbe, 0u);
+    EXPECT_EQ(c.stack().stats().TcpExtTCPWinProbe, 3u);
     c.stack().debug_check();
   }
 }

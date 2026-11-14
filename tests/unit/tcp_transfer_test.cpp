@@ -292,22 +292,25 @@ TEST(TcpTransfer, DsackOnlyForPayload) {
   h.a().receive(h.now(), synack);
   h.settle();
   expect_one_plain_ack(h, Side::a, start, a_rcv_nxt);
-  // A zero-length segment at RCV.NXT - 1 (a keepalive probe).
+  // A zero-length segment at RCV.NXT - 1 (a keepalive probe), with a's
+  // current timestamp as a real keepalive carries (an older one would fail
+  // PAWS: no reply under linux_compat, §4.4 step 1).
   h.run_for(1s);
   {
     const auto q = parse(a_ack);
     ASSERT_TRUE(q);
-    t::Bytes probe = a_ack;
-    // The TCP sequence number sits 4 bytes into the TCP header.
-    const std::size_t off = 20 + 4;
+    t::Bytes keep_a;
+    const auto latest = last_from(h, Side::a, keep_a);
+    ASSERT_TRUE(latest && latest->v.opt.ts);
     const std::uint32_t seq = h.a().tcp_info(p->client)->bytes_acked + q->v.h.seq.raw() - 1;
-    probe[off] = static_cast<std::byte>(seq >> 24);
-    probe[off + 1] = static_cast<std::byte>(seq >> 16);
-    probe[off + 2] = static_cast<std::byte>(seq >> 8);
-    probe[off + 3] = static_cast<std::byte>(seq);
-    t::fix_checksums(probe);
+    t::TcpSpec probe(Endpoint{h.addr(Side::a), q->v.h.sport}, Endpoint{h.addr(Side::b), q->v.h.dport});
+    probe.seq = Seq32{seq};
+    probe.ack = latest->v.h.ack;
+    probe.flags = w::tcp_ack;
+    probe.window = latest->v.h.window;
+    probe.opt.ts = w::Timestamps{latest->v.opt.ts->val + 1000, latest->v.opt.ts->ecr};
     start = h.log().size();
-    h.b().receive(h.now(), probe);
+    h.b().receive(h.now(), t::tcp_datagram(probe));
     h.settle();
     expect_one_plain_ack(h, Side::b, start, Seq32{seq + 1});
   }

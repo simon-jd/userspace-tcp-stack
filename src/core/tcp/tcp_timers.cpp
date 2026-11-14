@@ -246,7 +246,20 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
       // The sender SWS override (RFC 9293 §3.8.6.2.1): what the window takes.
       const auto len = static_cast<std::uint32_t>(
           std::min({usable, end - nxt, std::uint64_t{mss_now(t)}}));
-      (void)send_new_data(t, now, len, t.fin_queued && len == end - nxt);
+      // Linux tcp_send_probe0: once the data is in flight the probe timer
+      // is not needed; the RTO takes over without the probing backoff.
+      const std::uint8_t backoff = t.backoff;
+      t.backoff = 0;
+      if (send_new_data(t, now, len, t.fin_queued && len == end - nxt)) {
+        t.probes_out = 0;
+        RecoveryCtx c = rctx(t, now);
+        t.recovery.on_xmit_timer(c, XmitTimer::persist);
+        RecoveryCtx c2 = rctx(t, now);
+        t.recovery.on_burst_end(c2);
+        sync_timers(t, now);
+        return;
+      }
+      t.backoff = backoff;
     } else {
       SegOut o;
       o.seq = t.snd_una() - 1;  // Linux tcp_xmit_probe_skb

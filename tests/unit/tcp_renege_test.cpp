@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -79,9 +80,14 @@ TEST(TcpRenege, RtoFindsSackedHeadAndResends) {
     EXPECT_EQ(i0.unacked, 2u);
     EXPECT_EQ(c.stack().stats().TcpExtTCPSACKReneging, 0u);
     // The receiver takes each resent segment in order and ACKs it.
+    const utcp::Time acked = c.d().now();
+    std::optional<utcp::Duration> first;
     for (int ms = 0; ms < 10'000 && c.their != end; ++ms) {
       c.d().run_for(1ms);
       for (const Parsed& p : c.out()) {
+        if (!first && is_data(p.v)) {
+          first = c.d().now() - acked;
+        }
         if (is_data(p.v) && p.v.h.seq == c.their) {
           got.insert(got.end(), p.v.payload.begin(), p.v.payload.end());
           c.their = c.their + static_cast<std::uint32_t>(p.v.payload.size());
@@ -90,6 +96,9 @@ TEST(TcpRenege, RtoFindsSackedHeadAndResends) {
       }
     }
     EXPECT_EQ(c.their, end);
+    // SRTT is 0 (the handshake sample), so the timer runs 10 ms
+    // (tcp_check_sack_reneging), not a full RTO.
+    EXPECT_EQ(first, std::optional<utcp::Duration>{10ms});
     EXPECT_EQ(digest(got), digest(data));
     EXPECT_EQ(c.stack().stats().TcpExtTCPSACKReneging, 1u);
     EXPECT_EQ(c.stack().stats().TcpExtTCPTimeouts, 1u);

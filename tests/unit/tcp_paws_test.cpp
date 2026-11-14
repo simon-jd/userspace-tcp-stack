@@ -14,10 +14,13 @@ namespace {
 using namespace std::chrono_literals;
 using utcp::Error;
 using utcp::ProfileId;
+using utcp::Endpoint;
 using utcp::Seq32;
+using utcp::StackConfig;
 using utcp::TcpState;
 namespace t = utcp::test;
 namespace w = utcp::wire;
+using t::Side;
 using namespace utcp::test::tcpt;
 
 std::string name(ProfileId p) { return p == ProfileId::rfc ? "rfc" : "linux_compat"; }
@@ -79,6 +82,41 @@ TEST(TcpPaws, DisorderedDupAckPerProfile) {
     }
     c.stack().debug_check();
   }
+}
+
+// Linux tcp_disordered_ack bounds (linux_compat): the TSval must lie within
+// the replay window, the backed-off RTO at 1200 ticks per second
+// (tcp_tsval_replay), and the ACK must not be one that could update the
+// window (tcp_may_update_window: a zero window at SND.WL1 could). Outside
+// either bound the duplicate ACK fails PAWS.
+TEST(TcpPaws, DisorderedAckBounds) {
+  Scripted c(ProfileId::linux_compat);
+  c.po.ts = true;
+  ASSERT_TRUE(c.accept());
+  const auto rto_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          c.stack().tcp_info(c.h)->rto)
+                          .count();
+  const auto replay = static_cast<std::uint32_t>(rto_ms * 1200 / 1000);
+  ASSERT_GT(replay, 2u);
+  c.tsval += 10'000;
+  c.send(c.spec(w::tcp_ack));  // TS.Recent = tsval
+  std::uint64_t drops = 0;
+  const auto late = [&](std::uint32_t age, std::uint16_t window) {
+    t::TcpSpec a = c.spec(w::tcp_ack);
+    a.opt.ts->val = c.tsval - age;
+    a.window = window;
+    c.send(a);
+    (void)c.out();
+    const std::uint64_t now = c.stack().stats().TcpExtPAWSEstab;
+    const bool dropped = now > drops;
+    drops = now;
+    return dropped;
+  };
+  EXPECT_FALSE(late(replay, c.window));
+  EXPECT_TRUE(late(replay + 1, c.window));
+  EXPECT_TRUE(late(2, 0));
+  EXPECT_FALSE(late(2, c.window));
+  c.stack().debug_check();
 }
 
 // RFC 7323 §5.5: TS.Recent older than 24 days is invalid, so an old TSval
@@ -256,7 +294,12 @@ TEST(TcpPaws, TsecrZeroOrAheadGivesNoRttSample) {
   for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
     for (int mode = 0; mode < 3; ++mode) {
       SCOPED_TRACE(name(profile) + (mode == 0 ? " TSecr 0" : mode == 1 ? " ahead" : " valid"));
-      Scripted c(profile);
+      // No random TS offset: our TSval is a few seconds, so a TSecr of 0
+      // passes the 2^31 / 1000 range check and only the TSecr != 0 rule
+      // rejects it.
+      StackConfig cfg = config(Side::b, profile);
+      cfg.tcp.ts_offset_random = false;
+      Scripted c(cfg);
       c.po.ts = true;
       ASSERT_TRUE(c.accept());
       const auto before = *c.stack().tcp_info(c.h);
@@ -286,6 +329,100 @@ TEST(TcpPaws, TsecrZeroOrAheadGivesNoRttSample) {
       }
       c.stack().debug_check();
     }
+  }
+}
+
+// Linux tcp_validate_incoming: an old pure ACK (below RCV.NXT) that fails
+// PAWS is dropped without a reply under linux_compat (PAWSOldAck: reordered
+// ACKs are common); rfc sends the R1 ACK. A SYN failing PAWS in ESTABLISHED
+// gets the RFC 5961 challenge ACK.
+TEST(TcpPaws, OldAckAndSynFailingPaws) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    Scripted c(profile);
+    c.po.ts = true;
+    ASSERT_TRUE(c.accept());
+    const Seq32 old_seq = c.nxt;
+    c.tsval += 1000;
+    c.send_data(100);
+    c.d().run_for(300ms);
+    (void)c.out();
+    t::TcpSpec old = c.spec(w::tcp_ack);
+    old.seq = old_seq;
+    old.opt.ts->val = c.tsval - 500;
+    c.send(old);
+    const auto reply = c.out();
+    const auto& st = c.stack().stats();
+    if (profile == ProfileId::linux_compat) {
+      EXPECT_TRUE(reply.empty());
+      EXPECT_EQ(st.TcpExtPAWSOldAck, 1u);
+      EXPECT_EQ(st.TcpExtPAWSEstab, 0u);
+    } else {
+      ASSERT_EQ(reply.size(), 1u);
+      EXPECT_EQ(reply[0].v.h.ack, c.nxt);
+      EXPECT_EQ(st.TcpExtPAWSOldAck, 0u);
+      EXPECT_EQ(st.TcpExtPAWSEstab, 1u);
+    }
+    c.d().run_for(600ms);
+    t::TcpSpec syn = c.spec(w::tcp_syn);
+    syn.ack = Seq32{};
+    syn.opt.ts->val = c.tsval - 500;
+    c.send(syn);
+    const auto challenge = c.out();
+    ASSERT_EQ(challenge.size(), 1u);
+    EXPECT_TRUE(is_pure_ack(challenge[0].v));
+    EXPECT_EQ(challenge[0].v.h.ack, c.nxt);
+    EXPECT_EQ(st.TcpExtTCPSYNChallenge, 1u);
+    EXPECT_EQ(st.TcpExtTCPChallengeACK, 1u);
+    EXPECT_EQ(c.stack().tcp_info(c.h)->state, TcpState::established);
+    EXPECT_EQ(drain(c.stack(), c.h).size(), 100u);
+    c.stack().debug_check();
+  }
+}
+
+// TSecr validation in SYN-SENT (Linux tcp_rcv_synsent_state_process,
+// PAWSActiveRejected): a SYN-ACK whose TSecr echoes no TSval sent between our
+// first SYN and now is an old duplicate: answered with <SEQ=SEG.ACK><CTL=RST>
+// and dropped, the connection stays in SYN-SENT and completes with a valid
+// SYN-ACK.
+TEST(TcpPaws, SynSentRejectsSynAckWithInvalidTsecr) {
+  for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
+    SCOPED_TRACE(name(profile));
+    Driven d(profile);
+    const auto h = d.stack().tcp_connect(Endpoint{Driven::peer(80)}, {});
+    ASSERT_TRUE(h);
+    const auto syn_out = d.out();
+    ASSERT_EQ(syn_out.size(), 1u);
+    const auto syn = parse(syn_out[0]);
+    ASSERT_TRUE(syn && syn->v.opt.ts);
+    const std::uint32_t sent = syn->v.opt.ts->val;
+    d.run_for(50ms);
+    t::TcpSpec sa(Driven::peer(80), Endpoint{d.stack().config().local_addr, syn->v.h.sport});
+    sa.seq = Seq32{777};
+    sa.ack = syn->v.h.seq + 1;
+    sa.flags = w::tcp_syn | w::tcp_ack;
+    sa.opt.mss = 1460;
+    sa.opt.sack_permitted = true;
+    sa.opt.wscale = 7;
+    for (const std::uint32_t ecr : {sent - 1, sent + 51}) {
+      sa.opt.ts = w::Timestamps{100, ecr};
+      d.send(sa);
+      const auto rst = d.out();
+      ASSERT_EQ(rst.size(), 1u);
+      const auto r = parse(rst[0]);
+      ASSERT_TRUE(r);
+      EXPECT_TRUE(is_rst(r->v));
+      EXPECT_EQ(r->v.h.seq, sa.ack);
+      EXPECT_EQ(state(d.stack(), *h), TcpState::syn_sent);
+    }
+    EXPECT_EQ(d.stack().stats().TcpExtPAWSActive, 2u);
+    sa.opt.ts = w::Timestamps{100, sent + 50};  // now
+    d.send(sa);
+    const auto ack = d.out();
+    ASSERT_EQ(ack.size(), 1u);
+    EXPECT_TRUE(is_pure_ack(parse(ack[0])->v));
+    EXPECT_EQ(state(d.stack(), *h), TcpState::established);
+    d.stack().debug_check();
   }
 }
 

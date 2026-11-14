@@ -112,7 +112,8 @@ bool is_nstat_name(std::string_view s) {
   X(TcpOutSegs) X(TcpRetransSegs) X(TcpExtTCPSACKDiscard)                            \
   X(TcpOutRsts) X(TcpExtTCPChallengeACK) X(TcpExtTCPSYNChallenge)                     \
   X(TcpExtTCPACKSkippedChallenge) X(TcpExtTCPACKSkippedSeq) X(TcpExtTCPACKSkippedSynRecv) \
-  X(TcpExtTCPACKSkippedTimeWait) X(TcpExtPAWSEstab) X(TcpExtListenOverflows)          \
+  X(TcpExtTCPACKSkippedTimeWait) X(TcpExtPAWSEstab) X(TcpExtPAWSOldAck)               \
+  X(TcpExtPAWSActive) X(TcpExtTCPACKSkippedPAWS) X(TcpExtListenOverflows)              \
   X(TcpExtListenDrops) X(TcpExtTW) X(TcpExtTCPAbortOnData) X(TcpExtTCPAbortOnClose)   \
   X(TcpExtTCPAbortOnTimeout) X(TcpExtTCPSynRetrans) X(TcpExtTCPWinProbe)              \
   X(icmp_seq_invalid) X(icmp_pmtu_not_reduced)

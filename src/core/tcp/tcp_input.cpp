@@ -265,6 +265,21 @@ void TcpEngine::syn_sent_input(Tcb& t, const InSeg& s) {
       return;
     }
     ack_ok = true;
+    // TSecr validation (Linux tcp_rcv_synsent_state_process,
+    // PAWSActiveRejected): a nonzero TSecr must echo a TSval sent between
+    // our first SYN and now, else the segment is an old duplicate: RST
+    // <SEQ=SEG.ACK> (none to an RST) and drop, still in SYN-SENT.
+    if (s.v->opt.ts && s.v->opt.ts->ecr != 0) {
+      const std::uint32_t lo = ts_now(t, t.syn_first_tx);
+      if (s.v->opt.ts->ecr - lo > ts_now(t, s.now) - lo) {
+        ++core_.stats().TcpExtPAWSActive;
+        if (!s.has(tcp_rst)) {
+          send_reset_reply(t.tuple, s);
+        }
+        trace_drop(&t, s);
+        return;
+      }
+    }
   }
   if (s.has(tcp_rst)) {
     if (ack_ok) {
@@ -307,17 +322,21 @@ bool TcpEngine::paws_reject(const Tcb& t, const InSeg& s) const {
   if (older <= 1) {  // Linux TCP_PAWS_WINDOW
     return false;
   }
-  // Linux tcp_disordered_ack: a pure duplicate ACK reordered behind newer
-  // segments is kept if its TSval is within one RTO.
-  const std::uint32_t wnd =
-      s.has(tcp_ack) ? static_cast<std::uint32_t>(s.v->h.window) << t.snd_wscale : 0u;
+  // Linux tcp_disordered_ack: a pure duplicate ACK at RCV.NXT, reordered
+  // behind newer segments, that would not update the window
+  // (tcp_may_update_window) is kept if its TSval lies within the replay
+  // window, the backed-off RTO at 1200 ticks per second (tcp_tsval_replay).
+  if (!s.has(tcp_ack) || s.has(tcp_syn) || s.len != 0 || s.seq != t.rcv_nxt() ||
+      s.ack != t.snd_una()) {
+    return true;
+  }
+  const std::uint32_t nwin = peer_window(t, s.v->h.window);
+  const bool may_update_window =
+      after(s.seq, t.snd_wl1) || (s.seq == t.snd_wl1 && (nwin > t.snd_wnd || nwin == 0));
   const auto rto_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           t.rtt.rto_backed_off(t.backoff))
                           .count();
-  const bool disordered = s.has(tcp_ack) && !s.has(tcp_syn) && s.len == 0 &&
-                          s.seq == t.rcv_nxt() && s.ack == t.snd_una() && wnd == t.snd_wnd &&
-                          static_cast<std::int64_t>(older) <= rto_ms * 1024 / 1000;
-  return !disordered;
+  return may_update_window || static_cast<std::int64_t>(older) > rto_ms * 1200 / 1000;
 }
 
 bool TcpEngine::oow_allowed(std::optional<Time>& last, const InSeg& s, std::uint64_t& skipped) {
@@ -389,13 +408,24 @@ void TcpEngine::sync_input(Tcb& t, const InSeg& s) {
     }
     return;
   }
-  // Step 1 (RFC 7323 §5.3 R1): PAWS.
+  // Step 1 (RFC 7323 §5.3 R1): PAWS. As Linux tcp_validate_incoming: a
+  // SYN that fails it in a synchronized state gets the RFC 5961 §4.2
+  // challenge ACK; under paws_disordered_ack = linux an old pure ACK (below
+  // RCV.NXT) is dropped without a reply (PAWSOldAck), since reordered ACKs
+  // are common; else the duplicate ACK of R1, through the limiter (§4.7).
   if (paws) {
-    ++st.TcpExtPAWSEstab;
     ++t.ctr.paws_drops;
     trace_drop(&t, s);
-    std::uint64_t skipped = 0;
-    dup_ack(t, s, skipped);
+    if (s.has(tcp_syn) && t.state != TcpState::syn_received) {
+      ++st.TcpExtTCPSYNChallenge;
+      challenge_ack(t, s);
+    } else if (cfg_.paws_disordered_ack == PawsDisorderedAck::linux && s.len == 0 &&
+               before(s.seq, t.rcv_nxt())) {
+      ++st.TcpExtPAWSOldAck;
+    } else {
+      ++st.TcpExtPAWSEstab;
+      dup_ack(t, s, st.TcpExtTCPACKSkippedPAWS);
+    }
     transmit(t, now);
     return;
   }

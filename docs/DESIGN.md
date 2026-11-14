@@ -393,7 +393,7 @@ Linux limits count `skb->truesize`, so a Linux buffer of nominal size N holds le
 | `quickack` | out-of-order and hole-filling segments only | also the first min(16, rcv_wnd/(2·rcv_mss)) segments and after an idle gap > RTO | RFC 5681 §4.2; `TCP_MAX_QUICKACKS`, `tcp_incr_quickack` |
 | `nagle` | `rfc896` (hold small segment while any data unacked) | `minshall` (hold while a small segment is unacked) | RFC 9293 §3.7.4; `tcp_minshall_check` |
 | `sack`, `timestamps`, `window_scaling`, `dsack`, `ts_offset_random` | same: on | | server sysctls; RFC 7323 §5.4 |
-| `paws_disordered_ack` | `strict` (RFC 7323 §5.3 R1) | `linux` (old-TSval pure dup ACKs kept, `tcp_disordered_ack`, `TCP_PAWS_WINDOW` 1) | reordered ACKs keep their SACK blocks |
+| `paws_disordered_ack` | `strict` (RFC 7323 §5.3 R1) | `linux` (old-TSval pure dup ACKs kept, `tcp_disordered_ack`, replay window 1.2 × RTO (`tcp_tsval_replay`), `TCP_PAWS_WINDOW` 1) | reordered ACKs keep their SACK blocks |
 | `rcv_wscale` | same: smallest s with 65535·2^s ≥ `rcv_buf_max`, ≤ 14 | | RFC 7323 §2.3 (gives 10 for 32 MiB, as Linux) |
 | `snd_buf_init` / `snd_buf_max` | 4 MiB fixed | 16 KiB, autotune to 4 MiB | `tcp_wmem`; `tcp_sndbuf_expand` (2 · cwnd · MSS) |
 | `rcv_buf_init` / `rcv_buf_max` | 4 MiB fixed | 128 KiB, autotune to 32 MiB | `tcp_rmem`; `tcp_rcv_space_adjust` |
@@ -533,7 +533,10 @@ and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its S
 `tcp_check_req` with `tcp_abort_on_overflow = 0`).
 
 **SYN-SENT** (§3.10.7.3):
-1. ACK check: if `SEG.ACK ≤ ISS` or `SEG.ACK > SND.NXT`, send RST unless RST is set, drop.
+1. ACK check: if `SEG.ACK ≤ ISS` or `SEG.ACK > SND.NXT`, send RST unless RST is set, drop. As built (Linux
+   `tcp_rcv_synsent_state_process`, `PAWSActiveRejected`): with an acceptable ACK, a nonzero TSecr that does not
+   lie between the TSval of our first SYN and now marks an old duplicate: the same RST reply and drop, still in
+   SYN-SENT (counted in `TcpExtPAWSActive`).
 2. RST: acceptable only with an acceptable ACK (RFC 5961 §3 applies RFC 9293's rule); then fail the connect
    with `connection_refused`.
 3. SYN: record IRS, options, peer window (unscaled in a SYN, RFC 7323 §2.2). With an ACK, go to ESTABLISHED,
@@ -548,8 +551,14 @@ and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its S
    `tcp_validate_incoming`); it never triggers a SYN-ACK.
 1. PAWS (RFC 7323 §5.3 R1): if timestamps are in use, the segment carries TSval, RST is clear and
    `TSval < TS.Recent`: if TS.Recent is older than 24 days invalidate it (§5.5) and continue; with
-   `paws_disordered_ack = linux` a pure duplicate ACK at RCV.NXT that leaves the window unchanged and whose TSval is
-   within one RTO of TS.Recent continues (`tcp_disordered_ack`); else send an ACK and drop; count `paws_drops`.
+   `paws_disordered_ack = linux` a TSval at most one tick old continues (`TCP_PAWS_WINDOW`), and so does a pure
+   duplicate ACK at RCV.NXT that could not update the window (`tcp_may_update_window`: not past SND.WL1, and at
+   SND.WL1 neither larger nor zero) and whose TSval is at most 1.2 × the backed-off RTO in ms older than TS.Recent
+   (`tcp_disordered_ack`, `tcp_tsval_replay`); else drop and count `paws_drops`. The reply follows Linux
+   `tcp_validate_incoming` (master, checked 2026-11-13): a SYN gets the RFC 5961 §4.2 challenge ACK (outside
+   SYN-RECEIVED); under `paws_disordered_ack = linux` an old pure ACK (SEG.SEQ < RCV.NXT) gets no reply
+   (`PAWSOldAck`, reordered ACKs are common); otherwise the R1 duplicate ACK (`PAWSEstab`), through the limiter of
+   §4.7 (`TCPACKSkippedPAWS`; segments with payload are exempt).
 2. Sequence acceptability: the four-case table with the right edge `rcv_adv`, the highest edge ever advertised
    (RFC 7323 §2.4 rule 1). At zero window (`rcv_adv == RCV.NXT`) a segment with `SEG.SEQ == RCV.NXT` passes for its
    ACK, RST and window fields; its payload is dropped (counted) and ACKed, and a bare FIN is accepted (RFC 9293
@@ -569,6 +578,8 @@ and counted (`TcpExtListenOverflows`); the child stays in SYN-RECEIVED and its S
 5. SYN (RFC 5961 §4): challenge ACK and drop (SYN-RECEIVED retransmissions are handled in step 0).
 6. ACK. No ACK bit: drop. RFC 5961 §5: acceptable when `SND.UNA − MAX.SND.WND ≤ SEG.ACK ≤ SND.NXT`;
    `SEG.ACK > SND.NXT`: ACK (challenge, rate-limited) and drop; older than the lower bound: challenge ACK, drop.
+   (Linux takes min(MAX.SND.WND, bytes acked so far) as the bound, so early in a connection it challenges ACKs
+   that the RFC bound accepts as old; both profiles use the RFC bound.)
    SND.NXT never moves back, so an ACK for data sent before an RTO is always in range.
    - SYN-RECEIVED: if `SND.UNA < SEG.ACK ≤ SND.NXT`, go to ESTABLISHED, take the window, queue on the listener
      (`ev_acceptable`) or raise `ev_connected` (simultaneous open). Else send `<SEQ=SEG.ACK><CTL=RST>`.
@@ -644,7 +655,9 @@ SACK blocks fit, otherwise 4.
 - ICMP errors for TCP (validated against in-flight sequence numbers as in §4.13): in SYN-SENT, protocol and port
   unreachable fail the connect (`connection_refused`), other unreachables are stored as a soft error. In
   synchronized states all unreachables are soft errors (RFC 5461 §4): stored and reported only if the connection
-  later times out (RFC 1122 §4.2.3.9).
+  later times out (RFC 1122 §4.2.3.9). As built, as Linux: `take_error` returns a stored soft error when there is
+  no hard one (`SO_ERROR`), and any acceptable ACK not below SND.UNA clears it (`tcp_ack` clears
+  `sk_err_soft`), so a later timeout reports only an error that arrived after the peer last answered.
 
 ### 4.8 RTT and RTO
 
@@ -731,7 +744,8 @@ resets `probes_out` (Linux `icsk_probes_out = 0`), so answered probes never abor
 the window takes the next segment, or when the timer finds data in flight or nothing to send (Linux
 `tcp_ack_probe`, `tcp_send_probe0`). With a window above zero but
 below the sender SWS threshold, the same timer is the SWS override and sends min(D, U) bytes inside the window as
-ordinary data (RFC 9293 §3.8.6.2.1).
+ordinary data (RFC 9293 §3.8.6.2.1; Linux `tcp_write_wakeup`); that data is in flight, so `probes_out` and the
+probing backoff are reset and the RTO covers it (`tcp_send_probe0`).
 
 ### 4.10 Receive side
 
@@ -1100,7 +1114,7 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
 |---|---|---|
 | `StreamChecker` | each received byte equals the expected byte at its offset; at EOF the length equals the bytes written | off |
 | `TerminationChecker` | every connection ends in CLOSED after a FIN exchange in both directions (TIME_WAIT expired or LAST-ACK acked), or with `timed_out` after retry exhaustion (RST sent if synchronized), or as the scenario designed (abort, refused). Also legal: an RST received in FIN-WAIT-1/2, CLOSING or LAST-ACK after the peer's TIME_WAIT or orphan FIN-WAIT-2 entry ended (checked in the peer's trace); an orphan freed by `orphan_fin_wait2_timeout` after our FIN was ACKed; a SYN-RECEIVED child freed after `synack_retries` | any end state |
-| `InFlightChecker` | from the wire, not the sender's own numbers: the world learns each side's wscale from the SYNs and keeps, per direction, the highest right edge `ack + (win << wscale)` (SYN windows unscaled) over ACKs delivered to the sender; each new-data segment must end at or before it (retransmissions exempt). Self-reported: after any data transmission `packets_in_flight ≤ cwnd` except `fast_rexmit` (cwnd = ssthresh reductions, RFC 6675 §5 (4.3)), the head `rto_rexmit` and `tlp` (RFC 8985 §7.3); in Open with no loss marks, wire bytes in flight (highest sent − highest delivered ACK − wire-SACKed) ≤ cwnd·mss. The knob `TcpConfig::test_fault = unscaled_peer_window` (a planted bug) must make it fire. | on |
+| `InFlightChecker` | from the wire, not the sender's own numbers: the world learns each side's wscale from the SYNs and keeps, per direction, the highest right edge `ack + (win << wscale)` (SYN windows unscaled) over ACKs delivered to the sender; each new-data segment must end at or before it (retransmissions exempt). Self-reported: after any data transmission `packets_in_flight ≤ cwnd` except `fast_rexmit` (cwnd = ssthresh reductions, RFC 6675 §5 (4.3)), the head `rto_rexmit` and `tlp` (RFC 8985 §7.3); in Open with no loss marks, wire bytes in flight (highest sent − highest delivered ACK − wire-SACKed) ≤ cwnd·mss. The knob `TcpConfig::test_fault = overscaled_peer_window` (a planted bug: the peer's window field shifted by 14 whatever was negotiated) must make it fire; `unscaled_peer_window` only sends less and cannot. | on |
 | `ProgressChecker` | while any connection is unfinished, some progress event (bytes delivered, state change, connection end) occurs within `B = retry_abort_time(data_retries) + time_wait + 120 s` of virtual time (wall-clock hangs: `stuck`, `livelock`, §7.1, and the sweep timeout, §7.4) | on |
 | `QuiescenceChecker` | after all workload connections end, run until `next_deadline()` is never or only `pmtu_expiry`; then `debug_usage()` must show no live slots, TIME_WAIT entries, queued packets or events, or armed connection timers, and every buffer and chunk free; else `leak` | on |
 | `SelfCheck` | `Stack::debug_check()` after every call; ASan/UBSan in sweep builds | on |
