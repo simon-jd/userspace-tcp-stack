@@ -451,6 +451,34 @@ TEST(SimCheckersTermination, OrphanFinWait2TimeoutIsLegal) {
   EXPECT_TRUE(k.finish().empty());
 }
 
+TEST(SimCheckersTermination, RstInCloseWaitAfterPeerOrphanTimeoutIsLegal) {
+  // Sweep seed 3106: b shut down writing, its application closed later, and
+  // the orphan timed out in FIN-WAIT-2 while a, in CLOSE-WAIT, still had data
+  // to send; a's next segment drew an RST.
+  Conns k;
+  k.state(0, 1, TcpState::established, 1);
+  k.state(1, 1, TcpState::established, 1);
+  k.state(1, 1, TcpState::fin_wait_1, 2);
+  k.state(0, 1, TcpState::close_wait, 2);
+  k.state(1, 1, TcpState::fin_wait_2, 2);
+  k.c.on_app_close(1, 1, Time{10'000'000'000});
+  k.state(1, 1, TcpState::closed, 70, CloseCause::fin_wait2_timeout);
+  k.state(0, 1, TcpState::closed, 75, CloseCause::rst_received);
+  EXPECT_TRUE(k.finish().empty());
+
+  // Any other end of the peer does not explain an RST in CLOSE-WAIT.
+  Conns tw;
+  tw.state(0, 1, TcpState::established, 1);
+  tw.state(1, 1, TcpState::established, 1);
+  tw.state(0, 1, TcpState::close_wait, 2);
+  tw.state(1, 1, TcpState::time_wait, 3);
+  tw.state(1, 1, TcpState::closed, 63, CloseCause::time_wait_expired);
+  tw.state(0, 1, TcpState::closed, 70, CloseCause::rst_received);
+  const auto v = tw.finish();
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_NE(v[0].message.find("close_wait"), std::string::npos) << v[0].message;
+}
+
 TEST(SimCheckersTermination, FinWait2TimeoutNeedsAnOrphan) {
   // Only an orphan times out in FIN-WAIT-2 (§4.12); a connection whose
   // application still holds it waits for the peer's FIN.

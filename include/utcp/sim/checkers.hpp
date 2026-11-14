@@ -127,7 +127,8 @@ private:
 //   peer sent the RST on purpose (aborted, timed_out, synack_timed_out,
 //   listener_closed, child_reset, refused, time_wait_rst) or we were in
 //   FIN-WAIT-1, FIN-WAIT-2, CLOSING or LAST-ACK (the peer's TIME_WAIT or
-//   orphan FIN-WAIT-2 entry ended first, checked in the peer's trace);
+//   orphan FIN-WAIT-2 entry ended first, checked in the peer's trace), or in
+//   CLOSE-WAIT after the peer's orphan ended with fin_wait2_timeout;
 // - refused: a refused-mode connection, or the peer's connection ended before;
 // - child_reset, time_wait_rst: the peer's connection ended before.
 // Relaxed (garbage runs): any close cause, but every connection must end.

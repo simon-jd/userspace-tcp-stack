@@ -281,10 +281,19 @@ std::optional<std::string> TerminationChecker::judge(const Conn& c) const {
         case TcpState::closing:
         case TcpState::last_ack:
           return std::nullopt;
+        case TcpState::close_wait:
+          // We acked the peer's FIN, so it was in FIN-WAIT-2; as an orphan it
+          // timed out there and answers our data or FIN with RST (§4.12;
+          // Linux tcp_fin_timeout, after which no socket matches).
+          if (peer->cause == CloseCause::fin_wait2_timeout) {
+            return std::nullopt;
+          }
+          break;
         default:
-          return "RST received in " + std::string(to_string(c.before_close)) +
-                 " after the peer ended with " + std::string(to_string(peer->cause));
+          break;
       }
+      return "RST received in " + std::string(to_string(c.before_close)) +
+             " after the peer ended with " + std::string(to_string(peer->cause));
     }
     case CloseCause::refused: {
       const auto mode = design_ ? design_(c.node, c.tuple) : std::nullopt;
