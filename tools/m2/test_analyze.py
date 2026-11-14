@@ -326,25 +326,23 @@ class Queue(unittest.TestCase):
         self.assertEqual(r["backlog_max"], 12112)
         self.assertTrue(r["reaches"])
         self.assertEqual(r["drop_intervals"], 3)
-        # The interval 10598 -> ... has a drop with 12112 at its end: fine.
+        # Without a rate the level is 0.9*Q = 11250: 1->2 (12112) and 2->3 are
+        # fine, 3->4 has 12112 too.
         self.assertEqual(r["drop_intervals_low"], 0)
-        s[3] = (s[3][0], 9000, 2)
-        s[1] = (s[1][0], 6056, 0)
-        s[2] = (s[2][0], 9000, 1)
-        r = A.queue_check(s, q)
-        # Drop intervals 6056-9000 and 9000-9000 have no bound at the full
-        # level min(0.9*Q, Q - 2*1514) = 9472; 9000-10598 has; all three are
-        # below 0.9*Q.
-        self.assertEqual(r["drop_intervals_low"], 2)
-        self.assertEqual(r["drop_intervals_below_frac"], 3)
-        self.assertEqual(r["full_level"], 9472)
-        # 7 frames (10598 B, 0.85*Q) count as full for Q = 12500 but not
-        # against 0.9*Q; for Q = 50000 the level is 0.9*Q.
-        s[2] = (s[2][0], 10598, 1)
-        s[3] = (s[3][0], 10598, 2)
-        r = A.queue_check(s, q)
+        # Samples 10 ms apart at 1 Mbit/s with B = 3028: the level is
+        # 12500 - 1514 - 3028 - 1250 = 6708 B.
+        lowered = list(s)
+        lowered[2] = (s[2][0], 6056, 1)
+        lowered[3] = (s[3][0], 6056, 2)
+        lowered[4] = (s[4][0], 6000, 3)
+        r = A.queue_check(lowered, q, rate_bps=1e6, burst_bytes=3028)
+        self.assertAlmostEqual(r["min_level"], 6708)
+        self.assertEqual((r["drop_intervals_low"], r["drop_intervals_below_frac"]), (3, 3))
+        # At 10 Mbit/s the queue may drain 12 500 B in 10 ms: no level is left,
+        # so none of these is low, while all are below 0.9*Q.
+        r = A.queue_check(lowered, q, rate_bps=10e6, burst_bytes=3028)
         self.assertEqual((r["drop_intervals_low"], r["drop_intervals_below_frac"]), (0, 3))
-        self.assertEqual(A.queue_check(s, 50_000)["full_level"], 45_000)
+        self.assertFalse(A.queue_check([x for x in lowered if x[1] < 11000], q)["reaches"])
 
 
 def pcap_bytes(segs, nano=True):

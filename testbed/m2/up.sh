@@ -11,6 +11,8 @@
 #   rcv: gro off; tcp_no_metrics_save; tcp_rmem left at the default.
 #   every container runs with --init, so processes the scripts start and stop
 #   (tcpdump, ping, the drop watcher) are reaped.
+#   neighbours: permanent ARP entries between adjacent hops (no ARP on the
+#           path, none through netem).
 #   routes: snd -> nets b, c via r1; r1 -> net c via r2, 198.18.8N.0/21 via
 #           snd; r2 -> net a and the stack via r1; rcv -> nets a, b and the
 #           stack via r2.
@@ -93,6 +95,20 @@ tb_sh "$m2_rcv" "
   ip route add $m2_subnet_b via $m2_r2_ip_c
   ip route add $m2_stack_net via $m2_r2_ip_c
 "
+
+# Permanent neighbour entries between the hops: no ARP crosses netem (an ARP
+# packet would take a draw from netem's PRNG, shifting the seeded loss
+# sequence, and could itself be lost or delayed).
+mac() { docker exec "$1" cat "/sys/class/net/$(tb_ifname "$1" "$2")/address"; }
+neigh() {  # neigh CONTAINER OWN_IP PEER_CONTAINER PEER_IP
+  tb_exec "$1" ip neigh replace "$4" lladdr "$(mac "$3" "$4")" dev "$(tb_ifname "$1" "$2")" nud permanent
+}
+neigh "$m2_snd" "$m2_snd_ip" "$m2_r1" "$m2_r1_ip_a"
+neigh "$m2_r1" "$m2_r1_ip_a" "$m2_snd" "$m2_snd_ip"
+neigh "$m2_r1" "$m2_r1_ip_b" "$m2_r2" "$m2_r2_ip_b"
+neigh "$m2_r2" "$m2_r2_ip_b" "$m2_r1" "$m2_r1_ip_b"
+neigh "$m2_r2" "$m2_r2_ip_c" "$m2_rcv" "$m2_rcv_ip"
+neigh "$m2_rcv" "$m2_rcv_ip" "$m2_r2" "$m2_r2_ip_c"
 
 tb_offloads "$m2_snd" "$m2_snd_ip" "${tb_sender_offloads[@]}"
 tb_offloads "$m2_r1" "$m2_r1_ip_a" "${tb_forward_offloads[@]}"

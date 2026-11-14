@@ -439,30 +439,39 @@ def parse_tbf_samples(text):
 FRAME = 1514  # a full-size frame as tbf counts it (skb->len with the Ethernet header)
 
 
-def queue_check(samples, q_bytes, lo_rt=None, hi_rt=None, frac=0.9):
+def queue_check(samples, q_bytes, rate_bps=None, burst_bytes=0, lo_rt=None, hi_rt=None, frac=0.9):
     """Gate item 4 on the sampler: the highest backlog, whether it reaches
-    [frac, 1]·Q, and the drop increments whose interval has no bounding sample
-    at or above the "full" level min(frac·Q, Q - 2 frames). tbf drops a frame
-    when backlog + frame > Q, and between two 10 ms samples the backlog moves
-    by up to 8 frames at 10 Mbit/s; for Q = 12 500 B (8 frames) 0.9·Q lies
-    between 7 and 8 frames, so a full queue often samples as 7 (DESIGN §14).
-    drop_intervals_below_frac counts against frac·Q alone, for the record."""
+    [frac, 1]·Q, and the drop increments that a tail drop at the limit cannot
+    explain. tbf drops a frame only when backlog + frame > Q; afterwards the
+    queue drains at most at the rate R plus the bucket B, and before it, it
+    filled no faster than the arrivals allow. So for a drop between samples i
+    and i+1 (Δt apart), max(b_i, b_i+1) >= Q - frame - B - R·Δt; an interval
+    below that level is "low". With R unknown, the level is frac·Q.
+    §5.4 asks for a sample >= 0.9·Q in every drop interval; at 10 ms the queue
+    drains R·10 ms between samples (12 500 B at 10 Mbit/s, 125 000 B at
+    100 Mbit/s, as much as a 0.5xBDP queue holds), so that test fails on
+    correct tail drops; drop_intervals_below_frac still counts it (DESIGN §14)."""
     s = [x for x in samples if (lo_rt is None or x[0] >= lo_rt) and (hi_rt is None or x[0] <= hi_rt)]
-    full = min(frac * q_bytes, q_bytes - 2 * FRAME)
     if not s:
         return {"backlog_max": None, "reaches": False, "drop_intervals": 0, "drop_intervals_low": 0,
-                "drop_intervals_below_frac": 0, "full_level": full}
+                "drop_intervals_below_frac": 0, "min_level": None}
     bmax = max(x[1] for x in s)
     n = low = below = 0
+    min_level = None
     for a, b in zip(s, s[1:]):
         if a[2] is not None and b[2] is not None and b[2] > a[2]:
             n += 1
             top = max(a[1], b[1])
-            low += top < full
+            if rate_bps:
+                level = q_bytes - FRAME - burst_bytes - rate_bps / 8 * (b[0] - a[0]) / NS
+            else:
+                level = frac * q_bytes
+            min_level = level if min_level is None else min(min_level, level)
+            low += top < level
             below += top < frac * q_bytes
     return {"backlog_max": bmax, "reaches": frac * q_bytes <= bmax <= q_bytes,
             "drop_intervals": n, "drop_intervals_low": low, "drop_intervals_below_frac": below,
-            "full_level": full}
+            "min_level": min_level}
 
 
 # --------------------------------------------------------------------------
@@ -767,7 +776,8 @@ def summarize_run(rundir):
         q = int(meta.get("queue_bytes", 0))
         lo_rt = lo - clock.monotonic_ns + clock.realtime_ns
         hi_rt = hi - clock.monotonic_ns + clock.realtime_ns
-        out["queue"] = queue_check(samples, q, lo_rt, hi_rt) if q else None
+        rate = float(meta["bw_mbit"]) * 1e6 if meta.get("bw_mbit") else None
+        out["queue"] = queue_check(samples, q, rate, int(meta.get("burst_bytes", 0)), lo_rt, hi_rt) if q else None
     # Captures (capture.json, made by `analyze.py captures`).
     cap = read_text(rd / "capture.json")
     if cap:

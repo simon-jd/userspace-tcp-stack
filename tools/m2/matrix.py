@@ -368,7 +368,7 @@ def calibrate(slot, campaign, pairs, skip_stack=False, seed=1):
             add(4, ok4, bw=bw, rtt=rtt, queue_bdp=q, run=run, queue_bytes=Q, backlog_max=qc.get("backlog_max"),
                 backlog_frac=(qc.get("backlog_max") or 0) / Q, drop_intervals=qc.get("drop_intervals"),
                 drop_intervals_low=qc.get("drop_intervals_low"),
-                drop_intervals_below_frac=qc.get("drop_intervals_below_frac"), full_level=qc.get("full_level"),
+                drop_intervals_below_frac=qc.get("drop_intervals_below_frac"), min_level=qc.get("min_level"),
                 ping_max_minus_base_ms=dmax, target_ms=target_ms)
             add(5, not s.get("local_drops") and "ACK-path qdisc drops" not in s.get("invalid", []), run=run,
                 bw=bw, rtt=rtt, queue_bdp=q,
@@ -478,8 +478,9 @@ def gate_markdown(r):
                        f"netem counter {i['netem_dropped_counter']}, tbf drops {i['tbf_dropped']}")
         elif it == 4:
             res = (f"backlog max {i['backlog_max']} B = {100 * i['backlog_frac']:.1f} % of Q {i['queue_bytes']};"
-                   f" drop intervals {i['drop_intervals']}, without a sample at the full level"
-                   f" {i['full_level']:.0f} B: {i['drop_intervals_low']} (below 0.9Q: {i['drop_intervals_below_frac']});"
+                   f" drop intervals {i['drop_intervals']}, below the tail-drop bound"
+                   f" (lowest {i['min_level'] if i['min_level'] is None else round(i['min_level'])} B):"
+                   f" {i['drop_intervals_low']} (below 0.9Q: {i['drop_intervals_below_frac']});"
                    f" ping max - base {i['ping_max_minus_base_ms'] if i['ping_max_minus_base_ms'] is None else round(i['ping_max_minus_base_ms'], 2)}"
                    f" ms vs {i['target_ms']:.2f} ms")
         elif it == 5:
