@@ -9,10 +9,20 @@
 #   and no garbage (impairment produces malformed frames on ingress by
 #   design).
 #
+# Only the layers the stack produces are dissected (raw IP, IPv4, ICMP, TCP,
+# UDP; payload as data), with the IPv4, TCP and UDP checksums validated. The
+# payload is the simulator's byte pattern: with every dissector on, TShark
+# decodes it by port and heuristics (the IPA dissector claims TCP port 5000,
+# the workload's first server port) and reports Malformed errors in RSL,
+# A-bis OML, GSM DTAP and others (docs/SIM-BUGS.md, tshark expert analysis).
+#
 # Fails (exit 1) on any Error-severity expert item or a file tshark cannot
 # read; tallies Warning-severity items by protocol and summary. Exit 2 on
 # usage errors or when tshark is missing.
 set -euo pipefail
+
+tshark_args=(-n --only-protocols frame,raw,ip,icmp,tcp,udp,data
+  -o ip.check_checksum:TRUE -o tcp.check_checksum:TRUE -o udp.check_checksum:TRUE)
 
 if (($# == 0)); then
   echo "usage: $0 DIR..." >&2
@@ -45,7 +55,7 @@ while IFS= read -r -d '' scenario; do
   for f in "${pcaps[@]}"; do
     [[ -e $f ]] || continue
     files=$((files + 1))
-    if ! out=$(tshark -n -r "$f" -q -z expert 2>&1); then
+    if ! out=$(tshark "${tshark_args[@]}" -r "$f" -q -z expert 2>&1); then
       echo "tshark_expert: $f: tshark failed:"
       echo "$out"
       failed=1
