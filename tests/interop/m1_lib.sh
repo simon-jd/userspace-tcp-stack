@@ -7,10 +7,14 @@
 #                                before and after, program output, the
 #                                stack's --stats line, capture summaries,
 #                                row.json (the matrix row) and run.log
-#   utcp-data:/m1-accept-interop/<case>/*.pcap
+#   utcp-data:/$M1_VOLDIR/<case>/*.pcap
 #                                tcpdump captures (128-byte snaplen: headers
-#                                only), kept in the Docker volume utcp-data
-# and one line in $M1_RESULTS/rows.jsonl.
+#                                only), kept in the Docker volume utcp-data;
+#                                M1_VOLDIR defaults to m1-accept-interop/<run>
+#                                (<run> = the last component of M1_RESULTS),
+#                                so another run never replaces them
+# and one line in $M1_RESULTS/rows.jsonl. row.json records the capture
+# directory ("captures_dir").
 #
 # Capture and analysis containers are named utcp-m1-accept-interop-* and
 # removed when they end. They share the network namespace of the testbed
@@ -19,6 +23,9 @@
 #
 # Environment:
 #   M1_RESULTS  results directory on the host (default <repo>/.logs/interop)
+#   M1_VOLDIR   capture directory in utcp-data (default m1-accept-interop/<run>,
+#               <run> = basename of M1_RESULTS); m1_case_dir empties
+#               $M1_VOLDIR/<case> only
 #   UTCP_PRESET build preset of the programs (default gcc-release; built with
 #               testbed/m1/build.sh)
 
@@ -30,7 +37,8 @@ m1_preset=${UTCP_PRESET:-gcc-release}
 m1_bin=/utcp/build/tb-$m1_preset
 M1_RESULTS=${M1_RESULTS:-$m1_repo/.logs/interop}
 m1_volume=utcp-data
-m1_voldir=m1-accept-interop
+m1_voldir=${M1_VOLDIR:-m1-accept-interop/$(basename "$(realpath -m "$M1_RESULTS")")}
+m1_voldir=${m1_voldir%/}
 m1_prefix=utcp-m1-accept-interop
 mkdir -p "$M1_RESULTS"
 
@@ -97,7 +105,8 @@ m1_pmtu() {
 
 m1_netem() { "$tb_repo/testbed/m1/netem.sh" "$1"; }
 
-# m1_case_dir CASE: creates (empties) the host and volume directories.
+# m1_case_dir CASE: creates (empties) the host directory and
+# utcp-data:/$m1_voldir/CASE (this run's captures of CASE only).
 m1_case_dir() {
   local c=$1
   rm -rf "${M1_RESULTS:?}/$c"
@@ -108,7 +117,7 @@ m1_case_dir() {
 
 # m1_cap_start CASE NAME CONTAINER ADDRESS FILTER: tcpdump on the interface
 # of CONTAINER that holds ADDRESS (or the interface named ADDRESS if it is
-# not an address), 128-byte snaplen, into utcp-data:/m1-accept-interop/CASE/NAME.pcap.
+# not an address), 128-byte snaplen, into utcp-data:/$m1_voldir/CASE/NAME.pcap.
 m1_cap_start() {
   local c=$1 name=$2 ctr=$3 addr=$4 filter=$5 dev
   if [[ $addr =~ ^[0-9.]+$ ]]; then
@@ -214,5 +223,8 @@ m1_wait_kernel_listen() {
 # m1_row CASE KEY=VALUE... CHECK...: writes CASE/row.json and appends it to
 # rows.jsonl (m1_row.py: reads the files of CASE, evaluates the checks).
 m1_row() {
-  python3 -I "$m1_repo/tests/interop/m1_row.py" "$M1_RESULTS" "$@"
+  local c=$1
+  shift
+  python3 -I "$m1_repo/tests/interop/m1_row.py" "$M1_RESULTS" "$c" \
+    "captures_dir=$m1_volume:/$m1_voldir/$c" "$@"
 }

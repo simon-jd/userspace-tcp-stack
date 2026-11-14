@@ -83,7 +83,9 @@ bulk_case() {
       bytes=100M bytes_n=100000000 combo=$rest opts="peer tcp_ecn=${rest#ecn}"
       # Not negotiated: no ECE/CWR/AE in the stack's SYN or SYN-ACK, none in
       # Linux's SYN-ACK, no ECN codepoint on any packet.
-      checks+=("check:not any(s['ece'] or s['cwr'] or s['ae'] for s in pcap['peer']['by']['stack']['syns'])"
+      # (all() and any() over the SYNs need them captured: at least one each.)
+      checks+=("check:len(pcap['peer']['by']['stack']['syns'])>=1 and len(pcap['peer']['by']['remote']['syns'])>=1"
+        "check:not any(s['ece'] or s['cwr'] or s['ae'] for s in pcap['peer']['by']['stack']['syns'])"
         "check:not any(s['ack'] and (s['ece'] or s['ae']) for s in pcap['peer']['by']['remote']['syns'])"
         "check:pcap['peer']['by']['stack']['ecn_ip']==0 and pcap['peer']['by']['remote']['ecn_ip']==0"
         "check:pcap['peer']['by']['stack']['ece_cwr_after_syn']==0 and pcap['peer']['by']['remote']['ece_cwr_after_syn']==0")
@@ -101,7 +103,8 @@ bulk_case() {
       # Linux's SYN or SYN-ACK carries exactly the enabled options; the
       # stack's SYN offers all three, its SYN-ACK only what Linux offered;
       # after the handshake timestamps and SACK blocks appear only if on.
-      checks+=("check:all(x['sack_perm']==$S and x['ts']==$T and (x['wscale'] is not None)==$W for x in pcap['peer']['by']['remote']['syns'])"
+      checks+=("check:len(pcap['peer']['by']['stack']['syns'])>=1 and len(pcap['peer']['by']['remote']['syns'])>=1"
+        "check:all(x['sack_perm']==$S and x['ts']==$T and (x['wscale'] is not None)==$W for x in pcap['peer']['by']['remote']['syns'])"
         "check:all((x['sack_perm'] and x['ts'] and x['wscale'] is not None) if not x['ack'] else (x['sack_perm']==$S and x['ts']==$T and (x['wscale'] is not None)==$W) for x in pcap['peer']['by']['stack']['syns'])"
         "check:(pcap['peer']['by']['stack']['ts_after_syn']>0)==$T and (pcap['peer']['by']['remote']['ts_after_syn']>0)==$T")
       if [[ $s == 0 ]]; then
@@ -113,8 +116,17 @@ bulk_case() {
     C-pmtu)
       pmtu=1 opts="PMTU 1400 chain"
       if [[ $dir == s2l ]]; then
+        # The stack's segments shrink after the first frag-needed reached it:
+        # its first 1348-byte segment follows that ICMP message and none is
+        # longer after it. Segments longer than 1348 bytes after the ICMP are
+        # the ones sent before the stack read it (new data at the old size,
+        # within 39 us in run5); they must all be within 10 ms of it, far
+        # below the 200 ms minimum RTO that a stack ignoring the ICMP would
+        # wait for.
         checks+=("check:any(i['type']==3 and i['code']==4 and i['mtu']==1400 and i['dst']=='$stack_ip' for i in pcap['utcp0']['icmp'])"
-          "check:pcap['utcp0']['stack_first_len_t'] is not None and pcap['utcp0']['stack_max_len_after_first_len']<=1348"
+          "check:pcap['utcp0']['icmp_frag_needed_to_stack_first_t'] is not None and pcap['utcp0']['stack_first_len_t'] is not None and pcap['utcp0']['stack_first_len_t']>pcap['utcp0']['icmp_frag_needed_to_stack_first_t']"
+          "check:pcap['utcp0']['stack_max_len_after_first_len']<=1348"
+          "check:pcap['utcp0']['stack_over_len_after_icmp']==0 or pcap['utcp0']['stack_over_len_after_icmp_last_dt']<=0.01"
           "check:pcap['utcp0']['by']['stack']['max_len']==1448"
           "check:extra['send_last_sample']['pmtu']==1400"
           "check:extra['send_last_sample']['snd_mss']==1348")

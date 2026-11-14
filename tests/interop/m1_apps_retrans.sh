@@ -4,7 +4,8 @@
 # 200:1048576) and records what the retransmissions are (docs/INTEROP.md,
 # "m1-apps test 7 retransmissions"): `nstat -asz` before and after (the
 # container's own network namespace: only this transfer), the sender's
-# summary, and a 128-byte capture of lo in utcp-data:/m1-accept-interop/apps-t7-<n>/lo.pcap
+# summary, and a 128-byte capture of lo in utcp-data:/$M1_VOLDIR/apps-t7-<n>/lo.pcap
+# (m1_lib.sh; default m1-accept-interop/<run>)
 # with a tshark breakdown of the sender's retransmitted segments
 # (tcp.analysis.retransmission, zero-window probes, window-full).
 #

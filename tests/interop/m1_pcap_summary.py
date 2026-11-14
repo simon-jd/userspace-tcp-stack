@@ -24,8 +24,14 @@ STACK_IP) and "remote" (any other source). Per sender:
   sender's FIN was ACKed, with the sequence number of the end of that FIN:
   the answer to a segment that arrives after the connection is gone, e.g. a
   duplicate of the last ACK, RFC 9293 §3.10.7.1 and Linux tcp_v4_rcv ->
-  tcp_v4_send_reset), rst_open (rst - rst_after_close). Single-connection
-  captures only.
+  tcp_v4_send_reset), rst_open (rst - rst_after_close), edge_retreats and
+  edge_retreat_max (ACKs whose right window edge, SEG.ACK + window << the
+  sender's shift, lies below the highest edge this sender advertised
+  before, and the largest such step in bytes; RFC 9293 §3.8.6.2.2 / RFC
+  7323 §2.4; ACKs below this sender's highest SEG.ACK so far, i.e.
+  reordered, are skipped; meaningful only in a capture taken before any
+  reordering of that sender's segments, e.g. utcp0 for the stack).
+  Single-connection captures only.
 "connections": distinct (src, sport, dst, dport) tuples with a SYN, as
 "a:p>b:q" from the SYN's sender.
 "icmp": ICMP messages by (src, dst, type, code, mtu) with count and the time
@@ -34,7 +40,13 @@ code 4 to STACK_IP.
 With LEN (the PMTU case): "stack_first_len_t" is the time of the stack's first
 segment with LEN bytes of payload, "stack_max_len_after_first_len" the largest
 stack payload after it (-1 if there is none), "stack_lens_after_icmp" the 5
-most common stack payload lengths after the first frag-needed to STACK_IP.
+most common stack payload lengths after the first frag-needed to STACK_IP,
+"stack_over_len_after_icmp" the number of stack segments longer than LEN
+sent after it, "stack_over_len_after_icmp_new" those of them that carry
+data beyond the highest sequence number the stack had sent before it (new
+data sent at the old size, before the stack read the ICMP message), and
+"stack_over_len_after_icmp_last_dt" the seconds from that frag-needed to
+the last of them (None if there is none).
 """
 import collections
 import json
@@ -60,6 +72,7 @@ def side():
         "ece_cwr_after_syn": 0, "ts_after_syn": 0, "sack_segs": 0, "first_t": None,
         "last_t": None, "fin_end": None, "last_acks": collections.deque(maxlen=64),
         "rst_after_close": 0, "fin_acked_by_peer": False,
+        "ack_max": None, "edge_max": None, "edge_retreats": 0, "edge_retreat_max": 0,
     }
 
 
@@ -67,7 +80,9 @@ def main():
     stack_ip, tcp_path, icmp_path, err_path = sys.argv[1:5]
     sides = {"stack": side(), "remote": side()}
     conns = set()
-    stack_lens = []  # (time, len) of the stack's data segments, in order
+    stack_lens = []  # (time, len, end) of the stack's data segments, in order;
+    # end: sequence number after the segment, relative to the stack's first one
+    stack_base = None
     with open(tcp_path) as f:
         for line in f:
             p = line.rstrip("\n").split(";")
@@ -89,7 +104,10 @@ def main():
                 s["max_len"] = max(s["max_len"], ln)
                 s["len_counts"][ln] += 1
                 if src == stack_ip:
-                    stack_lens.append((t, ln))
+                    seq = num(p[15], 10)
+                    if seq is not None:
+                        stack_base = seq if stack_base is None else stack_base
+                        stack_lens.append((t, ln, (seq - stack_base) % (1 << 32) + ln))
             if flags & TCP_FIN:
                 s["fin"] += 1
                 seq = num(p[15], 10)
@@ -100,6 +118,24 @@ def main():
                 s["last_acks"].append(ack)
                 if o["fin_end"] is not None and (ack - o["fin_end"]) % (1 << 32) < (1 << 31):
                     o["fin_acked_by_peer"] = True
+                in_order = s["ack_max"] is None or (ack - s["ack_max"]) % (1 << 32) < (1 << 31)
+                if in_order:
+                    s["ack_max"] = ack
+                if (in_order and not flags & (TCP_SYN | TCP_RST) and win >= 0 and s["syns"]
+                        and o["syns"]):
+                    # The window is scaled only if both SYNs carried the option.
+                    ws, wo = s["syns"][0]["wscale"], o["syns"][0]["wscale"]
+                    edge = (ack + (win << (min(ws, 14) if ws is not None and wo is not None else 0))) \
+                        % (1 << 32)
+                    if s["edge_max"] is None:
+                        s["edge_max"] = edge
+                    else:
+                        step = (edge - s["edge_max"]) % (1 << 32)
+                        if 0 < step < (1 << 31):
+                            s["edge_max"] = edge
+                        elif step != 0:
+                            s["edge_retreats"] += 1
+                            s["edge_retreat_max"] = max(s["edge_retreat_max"], (1 << 32) - step)
             if flags & TCP_RST:
                 s["rst"] += 1
                 if (not flags & TCP_ACK and s["fin_acked_by_peer"] and o["fin"] > 0
@@ -146,7 +182,11 @@ def main():
     first_len_t = None
     after_len = -1
     after_icmp = collections.Counter()
-    for t, ln in stack_lens:
+    over_after_icmp = over_after_icmp_new = 0
+    over_after_icmp_last_dt = None
+    hi_before_icmp = max((e for t, _, e in stack_lens if frag_first is None or t <= frag_first),
+                         default=0)
+    for t, ln, end in stack_lens:
         if want_len is not None:
             if first_len_t is not None:
                 after_len = max(after_len, ln)
@@ -154,6 +194,11 @@ def main():
                 first_len_t = t
         if frag_first is not None and t > frag_first:
             after_icmp[ln] += 1
+            if want_len is not None and ln > want_len:
+                over_after_icmp += 1
+                over_after_icmp_last_dt = round(t - frag_first, 6)
+                if end > hi_before_icmp:
+                    over_after_icmp_new += 1
     for name, s in sides.items():
         s["len_top"] = s.pop("len_counts").most_common(5)
         other = sides["remote" if name == "stack" else "stack"]
@@ -161,7 +206,7 @@ def main():
         s["fin_acked"] = fe is not None and any(
             (a - fe) % (1 << 32) < (1 << 31) for a in s["last_acks"])
     for s in sides.values():
-        del s["last_acks"], s["fin_acked_by_peer"]
+        del s["last_acks"], s["fin_acked_by_peer"], s["edge_max"], s["ack_max"]
         s["rst_open"] = s["rst"] - s["rst_after_close"]
     with open(err_path) as f:
         err = f.read().strip()
@@ -173,6 +218,9 @@ def main():
         "stack_first_len_t": first_len_t,
         "stack_max_len_after_first_len": after_len,
         "stack_lens_after_icmp": after_icmp.most_common(5),
+        "stack_over_len_after_icmp": over_after_icmp,
+        "stack_over_len_after_icmp_new": over_after_icmp_new,
+        "stack_over_len_after_icmp_last_dt": over_after_icmp_last_dt,
         "tshark_stderr": err[-500:],
     }
     json.dump(out, sys.stdout, indent=1)

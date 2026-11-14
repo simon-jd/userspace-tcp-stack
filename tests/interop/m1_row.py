@@ -205,6 +205,11 @@ def main():
                 "IcmpInDestUnreachs", "IcmpOutDestUnreachs", "TcpExtTCPMTUPFail",
                 "TcpExtTCPMTUPSuccess"))},
         "dsack": dsack.get("sender"),
+        # The stack's right-edge retreats per capture (m1_pcap_summary.py),
+        # [count, largest in bytes]; meaningful in utcp0 (before netem).
+        "edge_retreats": {n: [v.get("by", {}).get("stack", {}).get("edge_retreats"),
+                              v.get("by", {}).get("stack", {}).get("edge_retreat_max")]
+                          for n, v in pcap.items()},
         "checks": results,
         "pass": all(r["ok"] for r in results) and bool(results),
     })
