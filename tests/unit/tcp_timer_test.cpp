@@ -5,13 +5,20 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
+#include <initializer_list>
+#include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "core/tcp/recovery.hpp"
+#include "support/recovery_script.hpp"
 #include "tcp_test_util.hpp"
 #include "utcp/retry_model.hpp"
+#include "utcp/trace.hpp"
 
 namespace {
 
@@ -620,6 +627,465 @@ TEST(TcpTimer, ZeroWindowRetractionKeepsConnection) {
     EXPECT_LE(*rst - last, 3 * cfg.tcp.rto_max + 100ms);
     EXPECT_EQ(c.stack().take_error(c.h), Error::timed_out);
   }
+}
+
+// ---- m2-found acceptance test 4: the engine's M2 hooks (M2-DESIGN §1.7,
+// §1.8, §2.5), with the stub recovery and through the RecoveryScript test
+// seam (StackConfig::test_recovery_script).
+
+using utcp::CaState;
+using utcp::RecoveryCtx;
+using utcp::TlpAction;
+using utcp::TraceEvent;
+using utcp::TraceKind;
+using utcp::TxKind;
+using utcp::XmitTimer;
+
+class TraceLog : public utcp::TraceSink {
+public:
+  void on_event(const TraceEvent& e) override { events.push_back(e); }
+  // The tx events of kind `k`, oldest first.
+  [[nodiscard]] std::vector<TraceEvent> tx(TxKind k) const {
+    std::vector<TraceEvent> v;
+    for (const TraceEvent& e : events) {
+      if (e.kind == TraceKind::tx && e.tx == k) {
+        v.push_back(e);
+      }
+    }
+    return v;
+  }
+  std::vector<TraceEvent> events;
+};
+
+// The stack sends data to a scripted peer (Scripted) with 1460-byte segments,
+// SACK on and no timestamps; tx and timer events are traced.
+struct Sender {
+  static constexpr std::uint32_t mss = 1460;
+  t::ScriptedRecovery script;
+  TraceLog log;
+  std::optional<Scripted> s;
+  Seq32 base;  // the first data byte
+
+  explicit Sender(StackConfig cfg, bool with_script = true) {
+    if (with_script) {
+      cfg.test_recovery_script = &script;
+    }
+    cfg.trace_mask = utcp::trace_bit(TraceKind::tx) | utcp::trace_bit(TraceKind::timer);
+    cfg.tcp.snd_buf_init = 1 << 20;
+    s.emplace(cfg);
+    s->stack().set_trace_sink(&log);
+  }
+  Sender(const Sender&) = delete;
+  Sender& operator=(const Sender&) = delete;
+  ~Sender() { s->stack().set_trace_sink(nullptr); }
+
+  // Accepts the peer's connection and writes `segments` full segments.
+  bool open(std::uint32_t segments) {
+    if (!s->accept()) {
+      return false;
+    }
+    base = s->their;
+    const t::Bytes data = t::pattern(std::size_t{segments} * mss);
+    const auto n = stack().tcp_send(s->h, data);
+    return n && *n == data.size();
+  }
+  utcp::Stack& stack() { return s->stack(); }
+  Driven& d() { return s->d(); }
+  [[nodiscard]] Seq32 seg(std::uint32_t k) const { return base + k * mss; }
+  // A peer ACK of everything below segment `cum`, SACKing the segment index
+  // ranges [first, last).
+  void ack(std::uint32_t cum,
+           std::initializer_list<std::pair<std::uint32_t, std::uint32_t>> sacked = {}) {
+    t::TcpSpec sp = s->spec(w::tcp_ack);
+    sp.ack = seg(cum);
+    for (const auto& [first, last] : sacked) {
+      sp.opt.sack[sp.opt.sack_count++] = {seg(first), seg(last)};
+    }
+    s->send(sp);
+  }
+  std::vector<Parsed> out() { return s->out(); }
+  [[nodiscard]] std::size_t data_count(const std::vector<Parsed>& v) const {
+    return static_cast<std::size_t>(
+        std::count_if(v.begin(), v.end(), [](const Parsed& p) { return is_data(p.v); }));
+  }
+};
+
+// §2.5: with a fixed pacing rate the lost segment waits for pacing_next and
+// its retransmission moves pacing_next on; the stub recovery keeps M1's
+// exemption of the fast retransmission from the cwnd gate (not from the
+// pacing gate: Linux checks tcp_pacing_check before any retransmission).
+TEST(TcpTimer, PacedFastRetransmitWaitsForTheGateAndAdvancesIt) {
+  StackConfig cfg = config(Side::b);
+  cfg.tcp.test_fixed_pacing_rate = 1'000'000;  // bytes/s: 1.46 ms per segment
+  Sender x(cfg, false);
+  ASSERT_TRUE(x.open(100));
+  EXPECT_EQ(x.data_count(x.out()), 10u);  // the first 10 segments are not paced
+  x.d().run_for(10ms);
+  x.ack(6);  // cwnd 16, 4 in flight: paced bursts up to cwnd
+  x.d().run_for(40ms);
+  EXPECT_EQ(x.data_count(x.out()), 12u);  // segments 10-21
+  // Three duplicate ACKs SACK 7, 7-8, 7-9: segment 6 is lost. The first
+  // frees room for segment 22, which closes the gate again.
+  x.ack(6, {{7, 8}});
+  const Time t2 = x.d().now();
+  x.ack(6, {{7, 9}});
+  x.ack(6, {{7, 10}});
+  auto o = x.out();
+  ASSERT_EQ(o.size(), 1u);
+  EXPECT_EQ(o[0].v.h.seq, x.seg(22));
+  ASSERT_EQ(x.stack().tcp_info(x.s->h)->ca_state, CaState::recovery);
+  // The fast retransmission waits for pacing_next.
+  const Time gate = x.stack().next_deadline();
+  EXPECT_GT(gate, t2);
+  EXPECT_LT(gate, t2 + 1460us + 1us);
+  x.d().run_for(gate - x.d().now());
+  o = x.out();
+  ASSERT_EQ(o.size(), 1u);
+  EXPECT_EQ(o[0].v.h.seq, x.seg(6));
+  const auto fr = x.log.tx(TxKind::fast_rexmit);
+  ASSERT_EQ(fr.size(), 1u);
+  EXPECT_EQ(fr[0].t, gate);
+  EXPECT_GT(fr[0].in_flight, fr[0].cwnd);  // exempt from the cwnd gate (M1)
+  EXPECT_EQ(fr[0].gate_rate, 1'000'000u);
+  EXPECT_TRUE(fr[0].burst_start);
+  // Its 1460 bytes moved pacing_next: after a full ACK frees the cwnd, new
+  // data waits 1.46 ms more.
+  x.ack(23);
+  EXPECT_TRUE(x.out().empty());
+  EXPECT_EQ(x.stack().next_deadline(), gate + 1460us);
+  x.d().run_for(1460us);
+  o = x.out();
+  ASSERT_FALSE(o.empty());
+  EXPECT_EQ(o[0].v.h.seq, x.seg(23));
+}
+
+// The scripted recovery answers exempt_from_cwnd false and lets a PRR-like
+// cwnd_reduction admit the first retransmission through the cwnd gate (sent
+// as rexmit, not fast_rexmit); next_seg_extra names one more segment, sent
+// after the new data; on_burst_end learns whether new data went out.
+TEST(TcpTimer, ScriptedRecoveryDrivesTheRetransmissionHooks) {
+  Sender x(config(Side::b));
+  x.script.exempt = [](const RecoveryCtx&, const utcp::TxSeg&) -> std::optional<bool> {
+    return false;
+  };
+  x.script.reduce = [](RecoveryCtx& c, std::uint32_t, std::uint32_t, std::uint32_t) {
+    c.cc.cwnd = c.cc.in_flight + 2;
+    return true;
+  };
+  int extras = 0;
+  x.script.extra = [&](RecoveryCtx& c) -> std::optional<std::optional<std::uint64_t>> {
+    if (c.cc.ca_state != CaState::recovery || extras > 0) {
+      return std::optional<std::uint64_t>{};  // handled: nothing
+    }
+    ++extras;
+    return std::optional<std::uint64_t>{std::uint64_t{12} * Sender::mss};
+  };
+  ASSERT_TRUE(x.open(14));
+  EXPECT_EQ(x.data_count(x.out()), 10u);
+  EXPECT_FALSE(x.script.calls_of("on_burst_end 1").empty());
+  x.d().run_for(10ms);
+  x.ack(2);  // cwnd 12: segments 10-13, the last of the data
+  EXPECT_EQ(x.data_count(x.out()), 4u);
+  x.script.calls.clear();
+  x.ack(2, {{3, 4}});
+  x.ack(2, {{3, 5}});
+  EXPECT_TRUE(x.out().empty());
+  x.ack(2, {{3, 6}});  // Recovery: segment 2 is lost
+  const auto o = x.out();
+  ASSERT_EQ(o.size(), 2u);
+  EXPECT_EQ(o[0].v.h.seq, x.seg(2));
+  EXPECT_EQ(o[1].v.h.seq, x.seg(12));
+  EXPECT_TRUE(x.log.tx(TxKind::fast_rexmit).empty());
+  const auto rx = x.log.tx(TxKind::rexmit);
+  ASSERT_EQ(rx.size(), 2u);
+  EXPECT_LE(rx[0].in_flight, rx[0].cwnd);  // through the cwnd gate
+  EXPECT_LE(rx[1].in_flight, rx[1].cwnd);
+  EXPECT_EQ(extras, 1);
+  EXPECT_EQ(x.script.calls_of("exempt_from_cwnd").size(), 1u);
+  EXPECT_EQ(x.script.calls_of("exempt_from_cwnd")[0],
+            "exempt_from_cwnd " + std::to_string(2 * Sender::mss));
+  EXPECT_FALSE(x.script.calls_of("cwnd_reduction").empty());
+  EXPECT_GE(x.script.calls_of("next_seg_extra").size(), 2u);
+  EXPECT_TRUE(x.script.calls_of("on_burst_end 1").empty());  // retransmissions only
+  EXPECT_FALSE(x.script.calls_of("on_burst_end 0").empty());
+  x.stack().debug_check();
+}
+
+// A REO expiry (M2-DESIGN §1.6): recovery marks a segment lost, the engine
+// retransmits it and the xmit timer goes back to the RTO recovery reports.
+TEST(TcpTimer, ScriptedReoExpiryTransmitsAndRearmsTheRto) {
+  Sender x(config(Side::b));
+  std::optional<Time> reo_at;
+  x.script.timer = [&](const RecoveryCtx&) -> std::optional<std::pair<XmitTimer, Time>> {
+    if (reo_at) {
+      return std::pair{XmitTimer::reo, *reo_at};
+    }
+    return std::nullopt;
+  };
+  x.script.timer_fired = [&](RecoveryCtx& c, XmitTimer k) {
+    if (k != XmitTimer::reo) {
+      return false;
+    }
+    reo_at.reset();
+    c.q.mark_lost(std::uint64_t{3} * Sender::mss);
+    return true;
+  };
+  ASSERT_TRUE(x.open(20));
+  EXPECT_EQ(x.data_count(x.out()), 10u);
+  x.d().run_for(10ms);
+  const Time t1 = x.d().now();
+  x.ack(2, {{4, 6}});  // Disorder; cwnd 14 (+4 delivered): segments 10-17
+  EXPECT_EQ(x.data_count(x.out()), 8u);
+  const Duration rto = x.stack().tcp_info(x.s->h)->rto;
+  EXPECT_EQ(x.stack().next_deadline(), t1 + rto);
+  reo_at = t1 + 5ms;
+  ASSERT_TRUE(x.stack().tcp_send(x.s->h, t::pattern(1)));  // cwnd-limited: only the timers move
+  EXPECT_TRUE(x.out().empty());
+  EXPECT_EQ(x.stack().next_deadline(), t1 + 5ms);
+  x.log.events.clear();
+  x.d().run_for(5ms);
+  const auto o = x.out();
+  ASSERT_EQ(o.size(), 1u);
+  EXPECT_EQ(o[0].v.h.seq, x.seg(3));
+  // The order of events: reo fired, the rexmit, rto armed.
+  std::vector<std::string> seen;
+  for (const TraceEvent& e : x.log.events) {
+    if (e.kind == TraceKind::timer && e.timer == utcp::TraceTimer::reo &&
+        e.timer_op == utcp::TimerOp::fired) {
+      seen.emplace_back("reo fired");
+    } else if (e.kind == TraceKind::tx && e.tx == TxKind::rexmit) {
+      seen.emplace_back("rexmit");
+    } else if (e.kind == TraceKind::timer && e.timer == utcp::TraceTimer::rto &&
+               e.timer_op == utcp::TimerOp::armed) {
+      seen.emplace_back("rto armed");
+    }
+  }
+  EXPECT_EQ(seen, (std::vector<std::string>{"reo fired", "rexmit", "rto armed"}));
+  EXPECT_EQ(x.stack().next_deadline(), t1 + rto);
+  EXPECT_EQ(x.script.calls_of("on_xmit_timer").size(), 1u);
+  x.stack().debug_check();
+}
+
+// A PTO expiry (M2-DESIGN §1.7): on_pto's answer is sent as exactly one tlp
+// segment, new data past cwnd by one or the last segment again; the RTO is
+// then a full RTO from now. A PTO that sends nothing (a probe outstanding)
+// leaves the head's remaining time.
+TEST(TcpTimer, ScriptedPtoSendsOneProbeAndRearmsTheRto) {
+  Sender x(config(Side::b));
+  std::optional<Time> pto_at;
+  TlpAction answer = TlpAction::none;
+  x.script.timer = [&](const RecoveryCtx&) -> std::optional<std::pair<XmitTimer, Time>> {
+    if (pto_at) {
+      return std::pair{XmitTimer::pto, *pto_at};
+    }
+    return std::nullopt;
+  };
+  x.script.pto = [&](RecoveryCtx&) -> std::optional<TlpAction> {
+    pto_at.reset();
+    return answer;
+  };
+  ASSERT_TRUE(x.open(30));
+  const Time t0 = x.d().now();
+  EXPECT_EQ(x.data_count(x.out()), 10u);  // cwnd 10, nothing acknowledged
+  const Duration rto = x.stack().tcp_info(x.s->h)->rto;
+  ASSERT_GT(rto, 60ms);
+  EXPECT_EQ(x.stack().next_deadline(), t0 + rto);
+  const auto expire_pto = [&](TlpAction a) {
+    answer = a;
+    pto_at = x.d().now() + 20ms;
+    ASSERT_TRUE(x.stack().tcp_send(x.s->h, t::pattern(1)));  // runs transmit and the timers
+    EXPECT_TRUE(x.out().empty());
+    EXPECT_EQ(x.stack().next_deadline(), *pto_at);
+    x.d().run_for(20ms);
+  };
+
+  expire_pto(TlpAction::new_data);
+  auto o = x.out();
+  ASSERT_EQ(o.size(), 1u);
+  EXPECT_EQ(o[0].v.h.seq, x.seg(10));
+  EXPECT_EQ(o[0].v.payload.size(), Sender::mss);
+  auto tlp = x.log.tx(TxKind::tlp);
+  ASSERT_EQ(tlp.size(), 1u);
+  EXPECT_EQ(tlp[0].cwnd, 10u);
+  EXPECT_EQ(tlp[0].in_flight, 11u);  // cwnd + 1
+  EXPECT_EQ(x.stack().next_deadline(), x.d().now() + rto);
+  EXPECT_EQ(x.stack().stats().TcpExtTCPLossProbes, 1u);
+  EXPECT_EQ(x.script.calls_of("on_tlp_sent"), (std::vector<std::string>{"on_tlp_sent 1 1"}));
+
+  expire_pto(TlpAction::retransmit_last);
+  o = x.out();
+  ASSERT_EQ(o.size(), 1u);
+  EXPECT_EQ(o[0].v.h.seq, x.seg(10));  // the last segment sent
+  tlp = x.log.tx(TxKind::tlp);
+  ASSERT_EQ(tlp.size(), 2u);
+  EXPECT_EQ(tlp[1].in_flight, 12u);
+  EXPECT_EQ(x.stack().stats().TcpRetransSegs, 1u);
+  EXPECT_EQ(x.stack().next_deadline(), x.d().now() + rto);
+  EXPECT_EQ(x.stack().stats().TcpExtTCPLossProbes, 2u);
+
+  expire_pto(TlpAction::none);
+  EXPECT_TRUE(x.out().empty());
+  EXPECT_EQ(x.log.tx(TxKind::tlp).size(), 2u);
+  EXPECT_EQ(x.stack().next_deadline(), t0 + rto);  // the head's remaining time
+  EXPECT_EQ(x.stack().stats().TcpExtTCPLossProbes, 2u);
+  EXPECT_EQ(x.script.calls_of("on_tlp_sent"),
+            (std::vector<std::string>{"on_tlp_sent 1 1", "on_tlp_sent 2 1", "on_tlp_sent 0 0"}));
+  x.stack().debug_check();
+}
+
+// ---- m2-found, coordinator decision on the ACK frequency: the receiver's
+// ACKs do not depend on how many segments the host hands the stack before
+// the application reads (DESIGN §3; Linux __tcp_ack_snd_check per segment).
+
+struct AckRun {
+  std::vector<std::pair<std::int64_t, std::uint32_t>> acks;  // (time ns, SEG.ACK) of the receiver's ACKs
+  std::size_t data_segs = 0;  // data segments the receiver got
+  std::size_t reads = 0;      // read rounds of the receiving application
+  std::size_t got = 0;        // bytes read
+};
+
+// An 8 MiB bulk transfer a -> b over a 100 Mbit/s link with 5 ms each way.
+// b's host hands it each segment at its arrival time, and its application
+// reads after every `batch` segments or when no segment follows within 1 ms.
+// The sender leaves slow start at 100 segments (initial_ssthresh), which
+// keeps its flight far below the receive window (2 MiB, fixed): the windows b
+// advertises, which do depend on the reads, never limit it, and it never
+// catches up with the writer, so every segment but the last is full-sized
+// (a segment below rcv_mss is ACKed by the read that drains it, Linux
+// tcp_cleanup_rbuf, which depends on the reads by design).
+AckRun bulk_with_read_batches(std::size_t batch) {
+  constexpr std::size_t total = 8u << 20;
+  constexpr std::uint64_t rate = 12'500'000;  // bytes/s
+  constexpr Duration delay = 5ms;
+  StackConfig ca = config(Side::a);
+  ca.tcp.initial_ssthresh = 100;
+  utcp::Stack a(ca);
+  utcp::Stack b(config(Side::b));
+  Time now{1'000'000'000};
+  a.advance(now);
+  b.advance(now);
+  AckRun run;
+  struct Wire {
+    bool to_b = false;
+    t::Bytes bytes;
+  };
+  std::map<std::pair<std::int64_t, std::uint64_t>, Wire> wire;  // (arrival ns, order)
+  std::uint64_t order = 0;
+  Time link_free = now;
+  const auto pump = [&] {
+    while (auto p = a.pop_transmit()) {
+      const auto bytes = p->buf.bytes();
+      const Time dep = std::max(now, link_free) +
+                       Duration{static_cast<std::int64_t>(bytes.size() * 1'000'000'000 / rate)};
+      link_free = dep;
+      wire.emplace(std::pair{(dep + delay).ns, order++}, Wire{true, t::Bytes(bytes.begin(), bytes.end())});
+    }
+    while (auto p = b.pop_transmit()) {
+      const auto bytes = p->buf.bytes();
+      t::Bytes copy(bytes.begin(), bytes.end());
+      if (const auto q = parse(copy); q && has(q->v, w::tcp_ack) && !has(q->v, w::tcp_syn)) {
+        run.acks.emplace_back(now.ns, q->v.h.ack.raw());
+      }
+      wire.emplace(std::pair{(now + delay).ns, order++}, Wire{false, std::move(copy)});
+    }
+  };
+  utcp::TcpSocketOptions ro;
+  ro.rcv_buf = 2u << 20;
+  const auto l = b.tcp_listen(Endpoint{{}, port}, 4, ro);
+  utcp::TcpSocketOptions so;
+  so.snd_buf = 4u << 20;
+  const auto c = a.tcp_connect(Endpoint{b.config().local_addr, port}, so);
+  if (!l || !c) {
+    return run;
+  }
+  std::optional<Handle> srv;
+  const t::Bytes data = t::pattern(total);
+  std::size_t written = 0, unread_segs = 0;
+  std::vector<std::byte> buf(1 << 20);
+  const auto read_all = [&] {
+    ++run.reads;
+    unread_segs = 0;
+    while (srv) {
+      const auto n = b.tcp_recv(*srv, buf);
+      if (!n || *n == 0) {
+        break;
+      }
+      run.got += *n;
+    }
+  };
+  pump();
+  while (run.got < total && now < Time{60'000'000'000}) {
+    Time next = std::min(a.next_deadline(), b.next_deadline());
+    if (!wire.empty()) {
+      next = std::min(next, Time{wire.begin()->first.first});
+    }
+    now = std::max(now, next);
+    a.advance(now);
+    b.advance(now);
+    while (!wire.empty() && wire.begin()->first.first <= now.ns) {
+      Wire wd = std::move(wire.begin()->second);
+      wire.erase(wire.begin());
+      if (!wd.to_b) {
+        a.receive(now, wd.bytes);
+        continue;
+      }
+      const auto q = parse(wd.bytes);
+      b.receive(now, wd.bytes);
+      if (!srv) {
+        if (const auto h = b.tcp_accept(*l)) {
+          srv = *h;
+        }
+      }
+      if (q && is_data(q->v)) {
+        ++run.data_segs;
+        ++unread_segs;
+        // The host's batch ends after `batch` segments or when the next
+        // segment for b is more than 1 ms away.
+        std::optional<std::int64_t> next_b;
+        for (const auto& [key, v] : wire) {
+          if (v.to_b) {
+            next_b = key.first;
+            break;
+          }
+        }
+        if (unread_segs >= batch || !next_b || *next_b > (now + 1ms).ns) {
+          read_all();
+        }
+      }
+      pump();
+    }
+    while (written < total) {
+      const auto n = a.tcp_send(*c, std::span(data).subspan(written));
+      if (!n) {
+        break;
+      }
+      written += *n;
+    }
+    pump();
+  }
+  a.debug_check();
+  b.debug_check();
+  return run;
+}
+
+TEST(TcpTimer, AckFrequencyDoesNotDependOnTheReceiveBatch) {
+  const AckRun one = bulk_with_read_batches(1);
+  const AckRun many = bulk_with_read_batches(44);
+  ASSERT_EQ(one.got, std::size_t{8} << 20);
+  ASSERT_EQ(many.got, std::size_t{8} << 20);
+  EXPECT_GT(one.reads, 5 * many.reads);  // the batching took effect
+  EXPECT_EQ(one.data_segs, many.data_segs);
+  EXPECT_EQ(one.acks.size(), many.acks.size());
+  EXPECT_TRUE(one.acks == many.acks);
+  // One ACK per segment while rcv_ssthresh grows (tcp_grow_window sets
+  // icsk_ack.quick), then one per two full segments.
+  const double per_seg = static_cast<double>(many.acks.size()) / static_cast<double>(many.data_segs);
+  RecordProperty("acks", static_cast<int>(many.acks.size()));
+  RecordProperty("data_segs", static_cast<int>(many.data_segs));
+  std::printf("acks %zu data segments %zu (%.3f per segment)\n", many.acks.size(), many.data_segs,
+              per_seg);
+  EXPECT_GT(per_seg, 0.45);
+  EXPECT_LT(per_seg, 0.75);
 }
 
 }  // namespace

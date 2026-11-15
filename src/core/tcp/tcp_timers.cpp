@@ -11,6 +11,20 @@ namespace utcp {
 
 namespace {
 
+// The states that send data (as tcp_output.cpp's sends_data).
+bool sends_data_now(TcpState s) {
+  switch (s) {
+    case TcpState::established:
+    case TcpState::close_wait:
+    case TcpState::fin_wait_1:
+    case TcpState::closing:
+    case TcpState::last_ack:
+      return true;
+    default:
+      return false;
+  }
+}
+
 TraceTimer trace_kind(XmitTimer k) {
   switch (k) {
     case XmitTimer::rto: return TraceTimer::rto;
@@ -129,11 +143,90 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
     case XmitTimer::persist:
       on_persist(t, now);
       return;
-    case XmitTimer::reo:
-    case XmitTimer::pto: {
+    case XmitTimer::reo: {
+      // tcp_rack_reo_timeout (M2-DESIGN §1.6): recovery marks and re-arms;
+      // the engine retransmits.
       RecoveryCtx c = rctx(t, now);
       t.recovery.on_xmit_timer(c, kind);
       transmit(t, now);
+      return;
+    }
+    case XmitTimer::pto: {
+      // Linux tcp_send_loss_probe (M2-DESIGN §1.7): the PTO expired; recovery says
+      // what to probe with. New data goes out past cwnd by one segment
+      // (tcp_write_xmit with push_one = 2: the receive window and the pacing gate
+      // still apply); otherwise the last segment of the retransmission queue is
+      // resent, not gated (cut to its last MSS-sized part as tcp_fragment does).
+      // Both are TxKind::tlp. Recovery then arms the RTO (on_tlp_sent).
+      refresh_cc(t, now);
+      RecoveryCtx c = rctx(t, now);
+      const TlpAction action = t.recovery.on_pto(c);
+      bool sent = false;
+      const std::uint32_t mss = mss_now(t);
+      if (action == TlpAction::new_data && sends_data_now(t.state)) {
+        const std::uint64_t una = t.sndq.una(), nxt = t.sndq.nxt(), end = t.sndq.end();
+        const std::uint64_t wnd_end = una + t.snd_wnd;
+        const auto len = static_cast<std::uint32_t>(std::min(end - nxt, std::uint64_t{mss}));
+        const bool fin = t.fin_queued && !t.sndq.fin_sent() && len == end - nxt;
+        const bool pacing = t.txp.pacing_applies(t.cc_conn, t.ctr.data_segs_out);
+        if ((len > 0 || fin) && nxt + len <= wnd_end) {  // tcp_snd_wnd_test
+          if (t.pacing_gated(pacing, now, cfg_.test_fault)) {
+            if (core_.timers().deadline(t.t_pace) != t.pacing_next) {
+              core_.timers().arm(t.t_pace, t.pacing_next);
+              trace_timer(t, TraceTimer::pace, TimerOp::armed);
+            }
+          } else if (core_.can_transmit()) {
+            SegOut o;
+            o.seq = seq_at(t.snd_base(), nxt);
+            o.flags = wire::tcp_ack;
+            if (fin) {
+              o.flags |= wire::tcp_fin;
+            }
+            if (len > 0 && nxt + len == end) {
+              o.flags |= wire::tcp_psh;
+            }
+            o.data_off = nxt;
+            o.data_len = len;
+            o.kind = TxKind::tlp;
+            if (pacing) {
+              t.tx_gate_rate = t.txp.gate_rate(t.cc_conn);
+              t.tx_burst_start = true;
+            }
+            sent = send_segment(t, now, o);
+            t.tx_gate_rate = 0;
+            t.tx_burst_start = false;
+            if (sent && len > 0) {
+              t.pacing_after_send(now, len);
+            }
+          } else {
+            core_.block_tx(t.self.slot);
+          }
+        }
+      } else if (action == TlpAction::retransmit_last && !t.sndq.segs().empty()) {
+        TxSeg last = t.sndq.segs().back();
+        if (last.len > mss) {
+          // tcp_send_loss_probe: tcp_fragment at (pcount - 1) * mss, probe the
+          // tail.
+          const std::uint32_t pcount = (last.len + mss - 1) / mss;
+          t.sndq.split(last.off, (pcount - 1) * mss);
+          last = t.sndq.segs().back();
+        }
+        if (core_.can_transmit()) {
+          sent = retransmit_seg(t, now, last, TxKind::tlp);
+          if (sent && last.len > 0) {
+            t.pacing_after_send(now, last.len);
+          }
+        } else {
+          core_.block_tx(t.self.slot);
+        }
+      }
+      if (sent) {
+        ++core_.stats().TcpExtTCPLossProbes;  // tcp_send_loss_probe, probe_sent
+      }
+      RecoveryCtx c2 = rctx(t, now);
+      t.recovery.on_tlp_sent(c2, action, sent);
+      flush_ack(t, now);
+      sync_timers(t, now);
       return;
     }
     case XmitTimer::none:
@@ -214,6 +307,10 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
   const TxSeg head = t.sndq.segs().front();
   if (!core_.can_transmit() || !retransmit_seg(t, now, head, TxKind::rto_rexmit)) {
     core_.block_tx(t.self.slot);
+  } else if (const TxSeg* s = t.sndq.find(head.off)) {
+    // Not gated (tcp_retransmit_timer sends without tcp_pacing_check), but
+    // it moves pacing_next like every data transmission (M2-DESIGN §2.5).
+    t.pacing_after_send(now, s->len);
   }
   transmit(t, now);
 }
@@ -255,7 +352,7 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
         RecoveryCtx c = rctx(t, now);
         t.recovery.on_xmit_timer(c, XmitTimer::persist);
         RecoveryCtx c2 = rctx(t, now);
-        t.recovery.on_burst_end(c2);
+        t.recovery.on_burst_end(c2, false);  // tcp_write_wakeup: no loss probe
         sync_timers(t, now);
         return;
       }
@@ -280,7 +377,7 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
   RecoveryCtx c = rctx(t, now);
   t.recovery.on_xmit_timer(c, XmitTimer::persist);
   RecoveryCtx c2 = rctx(t, now);
-  t.recovery.on_burst_end(c2);
+  t.recovery.on_burst_end(c2, false);
   sync_timers(t, now);
 }
 

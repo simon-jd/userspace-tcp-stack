@@ -318,6 +318,10 @@ struct IcmpConfig {
   bool operator==(const IcmpConfig&) const = default;
 };
 
+// Test seam of the loss-recovery hooks (src/core/tcp/recovery.hpp; M2-TASKS
+// m2-found). Production code never defines one.
+class RecoveryScript;
+
 struct StackConfig {
   Ipv4Addr local_addr;
   std::uint16_t mtu = 1500;  // interface MTU; must equal the TUN MTU
@@ -333,6 +337,10 @@ struct StackConfig {
   std::uint32_t trace_mask = 0;          // bit i enables TraceKind i (§10.2)
   std::uint16_t tx_headroom = 0;         // M4: room for virtio_net_hdr
   bool assert_time_monotonic = false;    // §3.4 item 4; on in the simulator
+  // Tests only (M2-TASKS m2-found test seam): every connection of the stack
+  // asks this script first in its LossRecovery hooks. nullptr in production;
+  // not owned, must outlive the stack.
+  RecoveryScript* test_recovery_script = nullptr;
 
 #define UTCP_TCP_KNOB(type, name, rfc_value, linux_value, doc)
 #define UTCP_STACK_KNOB(type, name, value, doc) type name = value;

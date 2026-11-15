@@ -207,7 +207,8 @@ TEST(Config, StackUdpAndIcmpDefaults) {
   EXPECT_EQ(s.trace_mask, 0u);
   EXPECT_EQ(s.tx_headroom, 0);
   EXPECT_FALSE(s.assert_time_monotonic);
-  EXPECT_EQ(utcp::test::field_count<StackConfig>(), 14 + stack_knob_count);
+  EXPECT_EQ(s.test_recovery_script, nullptr);
+  EXPECT_EQ(utcp::test::field_count<StackConfig>(), 15 + stack_knob_count);
 
   EXPECT_EQ(s.udp.rcv_buf, 256 * KiB);
   EXPECT_EQ(s.udp.ephemeral_ports, std::nullopt);  // follows TCP

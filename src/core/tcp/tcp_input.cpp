@@ -919,8 +919,10 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
     t.ackp.on_data(now, static_cast<std::uint32_t>(payload.size()), s.meta.gso_size, r,
                    t.rcv_wnd, t.rtt.rto_backed_off(t.backoff));
     if (r.advanced) {
+      // The data before this segment counts as read (RcvWindow: the
+      // decision must not depend on the host's receive batch).
       t.rwin.on_in_order_data(static_cast<std::uint32_t>(payload.size()), t.ackp.rcv_mss(),
-                              t.rcvq);
+                              t.rcvq, old_nxt);
       if (t.rwin.rcv_ssthresh() > ssthresh_before) {
         t.ackp.on_rcv_ssthresh_grew();
       }
@@ -952,7 +954,10 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
         raise(t, ev_readable);
       }
     }
-    t.ackp.on_window(now, t.rwin.ack_view(t.rcvq, t.ackp.rcv_mss()));
+    // __tcp_ack_snd_check per segment, with the data received before this
+    // segment taken by the reader (RcvWindow::ack_view): one ACK per two full
+    // segments whether the host hands the stack 1 or 64 segments per batch.
+    t.ackp.on_window(now, t.rwin.ack_view(t.rcvq, t.ackp.rcv_mss(), old_nxt));
   }
   if (s.has(tcp_fin)) {
     const std::uint64_t fin_off = uoff + payload.size();

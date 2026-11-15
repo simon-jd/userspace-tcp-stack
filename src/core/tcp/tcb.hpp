@@ -128,6 +128,11 @@ struct Tcb {
   bool fin_queued = false;
   bool send_blocked = false;           // tcp_send was refused or short: ev_writable owed
   Time pacing_next;
+  // The pacing fields of the next tx trace event (TraceEvent::gate_rate,
+  // burst_start), set by the output path before a gated send and cleared by
+  // send_segment once traced.
+  std::uint64_t tx_gate_rate = 0;
+  bool tx_burst_start = false;
   Time lsndtime;                       // last data transmission (cwnd restart)
   std::uint64_t cwnd_usage_seq = 0;    // tcp_cwnd_validate window end (offset)
   // Receive side.
@@ -192,6 +197,20 @@ struct Tcb {
       return Duration{0};
     }
     return pacing_next - now;
+  }
+  // The pacing gate holds sends back at `now` (Linux tcp_pacing_check;
+  // M2-DESIGN §2.5). `pacing`: the gate applies to this transmit pass.
+  // TestFault::ignore_pacing_gate opens it always (pacing_next still moves).
+  [[nodiscard]] bool pacing_gated(bool pacing, Time now, TestFault fault) const noexcept {
+    return pacing && fault != TestFault::ignore_pacing_gate && now < pacing_next;
+  }
+  // A data transmission of `len` bytes moves the earliest departure time
+  // (Linux tcp_update_skb_after_send from __tcp_transmit_skb, for every data
+  // skb, retransmissions included).
+  void pacing_after_send(Time now, std::uint64_t len) {
+    if (txp.pacing_applies(cc_conn, ctr.data_segs_out)) {
+      pacing_next = pacing_next_after_send(pacing_next, now, len, txp.gate_rate(cc_conn));
+    }
   }
 
   // snd_una <= snd_nxt, SendQueue counters against a recount, the receive

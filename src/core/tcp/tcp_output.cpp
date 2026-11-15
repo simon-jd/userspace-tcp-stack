@@ -163,6 +163,8 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
     ++st.TcpOutRsts;
   }
   trace_tx(t, o.kind, o.seq, h.ack, o.data_len, field, o.flags);
+  t.tx_gate_rate = 0;
+  t.tx_burst_start = false;
   core_.send_ipv4(t.tuple.remote.addr, ip_proto_tcp, t.ip_id++, std::move(*buf), t.self.slot);
   return true;
 }
@@ -343,7 +345,8 @@ void TcpEngine::flush_ack(Tcb& t, Time now) {
 }
 
 // §4.9: lost segments, new data (cwnd gate, receive window, sender SWS and
-// Nagle, pacing, transmit space), FIN, then the ACK owed.
+// Nagle, pacing, transmit space), FIN, the extra segment of RFC 6675 NextSeg
+// rules 3-4, then the ACK owed.
 void TcpEngine::transmit(Tcb& t, Time now) {
   if (t.state == TcpState::closed || t.state == TcpState::time_wait || t.listen) {
     return;
@@ -351,11 +354,48 @@ void TcpEngine::transmit(Tcb& t, Time now) {
   if (sends_data(t.state) && t.syn_acked) {
     refresh_cc(t, now);
     CcConn& cc = t.cc_conn;
-    bool cwnd_limited = false, rwnd_limited = false, blocked = false;
-    std::uint32_t sent = 0;
+    bool cwnd_limited = false, rwnd_limited = false, blocked = false, paced_out = false;
+    std::uint32_t sent = 0, new_sent = 0;
+    const std::uint32_t mss = mss_now(t);
+    // The pacing gate (§5.5, M2-DESIGN §2.5) applies to new data and, as
+    // Linux tcp_xmit_retransmit_queue checks tcp_pacing_check before each
+    // retransmission, to the lost segments; every paced send moves
+    // pacing_next (tcp_update_skb_after_send).
+    const bool pacing = t.txp.pacing_applies(cc, t.ctr.data_segs_out);
+    const std::uint64_t rate = pacing ? t.txp.gate_rate(cc) : 0;
+    const auto hold_for_pacing = [&] {
+      if (core_.timers().deadline(t.t_pace) != t.pacing_next) {
+        core_.timers().arm(t.t_pace, t.pacing_next);
+        trace_timer(t, TraceTimer::pace, TimerOp::armed);
+      }
+      paced_out = true;
+    };
+    // One retransmission through the pacing gate, as one paced burst of its
+    // own (Linux sends each retransmitted skb after tcp_pacing_check).
+    const auto paced_retransmit = [&](const TxSeg& seg, TxKind kind) {
+      if (pacing) {
+        t.tx_gate_rate = rate;
+        t.tx_burst_start = true;
+      }
+      if (!core_.can_transmit() || !retransmit_seg(t, now, seg, kind)) {
+        t.tx_gate_rate = 0;
+        t.tx_burst_start = false;
+        blocked = true;
+        return false;
+      }
+      if (pacing) {
+        // retransmit_seg may have cut the segment to the current MSS.
+        const TxSeg* s = t.sndq.find(seg.off);
+        t.pacing_next = pacing_next_after_send(t.pacing_next, now, s != nullptr ? s->len : seg.len,
+                                               rate);
+      }
+      ++sent;
+      return true;
+    };
     // 1. Segments marked lost (RFC 6582, RFC 5681 §3.2; Linux
-    // tcp_xmit_retransmit_queue). The fast retransmit is exempt from the
-    // cwnd gate (RFC 6675 §5 (4.3)).
+    // tcp_xmit_retransmit_queue): each through the pacing gate, then the
+    // cwnd gate unless recovery exempts it (RFC 6675 §5 (4.3), the fast
+    // retransmit with recovery_reduction = rfc6675; M1's rule in the stub).
     // The walk stops after the last lost segment (lost_out counts them), so
     // a long queue with nothing lost costs nothing per call.
     std::uint32_t lost_seen = 0;
@@ -371,8 +411,13 @@ void TcpEngine::transmit(Tcb& t, Time now) {
       if (!seg.lost || seg.retrans_inflight || seg.sacked) {
         continue;
       }
-      const bool fast = i == 0 && t.recovery.fast_rexmit_pending();
-      if (!fast && packets_in_flight(t.sndq.counters()) >= cc.cwnd) {
+      if (t.pacing_gated(pacing, now, cfg_.test_fault)) {
+        hold_for_pacing();
+        break;
+      }
+      const RecoveryCtx rc = rctx(t, now);
+      const bool exempt = t.recovery.exempt_from_cwnd(rc, seg);
+      if (!exempt && packets_in_flight(t.sndq.counters()) >= cc.cwnd) {
         cwnd_limited = true;
         break;
       }
@@ -380,22 +425,17 @@ void TcpEngine::transmit(Tcb& t, Time now) {
       if (i != 0 && seg.off >= t.sndq.una() + t.snd_wnd) {
         break;
       }
-      const TxKind kind = fast ? TxKind::fast_rexmit
+      const TxKind kind = exempt ? TxKind::fast_rexmit
                           : t.pmtu_rexmit_end && seg.off < *t.pmtu_rexmit_end ? TxKind::pmtu_rexmit
                                                                               : TxKind::rexmit;
-      if (!core_.can_transmit() || !retransmit_seg(t, now, seg, kind)) {
-        blocked = true;
+      if (!paced_retransmit(seg, kind)) {
         break;
       }
-      ++sent;
     }
     // 2. New data.
-    const std::uint32_t mss = mss_now(t);
-    const bool pacing = t.txp.pacing_applies(cc, t.ctr.data_segs_out);
-    const std::uint64_t rate = pacing ? t.txp.gate_rate(cc) : 0;
     std::uint32_t burst_left = 0;
     std::uint64_t burst_bytes = 0;
-    while (!blocked && t.sndq.nxt() < t.sndq.end()) {
+    while (!blocked && !paced_out && t.sndq.nxt() < t.sndq.end()) {
       if (packets_in_flight(t.sndq.counters()) >= cc.cwnd) {
         cwnd_limited = true;
         break;
@@ -427,23 +467,29 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         }
         break;
       }
+      bool burst_start = false;
       if (pacing && burst_left == 0) {
-        if (now < t.pacing_next) {
-          if (core_.timers().deadline(t.t_pace) != t.pacing_next) {
-            core_.timers().arm(t.t_pace, t.pacing_next);
-            trace_timer(t, TraceTimer::pace, TimerOp::armed);
-          }
+        if (t.pacing_gated(pacing, now, cfg_.test_fault)) {
+          hold_for_pacing();
           break;
         }
         burst_left = pacing_burst_segments(rate, t.rtt.min_rtt(), cfg_.gso_max_size, mss,
                                            t.algo().min_tso_segs(cc));
         burst_bytes = 0;
+        burst_start = true;
+      }
+      if (pacing) {
+        t.tx_gate_rate = rate;
+        t.tx_burst_start = burst_start;
       }
       if (!core_.can_transmit() || !send_new_data(t, now, len, fin)) {
+        t.tx_gate_rate = 0;
+        t.tx_burst_start = false;
         blocked = true;
         break;
       }
       ++sent;
+      ++new_sent;
       if (pacing) {
         burst_bytes += len;
         if (--burst_left == 0) {
@@ -462,6 +508,34 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         blocked = true;
       } else {
         ++sent;
+        ++new_sent;
+      }
+    }
+    // 4. RFC 6675 NextSeg rules 3 and 4 (M2-DESIGN §1.4): new data stopped
+    // because none is left or the window is closed, not for the cwnd, the
+    // pacing gate or transmit space; recovery may name more segments to
+    // resend, each through the pacing and cwnd gates. The stub names none.
+    if (!blocked && !paced_out && !cwnd_limited &&
+        (rwnd_limited || (t.sndq.nxt() == t.sndq.end() && (!t.fin_queued || t.sndq.fin_sent())))) {
+      for (std::size_t n = t.sndq.segs().size(); n > 0; --n) {
+        if (packets_in_flight(t.sndq.counters()) >= cc.cwnd) {
+          cwnd_limited = true;
+          break;
+        }
+        RecoveryCtx rc = rctx(t, now);
+        const std::optional<std::uint64_t> off = t.recovery.next_seg_extra(rc);
+        const TxSeg* s = off ? t.sndq.find(*off) : nullptr;
+        if (s == nullptr || s->sacked) {
+          break;
+        }
+        if (t.pacing_gated(pacing, now, cfg_.test_fault)) {
+          hold_for_pacing();
+          break;
+        }
+        const TxSeg seg = *s;
+        if (!paced_retransmit(seg, TxKind::rexmit)) {
+          break;
+        }
       }
     }
     if (blocked) {
@@ -482,17 +556,20 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         cc.max_packets_out = k.packets_out;
         t.cwnd_usage_seq = t.sndq.nxt();
       }
-      // The network starves because of the send buffer (§10.1): data was
-      // sent, cwnd does not limit, nothing unsent is left and the
-      // application was refused (SOCK_NOSPACE). A refused write with data
-      // still held by the window or cwnd stays rwnd_limited or busy.
+      // The network starves because of the send buffer (§10.1, M2-DESIGN
+      // §5.3; tcp_cwnd_validate, tcp_output.c:2177-2180): data was sent, cwnd
+      // does not limit, nothing unsent is left and the application was
+      // refused (SOCK_NOSPACE). A refused write with data still held by the
+      // window or cwnd stays rwnd_limited or busy.
       if (!is_cwnd_limited(cc) && t.sndq.nxt() == t.sndq.end() && t.send_blocked &&
           (t.state == TcpState::established || t.state == TcpState::close_wait)) {
         chrono_start(t, ChronoType::sndbuf_limited, now);
       }
     }
+    // Linux tcp_write_xmit schedules the loss probe after sending new data
+    // (sent_pkts > 0, push_one != 2).
     RecoveryCtx rc = rctx(t, now);
-    t.recovery.on_burst_end(rc);
+    t.recovery.on_burst_end(rc, new_sent > 0);
   }
   flush_ack(t, now);
   sync_timers(t, now);

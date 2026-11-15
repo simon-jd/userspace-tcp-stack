@@ -72,13 +72,15 @@ void RcvWindow::on_established(std::uint8_t rcv_wscale, std::uint16_t adv_mss,
 }
 
 std::uint64_t RcvWindow::target(const RecvBuffer& rb, std::uint16_t rcv_mss) const {
-  const std::uint64_t rcv_nxt = rb.contiguous_end();
-  const std::uint64_t free = rb.right_edge() - rcv_nxt;
+  return target_of(rb.right_edge() - rb.contiguous_end(), rb.capacity(), rcv_mss);
+}
+
+std::uint64_t RcvWindow::target_of(std::uint64_t free, std::uint64_t full,
+                                   std::uint16_t rcv_mss) const {
   if (!linux_growth_) {
     return free;  // RFC 9293 §3.8.6.2.2: RCV.BUFF - RCV.USER
   }
   // __tcp_select_window without the final ALIGN up.
-  const std::uint64_t full = rb.capacity();
   const std::uint64_t mss = std::min<std::uint64_t>(rcv_mss, full);
   std::uint64_t f = free;
   if (f < full / 2) {
@@ -150,13 +152,16 @@ bool RcvWindow::went_to_zero() const { return to_zero_; }
 bool RcvWindow::went_from_zero() const { return from_zero_; }
 
 void RcvWindow::on_in_order_data(std::uint32_t len, std::uint16_t /*rcv_mss*/,
-                                 const RecvBuffer& rb) {
+                                 const RecvBuffer& rb, std::uint64_t read_upto) {
   // tcp_grow_window, reached from tcp_event_data_recv for len >= 128.
   rcv_nxt_ = rb.contiguous_end();
   if (!linux_growth_ || len < grow_window_min_len) {
     return;
   }
-  const std::uint64_t free = rb.right_edge() - rcv_nxt_;
+  // tcp_space with the data below read_upto taken by the reader.
+  const std::uint64_t edge =
+      std::max(rb.right_edge(), std::min(read_upto, rcv_nxt_) + rb.capacity());
+  const std::uint64_t free = edge - rcv_nxt_;
   const std::uint64_t clamp = std::min<std::uint64_t>(rb.capacity(), free);
   if (clamp <= rcv_ssthresh_) {
     return;
@@ -185,16 +190,20 @@ bool RcvWindow::update_after_read(const RecvBuffer& rb, std::uint16_t rcv_mss) c
   return win != 0 && win >= 2 * cur;
 }
 
-RcvWindowView RcvWindow::ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss) const {
+RcvWindowView RcvWindow::ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss,
+                                  std::uint64_t read_upto) const {
   const std::uint64_t max_win = max_unscaled_window << wscale_;
-  const std::uint64_t free = rb.right_edge() - rb.contiguous_end();
+  const std::uint64_t rcv_nxt = rb.contiguous_end();
+  // The free space with the data below read_upto read (see the header).
+  const std::uint64_t edge = std::max(rb.right_edge(), std::min(read_upto, rcv_nxt) + rb.capacity());
+  const std::uint64_t free = edge - rcv_nxt;
   RcvWindowView v;
   v.unread = rb.readable() > 0;
   v.ooo_held = !rb.ooo_ranges().empty();
   // __tcp_select_window(sk) >= tp->rcv_wnd, both rounded down here (the
   // unscaled SYN window too).
-  v.not_shrinking = std::min(round_down(target(rb, rcv_mss), wscale_), max_win) >=
-                    round_down(last_window_, wscale_);
+  v.not_shrinking = std::min(round_down(target_of(free, rb.capacity(), rcv_mss), wscale_),
+                             max_win) >= round_down(last_window_, wscale_);
   v.low_space = free < std::uint64_t{rb.capacity()} / 2;
   return v;
 }

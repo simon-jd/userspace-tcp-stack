@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/jsonl.hpp"
 #include "tcp_test_util.hpp"
 #include "utcp/trace.hpp"
 
@@ -245,6 +246,102 @@ TEST(TcpInfo, TraceKindsOfAConnection) {
   EXPECT_EQ(last.state, utcp::TcpState::closed);
   EXPECT_EQ(last.cause, utcp::CloseCause::time_wait_expired);
   h.a().set_trace_sink(nullptr);
+}
+
+// ---- m2-found acceptance test 5 (M2-DESIGN §1.9, §2.6, §5.3).
+
+// tcpi_reordering is recovery's (3: the stub's dupthresh), tcpi_delivery_rate
+// and tcpi_delivery_rate_app_limited come from the tcp_rate_gen record (stub:
+// none), not from tp->app_limited, which an application-limited writer sets;
+// utcp-bulk's JSONL sample lines (add_fields) carry all four.
+TEST(TcpInfo, M2FieldsFromRecoveryAndTheRateRecord) {
+  for (const utcp::ProfileId profile : {utcp::ProfileId::rfc, utcp::ProfileId::linux_compat}) {
+    SCOPED_TRACE(profile == utcp::ProfileId::rfc ? "rfc" : "linux_compat");
+    t::TcpHarness h(config(Side::a, profile), config(Side::b, profile));
+    h.set_delay(Side::a, 5ms);
+    h.set_delay(Side::b, 5ms);
+    const auto p = open(h);
+    ASSERT_TRUE(p);
+    // Small writes with nothing in flight: application-limited (§5.4).
+    for (int i = 0; i < 20; ++i) {
+      ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(100)));
+      h.run_for(50ms);
+      drain(h.b(), p->server);
+    }
+    ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(100)));
+    const auto i = h.a().tcp_info(p->client);
+    ASSERT_TRUE(i);
+    EXPECT_EQ(i->reordering, 3u);
+    EXPECT_EQ(i->reord_seen, 0u);
+    EXPECT_EQ(i->delivery_rate, 0u);  // no record yet (m2b-rate-pacing fills it)
+    EXPECT_FALSE(i->app_limited);     // the record's flag, not tp->app_limited
+    EXPECT_GT(i->delivered, 0u);
+    utcp::app::JsonLine line;
+    utcp::app::add_fields(line, *i);
+    const std::string js = line.str();
+    for (const char* f : {"\"delivery_rate\":0", "\"app_limited\":false", "\"reordering\":3",
+                          "\"reord_seen\":0"}) {
+      EXPECT_NE(js.find(f), std::string::npos) << f << " in " << js;
+    }
+  }
+}
+
+// M2-DESIGN §5.3 (Linux tcp_cwnd_validate, tcp_output.c:2177-2180): the
+// sndbuf-limited clock starts only after a transmit pass that sent data, was
+// not cwnd-limited, left nothing unsent, with the application refused. A
+// bulk writer that keeps a 64 MiB buffer full while cwnd limits the sender
+// accumulates none; a writer whose small buffer empties into a cwnd that is
+// not used up accumulates most of the transfer.
+TEST(TcpInfo, SndbufLimitedOnlyWhenTheBufferStarvesTheNetwork) {
+  struct Case {
+    std::uint32_t snd_buf;
+    bool starved;
+  };
+  for (const Case k : {Case{64u << 20, false}, Case{16u << 10, true}}) {
+    SCOPED_TRACE(k.snd_buf);
+    StackConfig ca = config(Side::a);
+    ca.tcp.initial_ssthresh = 40;  // cwnd stays small: the 64 MiB writer is cwnd-limited
+    t::TcpHarness h(ca, config(Side::b));
+    h.set_delay(Side::a, 10ms);
+    h.set_delay(Side::b, 10ms);
+    utcp::TcpSocketOptions ro;
+    ro.rcv_buf = 4u << 20;  // the receive window never limits
+    const auto l = h.b().tcp_listen(Endpoint{{}, port}, 4, ro);
+    ASSERT_TRUE(l);
+    utcp::TcpSocketOptions so;
+    so.snd_buf = k.snd_buf;
+    const auto c = h.a().tcp_connect(Endpoint{h.addr(Side::b), port}, so);
+    ASSERT_TRUE(c);
+    h.run_for(100ms);
+    const auto s = h.b().tcp_accept(*l);
+    ASSERT_TRUE(s);
+    const t::Bytes chunk = t::pattern(1u << 20, 3);
+    bool refused = false;
+    std::size_t got = 0;
+    for (int i = 0; i < 400; ++i) {  // 2 s
+      for (;;) {
+        const auto n = h.a().tcp_send(*c, chunk);
+        if (!n || *n < chunk.size()) {
+          refused = true;
+          break;
+        }
+      }
+      h.run_for(5ms);
+      got += drain(h.b(), *s).size();
+    }
+    ASSERT_TRUE(refused);
+    const auto i = h.a().tcp_info(*c);
+    EXPECT_GT(got, 1u << 20);
+    EXPECT_GT(i->busy_time, 1900ms);
+    EXPECT_EQ(i->rwnd_limited, Duration::zero());
+    if (k.starved) {
+      EXPECT_GT(i->sndbuf_limited, i->busy_time / 2);
+    } else {
+      EXPECT_GT(i->notsent_bytes, 32u << 20);  // the buffer stays full
+      EXPECT_EQ(i->sndbuf_limited, Duration::zero());
+    }
+    h.a().debug_check();
+  }
 }
 
 }  // namespace

@@ -399,6 +399,29 @@ void LossRecovery::on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent) {
   if (script_ != nullptr && script_->on_tlp_sent(c, action, sent)) {
     return;
   }
+  // tcp_send_loss_probe ends in tcp_rearm_rto (Linux 7.0 tcp_output.c:3227-3230,
+  // tcp_input.c:3524-3549). A sent probe cleared the pending timer first, so
+  // the RTO is a full one from now; otherwise the PTO is still pending and the
+  // RTO gets the time left to the head's RTO (tcp_rto_delta_us), at least one
+  // jiffy and rounded up to whole jiffies (usecs_to_jiffies, HZ 1000). Both
+  // add the pacing delay (pace_delay = true), truncated to whole ms. M1 never
+  // arms a PTO, so the stub is reached only through the test seam; m2a keeps
+  // or replaces it with the rest of the TLP state (M2-DESIGN §1.7).
+  (void)action;
+  const auto segs = c.q.segs();
+  if (c.q.counters().packets_out == 0 || segs.empty()) {
+    timer_after_ack(c);
+    return;
+  }
+  const Duration rto = c.rtt.rto_backed_off(c.backoff);
+  constexpr Duration jiffy = std::chrono::milliseconds{1};
+  Duration d = rto;
+  if (!sent) {
+    const Duration left = std::max(segs.front().last_tx + rto - c.now, Duration{1});
+    d = (left + jiffy - Duration{1}) / jiffy * jiffy;
+  }
+  d += c.pacing_delay / jiffy * jiffy;
+  arm(XmitTimer::rto, c.now + d);
 }
 
 bool LossRecovery::exempt_from_cwnd(const RecoveryCtx& c, const TxSeg& seg) const {

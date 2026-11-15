@@ -360,6 +360,7 @@ struct StackConfig {
   std::uint32_t trace_mask = 0;                     // §10.2
   std::uint16_t tx_headroom = 0;                    // M4: the backend reserves room for virtio_net_hdr
   bool assert_time_monotonic = false;               // §3.4 item 4; on in the simulator
+  RecoveryScript* test_recovery_script = nullptr;   // tests only: LossRecovery's hooks ask it first (§5.1)
 };
 ```
 
@@ -944,15 +945,25 @@ class LossRecovery {                                // M1: NewReno; M2a: RFC 667
   void on_ack(RecoveryCtx&, const AckInput&, AckOutcome&);        // marks lost, moves CaState
   void on_transmit(RecoveryCtx&, const TxSeg&, TxKind);           // every (re)transmission: prr_out, HighRxt, TLP
   void on_burst_end(RecoveryCtx&, bool new_data_sent);            // end of transmit(): schedule the PTO
+                                                                  // (new data went out in this call)
   void on_rto(RecoveryCtx&); void on_pmtu_drop(RecoveryCtx&);     // enter Loss and mark (§5.3); simple retransmit
   std::pair<XmitTimer, Time> xmit_timer(const RecoveryCtx&) const;  // M1: RFC 6298 rto, or persist (§4.9)
-  void on_xmit_timer(RecoveryCtx&, XmitTimer);                    // M2a: reo, pto; the engine handles rto/persist
+  void on_xmit_timer(RecoveryCtx&, XmitTimer);                    // M2a: reo (then the engine runs transmit());
+                                                                  // the engine handles rto, persist and pto
   void cwnd_reduction(RecoveryCtx&, std::uint32_t newly_acked_sacked, std::uint32_t newly_lost,
                       std::uint32_t flags);                       // CC step in CWR/Recovery: PRR writes cwnd
   bool may_raise_cwnd(const RecoveryCtx&, const AckOutcome&) const;  // tcp_may_raise_cwnd (M1: acked_pkts > 0)
-  std::optional<std::uint64_t> next_seg_extra(RecoveryCtx&);     // RFC 6675 NextSeg rules 3-4 after new data
-  TlpAction on_pto(RecoveryCtx&); void on_tlp_sent(RecoveryCtx&, TlpAction, bool sent);
-  bool exempt_from_cwnd(const RecoveryCtx&, const TxSeg&) const;  // M1: the pending fast retransmission
+  std::optional<std::uint64_t> next_seg_extra(RecoveryCtx&);     // RFC 6675 NextSeg rules 3-4: after new data
+                                                                  // stopped for lack of data or window, sent as
+                                                                  // rexmit through the pacing and cwnd gates
+  TlpAction on_pto(RecoveryCtx&);                                 // PTO expiry: the engine sends one TxKind::tlp,
+                                                                  // new data past cwnd by one (window and pacing
+                                                                  // gate apply) or the last segment (not gated)
+  void on_tlp_sent(RecoveryCtx&, TlpAction, bool sent);          // arms the RTO (tcp_rearm_rto): sent, a full RTO
+                                                                  // from now; else the head's remaining time
+  bool exempt_from_cwnd(const RecoveryCtx&, const TxSeg&) const;  // lost loop: past the cwnd gate as fast_rexmit
+                                                                  // (not the pacing gate); M1: the pending fast
+                                                                  // retransmission
   std::uint32_t reordering(const TcpConfig&) const; std::uint32_t reord_seen() const;  // tcp_info
   std::optional<std::uint64_t> tlp_high_seq() const;
   void set_script(RecoveryScript*);                              // test seam (tests/support), null in production

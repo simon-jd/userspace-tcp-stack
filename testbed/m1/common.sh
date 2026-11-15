@@ -11,8 +11,18 @@
 #
 # The testbed creates only the containers and networks named below, and
 # down.sh removes exactly these. Other tasks' utcp-* objects are never touched.
+# The names and subnets above are the defaults; UTCP_TB_PREFIX and
+# UTCP_TB_NET_BASE give another task its own copy (M2-TASKS "M1 testbed per
+# task"): containers and networks <prefix>-dut, <prefix>-net, ... and subnets
+# 198.19.<base>, <base+1>, <base+2>. The TUN side (198.18.0.0/24) is local to
+# each DUT and the peer's route to it, so it stays the same.
 #
 # Environment:
+#   UTCP_TB_PREFIX    name prefix of every container and network (default
+#                     utcp-m1; M2 tasks use utcp-m2-<task>)
+#   UTCP_TB_NET_BASE  third octet of the first subnet, 1-253 (default 1:
+#                     198.19.1-3; M2-TASKS assigns m2a 20, m2b-cc 24,
+#                     m2b-rate-pacing 28, m2-integrate 32)
 #   UTCP_IMAGE  image for every container (default utcp-testbed:dev)
 #   UTCP_CPUS   --cpuset-cpus of every container started (8-15 for timing
 #               runs). Unset: the running DUT's cpuset (so pmtu.sh's router and
@@ -35,30 +45,40 @@ set -euo pipefail
 tb_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tb_image=${UTCP_IMAGE:-utcp-testbed:dev}
 
-tb_dut=utcp-m1-dut
-tb_peer=utcp-m1-peer
-tb_router=utcp-m1-r
+tb_prefix=${UTCP_TB_PREFIX:-utcp-m1}
+[[ $tb_prefix =~ ^utcp-[a-z0-9][a-z0-9.-]*$ ]] ||
+  { echo "UTCP_TB_PREFIX must match utcp-[a-z0-9][a-z0-9.-]*, not '$tb_prefix'" >&2; exit 1; }
+tb_net_base=${UTCP_TB_NET_BASE:-1}
+[[ $tb_net_base =~ ^[0-9]+$ ]] && ((tb_net_base >= 1 && tb_net_base <= 253)) ||
+  { echo "UTCP_TB_NET_BASE must be 1-253, not '$tb_net_base'" >&2; exit 1; }
+tb_o1=$tb_net_base
+tb_o2=$((tb_net_base + 1))
+tb_o3=$((tb_net_base + 2))
+
+tb_dut=$tb_prefix-dut
+tb_peer=$tb_prefix-peer
+tb_router=$tb_prefix-r
 tb_containers=("$tb_dut" "$tb_peer" "$tb_router")
 
-tb_net=utcp-m1-net
-tb_net1400=utcp-m1-net1400
-tb_netb=utcp-m1-netb
+tb_net=$tb_prefix-net
+tb_net1400=$tb_prefix-net1400
+tb_netb=$tb_prefix-netb
 tb_networks=("$tb_net" "$tb_net1400" "$tb_netb")
 
-tb_net_subnet=198.19.1.0/24
-tb_net_gw=198.19.1.1
-tb_dut_ip=198.19.1.2
-tb_peer_ip=198.19.1.3
+tb_net_subnet=198.19.$tb_o1.0/24
+tb_net_gw=198.19.$tb_o1.1
+tb_dut_ip=198.19.$tb_o1.2
+tb_peer_ip=198.19.$tb_o1.3
 
-tb_net1400_subnet=198.19.2.0/24
-tb_net1400_gw=198.19.2.1
-tb_dut_ip1400=198.19.2.2
-tb_router_ip1400=198.19.2.3
+tb_net1400_subnet=198.19.$tb_o2.0/24
+tb_net1400_gw=198.19.$tb_o2.1
+tb_dut_ip1400=198.19.$tb_o2.2
+tb_router_ip1400=198.19.$tb_o2.3
 
-tb_netb_subnet=198.19.3.0/24
-tb_netb_gw=198.19.3.1
-tb_router_ipb=198.19.3.3
-tb_peer_ipb=198.19.3.4
+tb_netb_subnet=198.19.$tb_o3.0/24
+tb_netb_gw=198.19.$tb_o3.1
+tb_router_ipb=198.19.$tb_o3.3
+tb_peer_ipb=198.19.$tb_o3.4
 
 tb_tun=utcp0
 tb_tun_kernel=198.18.0.1

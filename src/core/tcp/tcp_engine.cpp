@@ -70,6 +70,7 @@ Tcb* TcpEngine::alloc_tcb(const SockOpts& opts, std::uint32_t /*rcv_buf_hint*/) 
   t.conn_id = next_conn_id_++;
   t.opts = opts;
   cc_select(t.cc, opts.cc);
+  t.recovery.set_script(core_.config().test_recovery_script);  // tests only (null otherwise)
   // §4.5, rcv_wscale row of §3.9: the configured shift, but never one the
   // buffer cannot serve (RcvWindow needs rcv_buf >= min_rcv_buf(shift)).
   t.offered_wscale =
@@ -416,6 +417,10 @@ void TcpEngine::trace_tx(const Tcb& t, TxKind kind, Seq32 seq, Seq32 ack, std::u
   e.len = len;
   e.wnd = wnd;
   e.flags = flags;
+  // The pacing gate in force at this send (M2-DESIGN §4.4), set by the
+  // output path for gated data and retransmissions.
+  e.gate_rate = t.tx_gate_rate;
+  e.burst_start = t.tx_burst_start;
   core_.trace(e);
 }
 

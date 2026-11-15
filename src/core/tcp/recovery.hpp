@@ -167,9 +167,10 @@ public:
   // deadline Time::never(). A queued FIN that was never sent is not visible
   // here (the engine covers that case).
   [[nodiscard]] std::pair<XmitTimer, Time> xmit_timer(const RecoveryCtx& c) const;
-  // reo and pto expiries (M2a). For rto and persist the engine runs the
-  // expiry itself (on_rto; the probe); calling this for them only stops the
-  // timer until the next arming event.
+  // The reo expiry (M2a; the engine then runs transmit()). A pto expiry goes
+  // to on_pto instead. For rto and persist the engine runs the expiry itself
+  // (on_rto; the probe); calling this for them only stops the timer until the
+  // next arming event.
   void on_xmit_timer(RecoveryCtx& c, XmitTimer kind);
 
   // ---- M2 hooks (M2-DESIGN §1.11); the m2-found stubs keep M1 behaviour.
@@ -191,12 +192,16 @@ public:
   // one more segment to send as TxKind::rexmit through the cwnd gate, or
   // nothing. Stub: nothing.
   [[nodiscard]] std::optional<std::uint64_t> next_seg_extra(RecoveryCtx& c);
-  // PTO expiry (§1.7): what to send as the probe. Stub: none (M1 never arms a
-  // PTO).
+  // PTO expiry (§1.7): what to send as the probe. new_data only when the
+  // receive window takes one more segment (tcp_snd_wnd_test); the engine
+  // still applies the pacing gate to it. Stub: none (M1 never arms a PTO).
   TlpAction on_pto(RecoveryCtx& c);
-  // After on_pto: `action` as returned, `sent` whether the engine sent it.
-  // Arms the RTO: a full RTO from now after a sent probe, the head's
-  // remaining time otherwise. Stub: nothing.
+  // After on_pto: `action` as returned, `sent` whether the engine sent it
+  // (the engine counts TcpExtTCPLossProbes for a sent probe). Arms the RTO as
+  // tcp_rearm_rto after tcp_send_loss_probe: a full RTO from now after a sent
+  // probe, the head's remaining time (rounded up to whole ms, at least 1 ms)
+  // otherwise, plus the pacing delay truncated to whole ms; with nothing in
+  // flight, as after an ACK. The stub does this arming and nothing else.
   void on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent);
   // The lost segment `seg` may be resent past the cwnd gate (RFC 6675 §5
   // (4.3): the fast retransmit with recovery_reduction = rfc6675); the engine
