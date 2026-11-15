@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests of tools/m2/analyze.py on synthetic inputs with known answers
-(M2-TASKS m2d-testbed test 6). Run: python3 -I tools/m2/test_analyze.py"""
+(M2-TASKS m2d-testbed test 6), and of the pure parts of matrix.py (run
+plans, the reuse key, the parallel-mode comparison) and plot.py (the run
+selection). Run: python3 -I tools/m2/test_analyze.py"""
 
 import json
 import math
@@ -12,6 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze as A  # noqa: E402
+import matrix as M  # noqa: E402
+import plot as P  # noqa: E402
 
 NS = A.NS
 T0 = 1_000 * NS                # receiver accept time (CLOCK_MONOTONIC)
@@ -585,6 +589,174 @@ class Records(unittest.TestCase):
         self.assertEqual(sn[8], (0x1000, 0, 0))
         st = A.parse_proc_stat(rec[("host", "/proc/stat")])
         self.assertEqual(st[3], {"irq": 5, "softirq": 20, "total": 1175, "busy": 175})
+
+
+class StackCounters(unittest.TestCase):
+    def test_nstat_and_softirqs(self):
+        n = A.parse_nstat(["#kernel", "TcpRetransSegs                  12                 0.0",
+                           "TcpExtTCPSackRecovery           3                  0.0", "garbage"])
+        self.assertEqual(n, {"TcpRetransSegs": 12, "TcpExtTCPSackRecovery": 3})
+        si = A.parse_softirqs(["                    CPU0       CPU8       CPU9",
+                               "          HI:          0          1          2",
+                               "      NET_RX:         10        100        200"])
+        self.assertEqual(si["NET_RX"], {0: 10, 8: 100, 9: 200})
+        pre = {"softirqs": si, "nstat": {"s-snd": n}}
+        post = {"softirqs": {"NET_RX": {0: 99, 8: 150, 9: 260}},
+                "nstat": {"s-snd": {"TcpRetransSegs": 20, "TcpExtTCPSackRecovery": 3}}}
+        self.assertEqual(A.softirq_deltas(pre, post, [8, 9]), {"NET_RX": 110})
+        d = A.nstat_deltas(pre, post, "s-snd")
+        self.assertEqual(d["TcpRetransSegs"], 8)
+        self.assertEqual(d["TcpExtTCPTimeouts"], 0)
+
+    def test_stack_stats_flags_blocking_and_invalidates_device_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_run(tmp, "u", {"impl": "utcp"})
+            stats = {"ev": "stack_stats", "TcpRetransSegs": 5, "dev_tx_errors": 0, "dev_rx_errors": 0,
+                     "dev_device_failed": False, "dev_tx_batch_max": 44, "loop_pending_calls": 0,
+                     "loop_lateness_bucket_0": 3, "loop_lateness_bucket_11": 7, "trace_events": 120}
+            (d / "stats.json").write_text(json.dumps(stats) + "\n")
+            s = A.summarize_run(d)
+            self.assertTrue(s["valid"], s["invalid"])
+            self.assertNotIn("stack_blocked", s["flags"])
+            self.assertEqual(s["sender_counters"]["TcpRetransSegs"], 5)
+            self.assertEqual(s["stack_lateness_hist"], {"0": 3, "11": 7})
+            self.assertEqual(s["trace_events"], 120)
+            self.assertEqual(s["stack_tx_batch_max"], 44)
+            stats.update(loop_pending_calls=2, dev_tx_errors=1)
+            (d / "stats.json").write_text(json.dumps(stats) + "\n")
+            s = A.summarize_run(d)
+            self.assertIn("stack_blocked", s["flags"])
+            self.assertFalse(s["valid"])
+            self.assertIn("stack device errors", s["invalid"])
+
+
+PLAN = """
+campaign = "t/mini"
+seed = 7
+reps = 2
+[[cell]]
+bw = 10
+rtt = 20
+loss = 0
+queue_bdp = 2
+[[cell]]
+bw = 100
+rtt = 100
+loss = 1
+queue_bdp = 0.5
+[[algo]]
+cc = "newreno"
+[[algo]]
+cc = "cubic"
+impls = ["linux"]
+"""
+
+
+class Plans(unittest.TestCase):
+    def plan(self, text=PLAN):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "plan.toml"
+            p.write_text(text)
+            return M.load_plan(p)
+
+    def test_expansion_is_fixed_by_the_seed(self):
+        plan = self.plan()
+        runs = M.expand_plan(plan)
+        self.assertEqual(runs, M.expand_plan(plan))
+        self.assertEqual(len(runs), 2 * 2 * (2 + 1))
+        self.assertEqual([r["order"] for r in runs], list(range(len(runs))))
+        self.assertEqual(len({r["run"] for r in runs}), len(runs))
+        other = M.expand_plan(dict(plan, seed=8))
+        self.assertNotEqual([r["run"] for r in runs], [r["run"] for r in other])
+        self.assertEqual(runs[0]["duration"], 30 if runs[0]["rtt"] == 20 else 60)
+
+    def test_pairs_are_back_to_back_with_one_netem_seed(self):
+        runs = M.expand_plan(self.plan())
+        groups = {}
+        for r in runs:
+            groups.setdefault(r["group"], []).append(r)
+        firsts = set()
+        for g, rs in groups.items():
+            orders = [r["order"] for r in rs]
+            self.assertEqual(orders, list(range(orders[0], orders[0] + len(rs))))  # back to back
+            self.assertEqual(len({r["seed"] for r in rs}), 1)  # one netem seed per pair
+            self.assertEqual(len({(r["cell"], r["cc"], r["rep"]) for r in rs}), 1)
+            if len(rs) == 2:
+                self.assertEqual({r["impl"] for r in rs}, {"utcp", "linux"})
+                firsts.add(rs[0]["impl"])
+        for seed in range(8, 14):
+            for r in M.expand_plan(dict(self.plan(), seed=seed)):
+                if r["cc"] == "newreno" and r["in_group"] == 0:
+                    firsts.add(r["impl"])
+        self.assertEqual(firsts, {"utcp", "linux"})  # the in-pair order is drawn, not fixed
+        # Repetitions of one (cell, algorithm) get different netem seeds.
+        for cell in {r["cell"] for r in runs}:
+            seeds = {r["seed"] for r in runs if r["cell"] == cell and r["cc"] == "newreno"}
+            self.assertEqual(len(seeds), 2)
+
+    def test_slots_split_every_cell_and_algorithm(self):
+        runs = M.expand_plan(self.plan(), nslots=2)
+        for key in {(r["cell"], r["cc"]) for r in runs}:
+            slots = {r["slot_index"] for r in runs if (r["cell"], r["cc"]) == key}
+            self.assertEqual(slots, {0, 1})
+        for g in {r["group"] for r in runs}:
+            self.assertEqual(len({r["slot_index"] for r in runs if r["group"] == g}), 1)
+
+    def test_bad_plans(self):
+        with self.assertRaises(ValueError):
+            self.plan(PLAN.replace('campaign = "t/mini"', ""))
+        with self.assertRaises(ValueError):
+            self.plan(PLAN.replace('impls = ["linux"]', 'impls = ["bsd"]'))
+
+    def test_reuse_key_changes_with_the_binary_and_a_sysctl(self):
+        meta = {"bulk_sha256": "a" * 64, "core_sha256": "b" * 64, "build": "build/tb-gcc-release",
+                "uname_r": "7.0.0", "image_id": "sha256:1", "scripts_sha256": "c" * 64}
+        rec = ("== utcp-m2-s0-snd sysctl\nnet.ipv4.tcp_wmem = 4096 16384 67108864\n"
+               "== host module parameters\ntcp_cubic.beta 717\n")
+        rec_s1 = rec.replace("utcp-m2-s0-snd", "utcp-m2-s1-snd")
+        k = M.reuse_key(meta, M.sysctl_dump(rec))
+        self.assertEqual(k, M.reuse_key(meta, M.sysctl_dump(rec_s1)))  # the slot is not part of it
+        self.assertNotEqual(k, M.reuse_key(dict(meta, bulk_sha256="d" * 64), M.sysctl_dump(rec)))
+        self.assertNotEqual(k, M.reuse_key(dict(meta, core_sha256="d" * 64), M.sysctl_dump(rec)))
+        self.assertNotEqual(k, M.reuse_key(meta, M.sysctl_dump(rec.replace("67108864", "4194304"))))
+        self.assertNotEqual(k, M.reuse_key(meta, M.sysctl_dump(rec.replace("beta 717", "beta 700"))))
+
+    def test_stack_sets_follow_the_measured_gso_size(self):
+        self.assertEqual(M.stack_sets(65536), ["snd_buf_max=64Mi", "rcv_buf_max=32Mi", "gso_max_size=65215"])
+        self.assertEqual(M.stack_sets(None), ["snd_buf_max=64Mi", "rcv_buf_max=32Mi"])
+
+
+class Proof(unittest.TestCase):
+    def test_compare_needs_the_bound_and_overlapping_ranges(self):
+        c = M.proof_compare([100, 101, 102], [100.5, 101.5, 102.5], rel=0.01)
+        self.assertTrue(c["ok"])
+        c = M.proof_compare([100, 101, 102], [101, 103, 104], rel=0.01)  # median +1.98 %
+        self.assertFalse(c["ok"])
+        c = M.proof_compare([20.1, 20.1, 20.2], [20.25, 20.28, 20.3], abs_=0.2)  # ranges disjoint
+        self.assertTrue(c["within"])
+        self.assertFalse(c["overlap"])
+        self.assertFalse(c["ok"])
+        self.assertFalse(M.proof_compare([None], [1.0], rel=0.01)["ok"])
+
+    def test_histogram_percentile_as_the_event_loop(self):
+        h = M.hist_merge([{"0": 2, "10": 7}, {"10": 1, "20": 1}])
+        self.assertEqual(h, {0: 2, 10: 8, 20: 1})
+        self.assertEqual(M.hist_percentile(h, 0.18), 0)         # rank ceil(1.98) = 2: bucket 0
+        self.assertEqual(M.hist_percentile(h, 0.5), 1023)       # rank 6: bucket 10, [512, 1024)
+        self.assertEqual(M.hist_percentile(h, 0.99), (1 << 20) - 1)
+        self.assertIsNone(M.hist_percentile({}, 0.99))
+
+
+class Plot(unittest.TestCase):
+    def test_median_goodput_run_per_side(self):
+        runs = [({"impl": "utcp", "run": f"u{i}"}, {"valid": True, "goodput_bps": g})
+                for i, g in enumerate((5, 1, 3, 4))]
+        runs.append(({"impl": "utcp", "run": "bad"}, {"valid": False, "goodput_bps": 3.5}))
+        runs += [({"impl": "linux", "run": f"l{i}"}, {"valid": True, "goodput_bps": g})
+                 for i, g in enumerate((7, 9, 8))]
+        sel = P.selection_of(runs)
+        self.assertEqual(sel["utcp"][0]["run"], "u2")  # 1, 3, 4, 5: the lower middle
+        self.assertEqual(sel["linux"][0]["run"], "l2")
 
 
 if __name__ == "__main__":

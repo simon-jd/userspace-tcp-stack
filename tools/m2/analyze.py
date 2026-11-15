@@ -340,6 +340,42 @@ def parse_proc_stat(lines):
     return out
 
 
+def parse_nstat(lines):
+    """{name: value} of `nstat -asz` lines ("TcpExtTCPSackRecovery  12  0.0")."""
+    out = {}
+    for line in lines:
+        f = line.split()
+        if len(f) >= 2 and not f[0].startswith("#") and f[1].isdigit():
+            out[f[0]] = int(f[1])
+    return out
+
+
+def parse_softirqs(lines):
+    """{kind: {cpu: count}} of /proc/softirqs (header "CPU0 CPU1 ...")."""
+    out, cpus = {}, None
+    for line in lines:
+        f = line.split()
+        if not f:
+            continue
+        if cpus is None:
+            cpus = [int(c[3:]) for c in f if c.startswith("CPU")]
+            continue
+        if f[0].endswith(":"):
+            out[f[0][:-1]] = {cpu: int(v) for cpu, v in zip(cpus, f[1:])}
+    return out
+
+
+# Sender counters compared between the two senders (§5.9 "Testbed counters";
+# §1.10's list): Linux from the sender container's nstat, the stack from its
+# --stats line, which uses the same names.
+SENDER_COUNTERS = ("TcpOutSegs", "TcpRetransSegs", "TcpExtTCPSackRecovery", "TcpExtTCPRenoRecovery",
+                   "TcpExtTCPLossProbes", "TcpExtTCPLossProbeRecovery", "TcpExtTCPTimeouts",
+                   "TcpExtTCPFastRetrans", "TcpExtTCPSlowStartRetrans", "TcpExtTCPDSACKRecv",
+                   "TcpExtTCPDSACKRecvSegs", "TcpExtTCPSACKReorder", "TcpExtTCPSpuriousRTOs",
+                   "TcpExtTCPHystartTrainDetect", "TcpExtTCPHystartDelayDetect")
+SOFTIRQ_KINDS = ("NET_RX", "NET_TX", "HRTIMER", "TIMER")
+
+
 def cpu_list(spec):
     """'8,9' or '8-11' -> [8, 9] / [8, 9, 10, 11]."""
     out = []
@@ -363,6 +399,8 @@ def record_counters(rec, containers):
         out["link"][c] = parse_links(rec.get((c, "ip -s -d link"), []))
     out["softnet"] = parse_softnet(rec.get(("host", "softnet_stat"), []))
     out["stat"] = parse_proc_stat(rec.get(("host", "/proc/stat"), []))
+    out["softirqs"] = parse_softirqs(rec.get(("host", "/proc/softirqs"), []))
+    out["nstat"] = {c: parse_nstat(rec.get((c, "nstat -asz"), [])) for c in containers}
     return out
 
 
@@ -409,6 +447,23 @@ def cpu_deltas(pre, post, cpus):
         if a and b:
             out[cpu] = {k: b[k] - a[k] for k in ("irq", "softirq", "busy", "total")}
     return out
+
+
+def softirq_deltas(pre, post, cpus):
+    """{kind: delta summed over cpus} for SOFTIRQ_KINDS."""
+    out = {}
+    for k in SOFTIRQ_KINDS:
+        a, b = pre.get("softirqs", {}).get(k), post.get("softirqs", {}).get(k)
+        if a and b:
+            out[k] = sum(b.get(c, 0) - a.get(c, 0) for c in cpus)
+    return out
+
+
+def nstat_deltas(pre, post, c, names=SENDER_COUNTERS):
+    a, b = pre.get("nstat", {}).get(c, {}), post.get("nstat", {}).get(c, {})
+    if not b:
+        return None
+    return {n: b.get(n, 0) - a.get(n, 0) for n in names}
 
 
 def qdisc_delta(pre, post, c, dev):
@@ -768,6 +823,9 @@ def summarize_run(rundir):
         if squeeze:
             out["flags"].append("time_squeeze")
         out["cpu"] = {str(k): v for k, v in cpu_deltas(pre, post, cpus).items()}
+        out["softirqs"] = softirq_deltas(pre, post, cpus)
+        if meta.get("impl") != "utcp":
+            out["sender_counters"] = nstat_deltas(pre, post, roles["snd"])
         ifs = meta.get("ifaces", {})
         if ifs:
             out["netem"] = qdisc_delta(pre, post, roles["r1"], ifs["r1_b"])
@@ -801,7 +859,14 @@ def summarize_run(rundir):
                 out["flags"].append(f"capture_drops:{name}")
             if isinstance(v, dict) and v.get("received_by_filter") not in (None, v.get("captured")):
                 out["flags"].append(f"capture_incomplete:{name}")
-    # Stack counters (--stats): pool or device problems invalidate (§5.2).
+    if cap:
+        r1 = out["capture"].get("r1-in") or {}
+        if r1.get("data_segs"):
+            # Cross-check of the retransmission rate (§5.9), whole run.
+            out["retrans_pct_capture"] = 100.0 * r1["retrans_segs"] / r1["data_segs"]
+    # Stack counters (--stats): device problems invalidate (§5.2); transmit
+    # queue or pool blocking (loop_pending_calls, the iterations in which a
+    # blocked connection resumed) is reported and flagged (DESIGN §14.6).
     st = read_text(rd / "stats.json")
     if st:
         s = json.loads(st.strip().splitlines()[-1])
@@ -812,6 +877,14 @@ def summarize_run(rundir):
         if devbad:
             out["valid"] = False
             out["invalid"].append("stack device errors")
+        out["stack_blocked_resumes"] = s.get("loop_pending_calls")
+        if s.get("loop_pending_calls"):
+            out["flags"].append("stack_blocked")
+        out["stack_tx_batch_max"] = s.get("dev_tx_batch_max")
+        out["trace_events"] = s.get("trace_events")
+        out["sender_counters"] = {n: s.get(n, 0) for n in SENDER_COUNTERS}
+        out["stack_lateness_hist"] = {k[len("loop_lateness_bucket_"):]: v for k, v in s.items()
+                                      if k.startswith("loop_lateness_bucket_")}
     return out
 
 

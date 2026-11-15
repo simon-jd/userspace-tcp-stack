@@ -16,6 +16,15 @@ the analysis in a helper container on CPUs 16-31.
   matrix.py analyze --campaign C            summary.json of every run again
   matrix.py tables --campaign C --out DIR   runs.csv and cells.csv (DIR in the volume)
   matrix.py cat PATH                        prints a file from the volume
+  matrix.py run PLAN.toml --slot N [--slot M]
+                                            a run plan (load_plan has the format);
+                                            resumable: runs with a summary.json are
+                                            skipped, a partial run is moved to aside/
+  matrix.py expand PLAN.toml [--slots K]    the run list of a plan, no runs
+  matrix.py plot --campaign C [--out DIR]   overlay plots (tools/m2/plot.py)
+  matrix.py proof --campaign C [--phase serial|parallel|report|all] [--reps 5]
+                                            the parallel-mode proof (§6) and the trace
+                                            overhead (§5.6): proof.json, proof.md
 
 Environment: UTCP_M2_PREFIX (testbed names, default utcp-m2), UTCP_M2_JOB
 (names of the helper containers, default utcp-m2-runner), UTCP_IMAGE,
@@ -28,13 +37,18 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import itertools
 import json
+import math
 import os
 import random
+import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
+import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -54,6 +68,13 @@ PAIRS = ((10, 20), (10, 100), (100, 20), (100, 100))
 QUEUES = (2.0, 0.5)
 LOSSES = (0.1, 1.0)
 RATE_FRACTION = 0.98 * 1448 / 1514
+
+# The stack's buffers (§5.3); gso_max_size is added per slot from the
+# sender's measured gso_ipv4_max_size (stack_sets).
+STACK_SETS = ("snd_buf_max=64Mi", "rcv_buf_max=32Mi")
+# Linux sk_setup_caps: sk_gso_max_size = the device's gso_ipv4_max_size -
+# (MAX_TCP_HEADER + 1); MAX_TCP_HEADER = 320 as in TcpConfig's default.
+MAX_TCP_HEADER = 320
 
 
 def log(*a):
@@ -113,11 +134,43 @@ class Slot:
     def containers(self):
         return {"snd": self.snd, "r1": self.r1, "r2": self.r2, "rcv": self.rcv}
 
+    def gso_ipv4_max_size(self):
+        """The sender interface's gso_ipv4_max_size (ip -d link), the
+        device value Linux derives sk_gso_max_size from."""
+        out = sh(["docker", "exec", self.snd, "ip", "-d", "link", "show", "dev", self.ifs["snd"]])
+        m = re.search(r"gso_ipv4_max_size (\d+)", out)
+        return int(m.group(1)) if m else None
+
+    def cleanup(self):
+        """Stops what an interrupted run may have left: senders, receivers,
+        pings, captures, the tbf sampler."""
+        for c in (self.snd, self.rcv):
+            dexec(c, "pkill -x utcp-bulk; pkill -x ping; true", check=False)
+        dexec(self.r2, "[ -e /run/utcp-tbf-sampler.pid ] && kill $(cat /run/utcp-tbf-sampler.pid); "
+                       "rm -f /run/utcp-tbf-sampler.pid; true", check=False)
+        for c in (self.r1, self.r2):
+            dexec(c, "pkill -INT -x tcpdump; true", check=False)
+        for c in (self.snd, self.rcv, self.r1, self.r2):
+            try:
+                wait_for(c, "! ps -eo stat=,comm= | awk '($2 == \"utcp-bulk\" || $2 == \"tcpdump\" || "
+                            "$2 == \"ping\") && $1 !~ /^Z/' | grep -q .", "leftover processes", timeout=10)
+            except RuntimeError:
+                dexec(c, "pkill -KILL -x utcp-bulk; pkill -KILL -x tcpdump; pkill -KILL -x ping; true",
+                      check=False)
+
     def slot_cpus(self):
         cpus = []
         for c in self.cpus.values():
             cpus += A.cpu_list(c)
         return ",".join(str(x) for x in sorted(set(cpus)))
+
+
+def stack_sets(gso_ipv4_max_size):
+    """--set arguments of every stack run (§5.3, M2-TASKS m2d-testbed test 9)."""
+    sets = list(STACK_SETS)
+    if gso_ipv4_max_size:
+        sets.append(f"gso_max_size={gso_ipv4_max_size - MAX_TCP_HEADER - 1}")
+    return sets
 
 
 def tb(script, *args):
@@ -187,9 +240,12 @@ def sysctl_dump(record_text):
     return "\n".join(out) + "\n"
 
 
+_helper_seq = itertools.count()  # unique helper container names across threads
+
+
 def run_analysis(args, timeout=900):
     """analyze.py in a helper container on CPUs 16-31 with the volume mounted."""
-    name = f"{JOB}-ana-{os.getpid()}-{int(time.time() * 1000) % 100000}"
+    name = f"{JOB}-ana-{os.getpid()}-{next(_helper_seq)}"
     return sh(["docker", "run", "--rm", "--name", name, "--cpuset-cpus", "16-31",
                "-v", f"{VOLUME}:/data", "-v", f"{REPO}:/utcp:ro", IMAGE,
                "nice", "-n", "10", "python3", "-I", "/utcp/tools/m2/analyze.py", *args], timeout=timeout)
@@ -214,6 +270,7 @@ def one_run(slot, campaign, run, spec, smeta=None):
     base = f"/data/m2/{campaign}"
     rd = f"{base}/{run}"
     S = float(spec["duration"])
+    slot.cleanup()
     dexec(slot.snd, f"if [ -e {rd} ]; then mkdir -p {base}/aside && mv {rd} {base}/aside/{run}-$(date +%s); fi;"
                     f" mkdir -p {rd}/pre {rd}/post")
     shape = tb("shape.sh", "--slot", slot.n, "--bw", spec["bw"], "--rtt", spec["rtt"],
@@ -237,6 +294,12 @@ def one_run(slot, campaign, run, spec, smeta=None):
         "tbf": [l for l in shape.splitlines() if " tbf " in l and l.startswith("shape:")][0].split(" root ")[1],
         "iproute2": sh(["docker", "exec", slot.r1, "tc", "-V"]).strip(),
     })
+    impl = spec.get("impl", "linux")
+    if impl == "utcp":
+        gso = slot.gso_ipv4_max_size()
+        meta["gso_ipv4_max_size"] = gso
+        meta["stack_set"] = stack_sets(gso) + list(spec.get("stack_set", []))
+        meta["trace"] = bool(spec.get("trace", True))
     vol_write(slot.snd, f"{rd}/meta.json", json.dumps(meta, indent=1, sort_keys=True) + "\n")
     vol_write(slot.snd, f"{rd}/shape.txt", shape)
     pre = tb("record.sh", "--slot", slot.n, "pre")
@@ -265,17 +328,18 @@ def one_run(slot, campaign, run, spec, smeta=None):
     dexec_bg(slot.snd, f"exec ping -D -O -i 0.05 -s 56 {slot.rcv_ip} > {rd}/ping.txt 2>&1")
     time.sleep(3.0)
 
-    impl = spec.get("impl", "linux")
     cc = spec.get("cc", "cubic")
     amount = f"--bytes {spec['bytes']}" if spec.get("bytes") else f"--duration {S:g}"
     if impl == "linux":
         snd_cmd = (f"{BULK} --backend kernel --connect {slot.rcv_ip}:{PORT} --send {amount} "
                    f"--cc {cc} --sample-ms 10 --jsonl {rd}/snd.jsonl")
     else:
+        sets = " ".join(f"--set {shlex.quote(x)}" for x in meta["stack_set"])
+        trace = f"--trace {rd}/trace.jsonl" if meta["trace"] else ""
         snd_cmd = (f"{BULK} --backend utcp --tun utcp0 --addr {slot.stack_ip} "
                    f"--profile {spec.get('profile', 'linux')} --connect {slot.rcv_ip}:{PORT} --send "
                    f"{amount} --cc {cc} --sample-ms 10 --jsonl {rd}/snd.jsonl "
-                   f"--stats {rd}/stats.json {spec.get('stack_args', '')}")
+                   f"--stats {rd}/stats.json {sets} {trace} {spec.get('stack_args', '')}")
     rc = subprocess.run(["docker", "exec", slot.snd, "bash", "-c", f"{snd_cmd} > {rd}/snd.out 2>&1"],
                         timeout=S + 120).returncode
     try:
@@ -566,6 +630,435 @@ def gate_table(gates):
 
 
 # --------------------------------------------------------------------------
+# Plans (§5.6, §5.13): `run PLAN.toml`
+
+
+def default_duration(rtt):
+    return 30 if float(rtt) <= 20 else 60
+
+
+def cell_name(c):
+    return f"{c['bw']:g}-{c['rtt']:g}-{float(c.get('loss', 0)):g}-{float(c['queue_bdp']):g}"
+
+
+def load_plan(path):
+    """A run plan (TOML):
+
+        campaign = "m2d-testbed/mini"
+        seed = 20261115            # the one recorded seed
+        reps = 2
+        trace = true               # stack runs: --trace (default true)
+        duration = 30              # optional; default 30 s at RTT <= 20 ms, else 60 s
+        [[cell]]                   # one table per cell
+        bw = 10                    # Mbit/s
+        rtt = 20                   # ms
+        loss = 0                   # percent
+        queue_bdp = 2
+        [[algo]]                   # one table per algorithm
+        cc = "newreno"
+        impls = ["utcp", "linux"]  # default both: a pair
+        profile = "linux"          # the stack's profile (default linux)
+        stack_set = []             # extra --set FIELD=VALUE for the stack
+    """
+    with open(path, "rb") as f:
+        plan = tomllib.load(f)
+    for k in ("campaign", "seed", "reps", "cell", "algo"):
+        if k not in plan:
+            raise ValueError(f"plan {path}: '{k}' missing")
+    for c in plan["cell"]:
+        for k in ("bw", "rtt", "queue_bdp"):
+            if k not in c:
+                raise ValueError(f"plan {path}: cell without '{k}'")
+    for a in plan["algo"]:
+        if "cc" not in a:
+            raise ValueError(f"plan {path}: algo without 'cc'")
+        if not set(a.get("impls", ("utcp", "linux"))) <= {"utcp", "linux"}:
+            raise ValueError(f"plan {path}: impls are utcp and linux")
+    return plan
+
+
+def expand_plan(plan, nslots=1):
+    """The run list of a plan: one group per (cell, algorithm, repetition),
+    its runs back to back in one slot (a pair when the algorithm has both
+    implementations). From the plan's seed, in this order: the shuffle of the
+    groups, then per group (in shuffled order) the netem seed and the order
+    inside the group. Repetition r runs on slot r mod nslots, so every cell
+    and algorithm is spread evenly over the slots. Returns the runs in
+    execution order per slot: [{run, group, slot, order, spec...}]."""
+    rng = random.Random(plan["seed"])
+    groups = [(ci, ai, rep) for ci in range(len(plan["cell"])) for ai in range(len(plan["algo"]))
+              for rep in range(int(plan["reps"]))]
+    rng.shuffle(groups)
+    runs = []
+    for gi, (ci, ai, rep) in enumerate(groups):
+        c, a = plan["cell"][ci], plan["algo"][ai]
+        impls = list(a.get("impls", ("utcp", "linux")))
+        netem_seed = rng.randrange(1, 2 ** 31)
+        rng.shuffle(impls)
+        cell = cell_name(c)
+        for k, impl in enumerate(impls):
+            spec = {"bw": c["bw"], "rtt": c["rtt"], "loss": float(c.get("loss", 0)),
+                    "queue_bdp": float(c["queue_bdp"]), "seed": netem_seed, "impl": impl, "cc": a["cc"],
+                    "profile": a.get("profile", "linux"),
+                    "duration": float(plan.get("duration", default_duration(c["rtt"]))),
+                    "cell": cell, "rep": rep, "group": gi, "in_group": k, "plan_seed": plan["seed"],
+                    "trace": bool(plan.get("trace", True))}
+            if impl == "utcp" and a.get("stack_set"):
+                spec["stack_set"] = list(a["stack_set"])
+            spec["run"] = f"{cell}-{a['cc']}-r{rep}-{impl}"
+            spec["slot_index"] = rep % nslots
+            runs.append(spec)
+    for i, r in enumerate(runs):
+        r["order"] = i
+    return runs
+
+
+def read_volume(slot, path):
+    r = subprocess.run(["docker", "exec", slot.snd, "cat", path], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def run_done(slot, campaign, run):
+    """A run is done when its summary.json exists (analysis finished)."""
+    t = read_volume(slot, f"/data/m2/{campaign}/{run}/summary.json")
+    if not t:
+        return None
+    try:
+        s = json.loads(t)
+    except json.JSONDecodeError:
+        return None
+    return s if "valid" in s else None
+
+
+def run_plan(plan_path, slots, rerun_invalid=True):
+    plan = load_plan(plan_path)
+    campaign = plan["campaign"]
+    runs = expand_plan(plan, len(slots))
+    smeta = static_meta()
+    expanded = json.dumps({"plan": plan, "runs": runs}, indent=1, sort_keys=True) + "\n"
+    old = read_volume(slots[0], f"/data/m2/{campaign}/plan.json")
+    if old is not None and json.loads(old)["runs"] != runs:
+        raise RuntimeError(f"/data/m2/{campaign}/plan.json holds a different plan; use a new campaign")
+    dexec(slots[0].snd, f"mkdir -p /data/m2/{campaign}")
+    if old is None:
+        vol_write(slots[0].snd, f"/data/m2/{campaign}/plan.json", expanded)
+    log(f"plan {plan_path}: campaign {campaign}, seed {plan['seed']}, {len(runs)} runs on slots "
+        + ",".join(str(s.n) for s in slots))
+    errors = []
+
+    def worker(si):
+        slot = slots[si]
+        mine = [r for r in runs if r["slot_index"] == si]
+        for r in mine:
+            if run_done(slot, campaign, r["run"]) is not None:
+                log(f"{r['run']}: done before, skipped")
+                continue
+            spec = {k: v for k, v in r.items() if k not in ("run", "slot_index")}
+            try:
+                log(f"slot {slot.n}: {r['run']} (order {r['order']}, group {r['group']}, netem seed {r['seed']})")
+                _, summ = one_run(slot, campaign, r["run"], spec, smeta)
+                log(f"{r['run']}: valid {summ.get('valid')} goodput {summ.get('goodput_bps')} "
+                    f"{summ.get('invalid')} {summ.get('flags')}")
+            except Exception as e:  # noqa: BLE001 - one failed run must not stop the slot
+                errors.append((r["run"], str(e)))
+                log(f"{r['run']}: ERROR {e}")
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(slots))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if rerun_invalid:
+        rerun_invalid_runs(plan, runs, slots, smeta)
+    log(f"plan {campaign}: finished, {len(errors)} errors")
+    return errors
+
+
+def rerun_invalid_runs(plan, runs, slots, smeta):
+    """RESULTS.md "Which runs count": an invalid run is rerun (the invalid
+    one is kept, marked); at most A.RERUN_CAP reruns per cell and algorithm."""
+    campaign = plan["campaign"]
+    by_cell = {}
+    for r in runs:
+        by_cell.setdefault((r["cell"], r["cc"]), []).append(r)
+    for (cell, cc), rs in sorted(by_cell.items()):
+        slot = slots[rs[0]["slot_index"]]
+        reruns = 0
+        order = len(runs) + 1000 * (1 + sorted(by_cell).index((cell, cc)))
+        for r in rs:
+            s = run_done(slot, campaign, r["run"])
+            k = 0
+            while (s is None or not s.get("valid")) and reruns < A.RERUN_CAP:
+                k += 1
+                reruns += 1
+                name = f"{r['run']}-rerun{k}"
+                spec = {kk: v for kk, v in r.items() if kk not in ("run", "slot_index")}
+                spec.update(order=order, rerun_of=r["run"])
+                order += 1
+                log(f"{r['run']}: invalid or missing, rerun as {name}")
+                if run_done(slot, campaign, name) is None:
+                    try:
+                        one_run(slot, campaign, name, spec, smeta)
+                    except Exception as e:  # noqa: BLE001
+                        log(f"{name}: ERROR {e}")
+                s = run_done(slot, campaign, name)
+
+
+# --------------------------------------------------------------------------
+# Parallel-mode proof (§6) and the trace overhead (§5.6)
+
+PROOF_PAIRS = ((10, 20), (10, 100), (100, 20), (100, 100))
+
+
+def proof_list(reps, pairs, with_trace_off):
+    """Per repetition: item 1 (idle ping) and items 2 and 4 (Linux CUBIC,
+    0 % loss, 2xBDP) for each pair, then stack NewReno at 100 Mbit/s, 20 ms,
+    0 %, 2xBDP with the trace, and (serial only) without it."""
+    out = []
+    for rep in range(reps):
+        for bw, rtt in pairs:
+            spec = {"bw": bw, "rtt": rtt, "queue_bdp": 2.0, "loss": 0.0, "rep": rep}
+            out.append(("ping", f"ping-{bw}-{rtt}-2-r{rep}", spec))
+            out.append(("run", f"rate-{bw}-{rtt}-2-r{rep}",
+                        dict(spec, impl="linux", cc="cubic", duration=default_duration(rtt),
+                             cell=f"{bw}-{rtt}-0-2", gate="proof-rate", order=rep)))
+        stack = {"bw": 100, "rtt": 20, "queue_bdp": 2.0, "loss": 0.0, "rep": rep, "impl": "utcp",
+                 "cc": "newreno", "profile": "linux", "duration": 30, "cell": "100-20-0-2", "order": rep}
+        out.append(("run", f"stack-trace-r{rep}", dict(stack, trace=True, gate="proof-stack")))
+        if with_trace_off:
+            out.append(("run", f"stack-notrace-r{rep}", dict(stack, trace=False, gate="proof-notrace")))
+    return out
+
+
+def proof_phase(campaign, phase, slots, reps, pairs):
+    smeta = static_meta()
+
+    def worker(slot):
+        sub = f"{campaign}/{phase}-s{slot.n}"
+        for kind, name, spec in proof_list(reps, pairs, with_trace_off=(phase == "serial")):
+            if kind == "ping":
+                rd = f"/data/m2/{sub}/{name}"
+                if read_volume(slot, f"{rd}/ping.json"):
+                    continue
+                slot.cleanup()
+                p = ping_only(slot, sub, name, spec)
+                vol_write(slot.snd, f"{rd}/ping.json", json.dumps(p, sort_keys=True) + "\n")
+                log(f"{phase} slot {slot.n} {name}: median {p['median_ms']} p99 {p['p99_ms']}")
+            else:
+                if run_done(slot, sub, name) is not None:
+                    continue
+                try:
+                    _, s = one_run(slot, sub, name, spec, smeta)
+                    log(f"{phase} slot {slot.n} {name}: goodput {s.get('goodput_bps')} valid {s.get('valid')} "
+                        f"lateness p99 {s.get('sender_lateness_p99_ns')} max {s.get('sender_lateness_max_ns')}")
+                except Exception as e:  # noqa: BLE001
+                    log(f"{phase} slot {slot.n} {name}: ERROR {e}")
+
+    threads = [threading.Thread(target=worker, args=(s,)) for s in slots]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def hist_merge(hists):
+    out = {}
+    for h in hists:
+        for k, v in (h or {}).items():
+            out[int(k)] = out.get(int(k), 0) + v
+    return out
+
+
+def hist_percentile(h, q):
+    """LatenessHistogram::percentile: the inclusive upper edge of the bucket
+    holding the sample of rank ceil(q * count) (0 for bucket 0, 2^i - 1 ns)."""
+    n = sum(h.values())
+    if n == 0:
+        return None
+    rank = math.ceil(q * n)
+    acc = 0
+    for i in sorted(h):
+        acc += h[i]
+        if acc >= rank:
+            return 0 if i == 0 else (1 << i) - 1
+    return None
+
+
+def proof_compare(serial, parallel, rel=None, abs_=None):
+    """serial/parallel: lists of per-run values. Pass when the parallel
+    median is within rel (fraction) or abs_ of the serial median and the
+    ranges overlap."""
+    s = [x for x in serial if x is not None]
+    p = [x for x in parallel if x is not None]
+    if not s or not p:
+        return {"ok": False, "why": "no data", "serial": s, "parallel": p}
+    ms, mp = A.median(s), A.median(p)
+    diff = mp - ms
+    within = abs(diff) <= (rel * abs(ms) if rel is not None else abs_)
+    overlap = A.ranges_overlap(min(s), max(s), min(p), max(p))
+    return {"ok": bool(within and overlap), "serial_median": ms, "parallel_median": mp, "diff": diff,
+            "serial_range": [min(s), max(s)], "parallel_range": [min(p), max(p)], "within": within,
+            "overlap": overlap, "n_serial": len(s), "n_parallel": len(p)}
+
+
+def proof_report(campaign, reps, pairs):
+    """proof.json and proof.md from the serial (slot 0) and parallel (slots
+    0 and 1) phases; read through a helper container."""
+    dump = sh(["docker", "run", "--rm", "--name", f"{JOB}-rd-{os.getpid()}-{next(_helper_seq)}",
+               "-v", f"{VOLUME}:/data:ro", IMAGE, "bash", "-c",
+               f"cd /data/m2/{campaign} && for f in */*/ping.json */*/summary.json; do "
+               f"[ -e \"$f\" ] && {{ echo \"### $f\"; tr -d '\\n' < \"$f\"; echo; }}; done; true"])
+    files = {}
+    lines = dump.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("### ") and i + 1 < len(lines):
+            files[line[4:]] = json.loads(lines[i + 1])
+
+    phases = {"serial": ["serial-s0"], "parallel": ["parallel-s0", "parallel-s1"]}
+    data = {}
+    for ph, subs in phases.items():
+        for sub in subs:
+            for kind, name, spec in proof_list(reps, pairs, with_trace_off=(ph == "serial")):
+                data[(sub, name)] = files.get(f"{sub}/{name}/{'ping.json' if kind == 'ping' else 'summary.json'}")
+    result = {"campaign": campaign, "reps": reps, "items": [], "notes": []}
+
+    def vals(sub, prefix, key, sub_key=None):
+        out = []
+        for rep in range(reps):
+            v = data.get((sub, f"{prefix}-r{rep}"))
+            if v is None:
+                out.append(None)
+                continue
+            x = v.get(key)
+            if sub_key is not None and isinstance(x, dict):
+                x = x.get(sub_key)
+            out.append(x)
+        return out
+
+    for bw, rtt in pairs:
+        for item, prefix, key, sub_key, crit in (
+                (1, f"ping-{bw}-{rtt}-2", "median_ms", None, {"abs_": 0.2}),
+                (2, f"rate-{bw}-{rtt}-2", "goodput_bps", None, {"rel": 0.01}),
+                (4, f"rate-{bw}-{rtt}-2", "queue", "backlog_max", {"rel": 0.02})):
+            ser = vals("serial-s0", prefix, key, sub_key)
+            for sub in phases["parallel"]:
+                c = proof_compare(ser, vals(sub, prefix, key, sub_key), **crit)
+                c.update(item=item, cell=f"{bw} Mbit/s, {rtt} ms, 2xBDP", metric=key if not sub_key else sub_key,
+                         parallel_slot=int(sub[-1]))
+                result["items"].append(c)
+    # Stack NewReno.
+    ser_g = vals("serial-s0", "stack-trace", "goodput_bps")
+    ser_h = [data.get(("serial-s0", f"stack-trace-r{r}")) for r in range(reps)]
+    ser_hist = hist_merge([(x or {}).get("stack_lateness_hist") for x in ser_h])
+    for sub in phases["parallel"]:
+        c = proof_compare(ser_g, vals(sub, "stack-trace", "goodput_bps"), rel=0.02)
+        c.update(item="stack", cell="100 Mbit/s, 20 ms, 0 %, 2xBDP", metric="goodput_bps",
+                 parallel_slot=int(sub[-1]))
+        result["items"].append(c)
+        par_h = [data.get((sub, f"stack-trace-r{r}")) for r in range(reps)]
+        par_hist = hist_merge([(x or {}).get("stack_lateness_hist") for x in par_h])
+        for q, label in ((0.99, "p99"), (None, "max")):
+            if q is None:
+                s_v = max([x.get("sender_lateness_max_ns") or 0 for x in ser_h if x] or [0])
+                p_v = max([x.get("sender_lateness_max_ns") or 0 for x in par_h if x] or [0])
+            else:
+                s_v, p_v = hist_percentile(ser_hist, q), hist_percentile(par_hist, q)
+            ok = s_v is not None and p_v is not None and p_v <= 2 * max(s_v, 1)
+            result["items"].append({"item": "stack", "metric": f"lateness_{label}_ns", "parallel_slot": int(sub[-1]),
+                                    "serial": s_v, "parallel": p_v, "ok": ok,
+                                    "serial_per_run": vals("serial-s0", "stack-trace", f"sender_lateness_{label}_ns"),
+                                    "parallel_per_run": vals(sub, "stack-trace", f"sender_lateness_{label}_ns")})
+        result["items"].append({"item": "stack", "metric": "ping_p99_ms", "parallel_slot": int(sub[-1]),
+                                "ok": True, "informational": True,
+                                **proof_compare(vals("serial-s0", "stack-trace", "qdelay_p99_ms"),
+                                                vals(sub, "stack-trace", "qdelay_p99_ms"), abs_=1e9)})
+    # sndbuf-limited time on both senders (§5.3).
+    lim = {}
+    for sub in ["serial-s0"] + phases["parallel"]:
+        lim[sub] = {"stack": vals(sub, "stack-trace", "sndbuf_limited_frac"),
+                    "linux_100_20": vals(sub, "rate-100-20-2", "sndbuf_limited_frac"),
+                    "stack_rwnd": vals(sub, "stack-trace", "rwnd_limited_frac"),
+                    "linux_100_20_rwnd": vals(sub, "rate-100-20-2", "rwnd_limited_frac")}
+    result["sndbuf_limited"] = lim
+    # Trace overhead (§5.6): serial, trace on vs off.
+    on = [data.get(("serial-s0", f"stack-trace-r{r}")) for r in range(reps)]
+    off = [data.get(("serial-s0", f"stack-notrace-r{r}")) for r in range(reps)]
+    result["trace_overhead"] = {
+        "goodput_on": [(x or {}).get("goodput_bps") for x in on],
+        "goodput_off": [(x or {}).get("goodput_bps") for x in off],
+        "lateness_p99_on": [(x or {}).get("sender_lateness_p99_ns") for x in on],
+        "lateness_p99_off": [(x or {}).get("sender_lateness_p99_ns") for x in off],
+        "lateness_max_on": [(x or {}).get("sender_lateness_max_ns") for x in on],
+        "lateness_max_off": [(x or {}).get("sender_lateness_max_ns") for x in off],
+        "trace_events": [(x or {}).get("trace_events") for x in on],
+        "hist_p99_on": hist_percentile(hist_merge([(x or {}).get("stack_lateness_hist") for x in on]), 0.99),
+        "hist_p99_off": hist_percentile(hist_merge([(x or {}).get("stack_lateness_hist") for x in off]), 0.99),
+    }
+    result["valid_runs"] = {f"{sub}/{name}": (v or {}).get("valid") for (sub, name), v in data.items()
+                            if not name.startswith("ping")}
+    result["passed"] = all(i["ok"] for i in result["items"])
+    text = json.dumps(result, indent=1, sort_keys=True) + "\n"
+    helper = f"{JOB}-wr-{os.getpid()}"
+    sh(["docker", "run", "--rm", "-i", "--name", helper, "-v", f"{VOLUME}:/data", IMAGE, "bash", "-c",
+        f"cat > /data/m2/{campaign}/proof.json"], input=text)
+    md = proof_markdown(result)
+    sh(["docker", "run", "--rm", "-i", "--name", helper, "-v", f"{VOLUME}:/data", IMAGE, "bash", "-c",
+        f"cat > /data/m2/{campaign}/proof.md"], input=md)
+    return result, md
+
+
+def _f(x, scale=1.0, nd=2):
+    return "-" if x is None else f"{x / scale:.{nd}f}"
+
+
+def proof_markdown(r):
+    lines = [f"Parallel-mode proof, campaign {r['campaign']}, {r['reps']} repetitions: "
+             + ("PASSED" if r["passed"] else "FAILED"), "",
+             "| Item | Cell | Metric | Parallel slot | Serial median [range] | Parallel median [range] | Pass |",
+             "|---|---|---|---|---|---|---|"]
+    for i in r["items"]:
+        m = i["metric"]
+        if "serial_median" in i:
+            sc = 1e6 if m == "goodput_bps" else 1.0
+            nd = 3
+            s = f"{_f(i['serial_median'], sc, nd)} [{_f(i['serial_range'][0], sc, nd)}, {_f(i['serial_range'][1], sc, nd)}]"
+            p = f"{_f(i['parallel_median'], sc, nd)} [{_f(i['parallel_range'][0], sc, nd)}, {_f(i['parallel_range'][1], sc, nd)}]"
+        else:
+            s, p = str(i.get("serial")), str(i.get("parallel"))
+        unit = {"goodput_bps": "goodput (Mbit/s)", "median_ms": "ping median (ms)", "backlog_max": "backlog max (B)"}.get(m, m)
+        ok = "info" if i.get("informational") else ("yes" if i["ok"] else "NO")
+        lines.append(f"| {i['item']} | {i.get('cell', '100 Mbit/s, 20 ms, 0 %, 2xBDP')} | {unit} | {i['parallel_slot']} | {s} | {p} | {ok} |")
+    t = r["trace_overhead"]
+    lines += ["", "Trace overhead (stack NewReno, 100 Mbit/s, 20 ms, 0 %, 2xBDP, serial):",
+              f"- goodput on (Mbit/s): {[_f(x, 1e6) for x in t['goodput_on']]}",
+              f"- goodput off (Mbit/s): {[_f(x, 1e6) for x in t['goodput_off']]}",
+              f"- lateness p99 on/off (ns, per run): {t['lateness_p99_on']} / {t['lateness_p99_off']}",
+              f"- lateness max on/off (ns, per run): {t['lateness_max_on']} / {t['lateness_max_off']}",
+              f"- pooled lateness p99 on/off (ns): {t['hist_p99_on']} / {t['hist_p99_off']}",
+              f"- trace events per run: {t['trace_events']}", "",
+              "sndbuf-limited and rwnd-limited fractions of the window:"]
+    for sub, v in r["sndbuf_limited"].items():
+        lines.append(f"- {sub}: {json.dumps(v)}")
+    bad = [k for k, v in r["valid_runs"].items() if v is not True]
+    lines += ["", f"Runs not valid: {bad if bad else 'none'}"]
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
+# Plots (§5.12)
+
+
+def run_plot(campaign, out=None):
+    out = out or f"/data/m2/{campaign}/plots"
+    name = f"{JOB}-plot-{os.getpid()}"
+    return sh(["docker", "run", "--rm", "--name", name, "--cpuset-cpus", "16-31", "-e", "MPLCONFIGDIR=/tmp/mpl",
+               "-v", f"{VOLUME}:/data", "-v", f"{REPO}:/utcp:ro", IMAGE,
+               "nice", "-n", "10", "python3", "-I", "/utcp/tools/m2/plot.py", f"/data/m2/{campaign}", out],
+              timeout=1800)
+
+
+# --------------------------------------------------------------------------
 
 
 def main(argv):
@@ -608,6 +1101,21 @@ def main(argv):
     p.add_argument("--campaign", action="append", required=True, help="a calibration campaign (repeatable)")
     p = sub.add_parser("cat")
     p.add_argument("path")
+    p = sub.add_parser("run", help="a run plan (TOML), resumable")
+    p.add_argument("plan")
+    p.add_argument("--slot", type=int, action="append", required=True, help="repeatable: slots to use")
+    p.add_argument("--no-rerun", action="store_true", help="do not rerun invalid runs")
+    p = sub.add_parser("expand", help="print the run list of a plan (no runs)")
+    p.add_argument("plan")
+    p.add_argument("--slots", type=int, default=1)
+    p = sub.add_parser("plot", help="overlay plots of a campaign (tools/m2/plot.py)")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("--out", help="directory in the volume (default /data/m2/CAMPAIGN/plots)")
+    p = sub.add_parser("proof", help="the parallel-mode proof and the trace overhead (§6, §5.6)")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("--phase", choices=("serial", "parallel", "report", "all"), default="all")
+    p.add_argument("--reps", type=int, default=5)
+    p.add_argument("--pairs", default=",".join(f"{b}x{r}" for b, r in PROOF_PAIRS))
     a = ap.parse_args(argv[1:])
     if a.cmd == "up":
         print(tb("up.sh", "--slot", a.slot, *(["--nontiming"] if a.nontiming else [])), end="")
@@ -637,6 +1145,24 @@ def main(argv):
         gates = [json.loads(sh(["docker", "run", "--rm", "--name", f"{JOB}-cat-{os.getpid()}", "-v",
                                 f"{VOLUME}:/data:ro", IMAGE, "cat", f"/data/m2/{c}/gate.json"])) for c in a.campaign]
         print(gate_table(gates), end="")
+    elif a.cmd == "run":
+        errors = run_plan(a.plan, [Slot(n) for n in a.slot], rerun_invalid=not a.no_rerun)
+        return 1 if errors else 0
+    elif a.cmd == "expand":
+        for r in expand_plan(load_plan(a.plan), a.slots):
+            print(json.dumps(r, sort_keys=True))
+    elif a.cmd == "plot":
+        print(run_plot(a.campaign, a.out), end="")
+    elif a.cmd == "proof":
+        pairs = [tuple(int(x) for x in p.split("x")) for p in a.pairs.split(",")]
+        if a.phase in ("serial", "all"):
+            proof_phase(a.campaign, "serial", [Slot(0)], a.reps, pairs)
+        if a.phase in ("parallel", "all"):
+            proof_phase(a.campaign, "parallel", [Slot(0), Slot(1)], a.reps, pairs)
+        if a.phase in ("report", "all"):
+            r, md = proof_report(a.campaign, a.reps, pairs)
+            print(md, end="")
+            return 0 if r["passed"] else 1
     elif a.cmd == "cat":
         print(sh(["docker", "run", "--rm", "--name", f"{JOB}-cat-{os.getpid()}", "-v", f"{VOLUME}:/data:ro",
                   IMAGE, "cat", a.path]), end="")
