@@ -872,6 +872,20 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
   }
   const auto uoff = static_cast<std::uint64_t>(off);
   const std::uint64_t old_nxt = t.rcvq.contiguous_end();
+  // The ACK decision's reader (RcvWindow::on_in_order_data, ack_view): a
+  // Linux reader runs alongside the softirq, while the host's application
+  // reads only after the host's receive batch. In-order data that arrived
+  // earlier in this batch counts as read, so the decision does not depend on
+  // the batch size (DESIGN §3; M2 coordinator decision on the ACK
+  // frequency); data left unread from earlier batches still fills the buffer
+  // (a slow or stopped reader, Linux tcp_space).
+  if (t.rx_batch_id != core_.host_batch()) {
+    t.rx_batch_id = core_.host_batch();
+    t.rx_batch_nxt = old_nxt;
+  }
+  const std::uint64_t batch_from = std::max(t.rx_batch_nxt, t.rcvq.read_offset());
+  const std::uint64_t read_upto =
+      t.rcvq.read_offset() + (old_nxt > batch_from ? old_nxt - batch_from : 0);
   // Linux tcp_rcv_state_process: new data after the application closed (or
   // shut down reading) in FIN-WAIT-1/2 aborts (RFC 1122 §4.2.2.13). In
   // ESTABLISHED, shutdown(read) alone acknowledges and discards it (§3.5).
@@ -919,10 +933,8 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
     t.ackp.on_data(now, static_cast<std::uint32_t>(payload.size()), s.meta.gso_size, r,
                    t.rcv_wnd, t.rtt.rto_backed_off(t.backoff));
     if (r.advanced) {
-      // The data before this segment counts as read (RcvWindow: the
-      // decision must not depend on the host's receive batch).
       t.rwin.on_in_order_data(static_cast<std::uint32_t>(payload.size()), t.ackp.rcv_mss(),
-                              t.rcvq, old_nxt);
+                              t.rcvq, read_upto);
       if (t.rwin.rcv_ssthresh() > ssthresh_before) {
         t.ackp.on_rcv_ssthresh_grew();
       }
@@ -954,10 +966,11 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
         raise(t, ev_readable);
       }
     }
-    // __tcp_ack_snd_check per segment, with the data received before this
-    // segment taken by the reader (RcvWindow::ack_view): one ACK per two full
-    // segments whether the host hands the stack 1 or 64 segments per batch.
-    t.ackp.on_window(now, t.rwin.ack_view(t.rcvq, t.ackp.rcv_mss(), old_nxt));
+    // __tcp_ack_snd_check per segment, with the data received earlier in
+    // this host batch taken by the reader (RcvWindow::ack_view): one ACK per
+    // two full segments whether the host hands the stack 1 or 64 segments
+    // per batch.
+    t.ackp.on_window(now, t.rwin.ack_view(t.rcvq, t.ackp.rcv_mss(), read_upto));
   }
   if (s.has(tcp_fin)) {
     const std::uint64_t fin_off = uoff + payload.size();

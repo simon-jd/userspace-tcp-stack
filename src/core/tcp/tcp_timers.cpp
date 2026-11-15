@@ -156,7 +156,8 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
       // what to probe with. New data goes out past cwnd by one segment
       // (tcp_write_xmit with push_one = 2: the receive window and the pacing gate
       // still apply); otherwise the last segment of the retransmission queue is
-      // resent, not gated (cut to its last MSS-sized part as tcp_fragment does).
+      // resent, not gated, and without the scoreboard update of a retransmission
+      // (__tcp_retransmit_skb only: no retrans_out, no retrans_stamp; send_segment).
       // Both are TxKind::tlp. Recovery then arms the RTO (on_tlp_sent).
       refresh_cc(t, now);
       RecoveryCtx c = rctx(t, now);
@@ -203,18 +204,17 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
           }
         }
       } else if (action == TlpAction::retransmit_last && !t.sndq.segs().empty()) {
-        TxSeg last = t.sndq.segs().back();
-        if (last.len > mss) {
-          // tcp_send_loss_probe: tcp_fragment at (pcount - 1) * mss, probe the
-          // tail.
-          const std::uint32_t pcount = (last.len + mss - 1) / mss;
-          t.sndq.split(last.off, (pcount - 1) * mss);
-          last = t.sndq.segs().back();
-        }
+        // A TxSeg is one packet (tcp_skb_pcount 1), so tcp_send_loss_probe's
+        // tcp_fragment at (pcount - 1) * mss never applies; a TxSeg longer
+        // than the current MSS (SACK blocks or a PMTU drop since it was sent)
+        // is cut to its first MSS by retransmit_seg, as __tcp_retransmit_skb
+        // cuts the skb to cur_mss. A SACKed last segment is probed too.
+        const TxSeg last = t.sndq.segs().back();
         if (core_.can_transmit()) {
           sent = retransmit_seg(t, now, last, TxKind::tlp);
-          if (sent && last.len > 0) {
-            t.pacing_after_send(now, last.len);
+          const TxSeg* s = t.sndq.find(last.off);
+          if (sent && s != nullptr && s->len > 0) {
+            t.pacing_after_send(now, s->len);
           }
         } else {
           core_.block_tx(t.self.slot);

@@ -739,6 +739,108 @@ TEST(AckPipeline, CongControlStepAsksRecovery) {
   r.rec.set_script(nullptr);
 }
 
+// tcp_in_cwnd_reduction is CWR or Recovery (Linux tcp_input.c:3866-3872):
+// in Loss (after an RTO) cwnd grows through may_raise_cwnd and cong_avoid; in
+// CWR (ECE, or the TLP-repaired loss of M2-DESIGN §1.7; the stub never enters
+// it, so the test seam reports it) cwnd_reduction gets (delivered, rs.losses,
+// flags) and neither may_raise_cwnd nor cong_avoid runs.
+TEST(AckPipeline, CongControlStepInLossAndCwr) {
+  {
+    SCOPED_TRACE("loss");
+    Rig r(true);
+    utcp::test::ScriptedRecovery script;
+    r.rec.set_script(&script);
+    r.send_spaced(10);
+    r.now += 300ms;
+    utcp::RecoveryCtx c = r.rctx();
+    r.rec.on_rto(c);
+    ASSERT_EQ(r.rec.state(), CaState::loss);
+    ASSERT_EQ(r.cc.cwnd, 1u);
+    r.algo.log.clear();
+    r.ack(1000);
+    ASSERT_EQ(r.rec.state(), CaState::loss);
+    EXPECT_TRUE(script.calls_of("cwnd_reduction").empty());
+    EXPECT_EQ(script.calls_of("may_raise_cwnd").size(), 1u);
+    EXPECT_EQ(r.algo.log.back(), "cong_avoid 1");
+    EXPECT_EQ(r.cc.cwnd, 2u);  // slow start
+    r.rec.set_script(nullptr);
+  }
+  {
+    SCOPED_TRACE("cwr");
+    Rig r(true);
+    utcp::test::ScriptedRecovery script;
+    r.rec.set_script(&script);
+    script.state = CaState::cwr;
+    r.send_spaced(4);
+    r.now += 30ms;
+    r.algo.log.clear();
+    const AckOutcome o = r.ack(2000);
+    ASSERT_NE(o.rs, nullptr);
+    EXPECT_EQ(script.calls_of("cwnd_reduction"),
+              (std::vector<std::string>{"cwnd_reduction 2 " + std::to_string(o.rs->losses) + " " +
+                                        std::to_string(o.flags)}));
+    EXPECT_TRUE(script.calls_of("may_raise_cwnd").empty());
+    for (const std::string& l : r.algo.log) {
+      EXPECT_FALSE(l.starts_with("cong_avoid")) << l;
+    }
+    r.rec.set_script(nullptr);
+  }
+}
+
+// Linux tcp_ack with nothing outstanding (prior_packets 0, no_queue,
+// tcp_input.c:4357-4358, 4413-4433): a D-SACK is still delivered, but there
+// is no rate sample and no tcp_cong_control (no PRR, no cong_avoid, no
+// pacing-rate update), even in a cwnd-reduction state.
+TEST(AckPipeline, AckWithNothingOutstandingSkipsTheCcStep) {
+  Rig r(true);
+  utcp::test::ScriptedRecovery script;
+  r.rec.set_script(&script);
+  r.send_spaced(4);
+  r.now += 30ms;
+  r.ack(4000);
+  ASSERT_EQ(r.q.counters().packets_out, 0u);
+  script.state = CaState::cwr;
+  script.calls.clear();
+  r.algo.log.clear();
+  r.cc.pacing_rate = 12345;
+  const std::uint32_t cwnd = r.cc.cwnd;
+  r.ctr.total_retrans = 1;  // segment 0 was also retransmitted
+  AckInput in = r.input(4000);
+  in.dsack = Range{0, 1000};
+  in.dupack = true;
+  const AckOutcome o = r.run(in);
+  EXPECT_NE(o.flags & utcp::ack_dsack, 0u);
+  EXPECT_EQ(o.delivered, 1u);
+  EXPECT_EQ(r.rate.delivered, 5u);
+  EXPECT_EQ(o.rs, nullptr);
+  EXPECT_TRUE(script.calls_of("cwnd_reduction").empty());
+  EXPECT_TRUE(script.calls_of("may_raise_cwnd").empty());
+  for (const std::string& l : r.algo.log) {
+    EXPECT_FALSE(l.starts_with("cong_avoid")) << l;
+  }
+  EXPECT_EQ(r.cc.pacing_rate, 12345u);
+  EXPECT_EQ(r.cc.cwnd, cwnd);
+  r.rec.set_script(nullptr);
+}
+
+// tcp_dsack_seen ignores a D-SACK only when it is longer than max_window
+// (`seq_len > tp->max_window`): one exactly max_snd_wnd long counts.
+TEST(AckPipeline, DsackOfExactlyTheMaxWindowCounts) {
+  Rig r(true);
+  r.send_spaced(8);
+  r.ack(4000);
+  r.ctr.total_retrans = 4;
+  r.max_snd_wnd = 3000;
+  AckInput in = r.input(4000);
+  in.dsack = Range{0, 3000};
+  in.dupack = true;
+  const AckOutcome o = r.run(in);
+  EXPECT_EQ(r.ctr.dsack_dups, 3u);
+  EXPECT_EQ(o.delivered, 3u);
+  EXPECT_NE(o.flags & utcp::ack_dsack, 0u);
+  EXPECT_EQ(r.stats.TcpExtTCPDSACKIgnoredDubious, 0u);
+}
+
 // Every M2 input of RecoveryCtx is filled for the hooks of one ACK
 // (M2-DESIGN §1.6 "Inputs", §1.7).
 TEST(AckPipeline, RecoveryCtxCarriesTheM2Inputs) {

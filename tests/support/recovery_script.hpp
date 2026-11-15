@@ -28,6 +28,7 @@ public:
   std::function<bool(Ctx&, bool)> burst_end;
   std::function<std::optional<std::pair<XmitTimer, Time>>(const Ctx&)> timer;
   std::function<bool(Ctx&, XmitTimer)> timer_fired;
+  std::optional<CaState> state;  // reported by LossRecovery::state() when set
 
   // One entry per hook call, in order: the hook name and, where the hook
   // has them, its arguments ("cwnd_reduction 3 0 1", "on_tlp_sent 1 1", ...).
@@ -66,6 +67,10 @@ public:
   }
   std::optional<std::pair<XmitTimer, Time>> xmit_timer(const Ctx& c) override {
     return timer ? timer(c) : std::nullopt;  // not logged: the engine asks often
+  }
+  [[nodiscard]] std::optional<CaState> ca_state() const override { return state; }
+  void on_cc_event(const CcConn&, CaEvent ev) override {
+    calls.push_back("cc_event " + std::to_string(static_cast<int>(ev)));
   }
   bool on_xmit_timer(Ctx& c, XmitTimer kind) override {
     calls.push_back("on_xmit_timer " + std::to_string(static_cast<int>(kind)));

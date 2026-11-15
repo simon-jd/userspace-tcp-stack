@@ -293,6 +293,13 @@ void LossRecovery::on_rto(RecoveryCtx& c) {
     const TxSeg& s = c.q.segs()[i];
     if (!s.sacked) {
       c.q.mark_lost(s.off);
+      if (s.retrans_inflight) {
+        // A retransmission of a segment that was not marked lost (RFC 6675
+        // NextSeg rules 3-4) is lost with the rest: the second mark counts it
+        // so (tcp_mark_skb_lost on a LOST|SACKED_RETRANS skb), and the lost
+        // loop resends the segment. Linux never has such a segment.
+        c.q.mark_lost(s.off);
+      }
     }
   }
   refresh(c);
@@ -439,7 +446,14 @@ std::uint32_t LossRecovery::reord_seen() const { return 0; }
 
 std::optional<std::uint64_t> LossRecovery::tlp_high_seq() const { return std::nullopt; }
 
-CaState LossRecovery::state() const { return state_; }
+CaState LossRecovery::state() const {
+  if (script_ != nullptr) {
+    if (const std::optional<CaState> s = script_->ca_state()) {
+      return *s;
+    }
+  }
+  return state_;
+}
 
 bool LossRecovery::fast_rexmit_pending() const { return fast_rexmit_pending_; }
 

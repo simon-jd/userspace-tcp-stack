@@ -21,7 +21,7 @@ TEST(TcpZeroWindowSim, PausedReaderIsProbed) {
       n.profile = profile;
     }
     s.node[1].rcv_buf = 64 * 1024;
-    ConnSpec c = bulk(1'000'000, 0, CloseMode::half_close);
+    ConnSpec c = bulk(1'000'000, 0);
     c.pause_every_s = 300'000;
     c.pause_s = 40s;
     s.conn.push_back(c);
@@ -89,10 +89,7 @@ TEST(TcpZeroWindowSim, PausedReaderIsProbed) {
 // about 1100 s). The answered probes reset the probe count (Linux tcp_ack
 // clears icsk_probes_out), so within one pause the sender probes on past
 // data_retries without aborting, under loss and reordering, and the
-// transfer completes. The client half-closes, so it stays a full socket
-// waiting for the server's EOF: a client that has written everything and
-// closed would be an orphan, whose probes Linux bounds by
-// tcp_orphan_retries (tcp_probe_timer), not data_retries.
+// transfer completes.
 TEST(TcpZeroWindowSim, AnsweredProbesNeverAbortPastTheRetryLimit) {
   for (const ProfileId profile : {ProfileId::linux_compat, ProfileId::rfc}) {
     SCOPED_TRACE(static_cast<int>(profile));
@@ -103,7 +100,7 @@ TEST(TcpZeroWindowSim, AnsweredProbesNeverAbortPastTheRetryLimit) {
     }
     s.app_idle_timeout = 3000s;
     s.node[1].rcv_buf = 64 * 1024;
-    ConnSpec c = bulk(1'000'000, 0, CloseMode::half_close);
+    ConnSpec c = bulk(1'000'000, 0);
     c.pause_every_s = 300'000;
     c.pause_s = 1000s;
     s.conn.push_back(c);

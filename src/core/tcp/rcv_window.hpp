@@ -106,11 +106,14 @@ public:
   // unused (kept for the interface).
   //
   // `read_upto` (an offset; 0: none): in-order data below it counts as read
-  // for the room (tcp_space). The engine passes RCV.NXT before the segment:
-  // a Linux reader runs alongside the softirq and has taken the earlier data,
-  // while the stack's application reads only after the host's whole receive
-  // batch, so counting that data would make the decision depend on the batch
-  // size (DESIGN §3; M2 coordinator decision on the ACK frequency).
+  // for the room (tcp_space). The engine passes the read offset plus the
+  // in-order data that arrived earlier in the current host batch
+  // (StackCore::host_batch): a Linux reader runs alongside the softirq and
+  // has taken that data, while the stack's application reads only after the
+  // host's whole receive batch, so counting it would make the decision
+  // depend on the batch size (DESIGN §3; M2 coordinator decision on the ACK
+  // frequency). Data left unread from earlier batches still counts, so a
+  // slow or stopped reader shrinks the room as in Linux.
   void on_in_order_data(std::uint32_t len, std::uint16_t rcv_mss, const RecvBuffer& rb,
                         std::uint64_t read_upto = 0);
   // The window state AckPolicy::on_window and on_read take (Linux

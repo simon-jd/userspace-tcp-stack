@@ -230,6 +230,7 @@ void DueTimerRunner::run(TimerHeap& heap, Time now, FunctionRef<void(const Fired
 
 void StackImpl::advance(Time now) {
   enter(now);
+  core.next_host_batch();
   const Time t = core.now();
   // §6: blocked producers first (not a timer), then every timer due at t in
   // (deadline, arm_seq) order, each handler run with t.

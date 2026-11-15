@@ -108,6 +108,12 @@ public:
     return std::nullopt;
   }
   virtual bool on_xmit_timer(RecoveryCtx&, XmitTimer) { return false; }
+  // The CaState state() reports (a state the stub never enters, such as CWR,
+  // for the ACK pipeline's tcp_in_cwnd_reduction test); nullopt: the real one.
+  [[nodiscard]] virtual std::optional<CaState> ca_state() const { return std::nullopt; }
+  // Observation only: a CA event the engine raised itself (tx_start), after
+  // the CC got it (LossRecovery::observe_cc_event).
+  virtual void on_cc_event(const CcConn&, CaEvent) {}
 
 protected:
   RecoveryScript() = default;
@@ -218,6 +224,13 @@ public:
   [[nodiscard]] std::optional<std::uint64_t> tlp_high_seq() const;
   // The test seam (RecoveryScript above); nullptr to remove.
   void set_script(RecoveryScript* script) noexcept { script_ = script; }
+  // The engine reports the CA events it raises outside LossRecovery (tx_start)
+  // to the test seam; nothing without a script.
+  void observe_cc_event(const CcConn& cc, CaEvent ev) {
+    if (script_ != nullptr) {
+      script_->on_cc_event(cc, ev);
+    }
+  }
 
   [[nodiscard]] CaState state() const;
   // The head segment must be resent as TxKind::fast_rexmit (exempt from the

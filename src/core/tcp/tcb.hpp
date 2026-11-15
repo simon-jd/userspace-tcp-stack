@@ -155,6 +155,11 @@ struct Tcb {
   TcpCounters ctr;
   Chrono chrono;
   Time last_data_recv, last_ack_recv;
+  // RCV.NXT (offset) when the current host batch brought its first segment
+  // (StackCore::host_batch, rx_batch_id): data below it that is still unread
+  // was left by the reader at an earlier chance to read.
+  std::uint64_t rx_batch_id = ~std::uint64_t{0};
+  std::uint64_t rx_batch_nxt = 0;
   std::uint16_t ip_id = 0;
 
   // Sequence numbers derived from the queues (§3.2).

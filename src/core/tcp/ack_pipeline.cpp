@@ -252,6 +252,12 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   if (in.old_ack) {
     return out;  // Linux old_ack: tcp_newly_delivered only, no rate sample, no CC
   }
+  if (prior_packets == 0) {
+    // Linux no_queue (tcp_input.c:4357-4358, 4413-4433): nothing was
+    // outstanding, so no rate sample, no tcp_cong_control (no PRR, no
+    // cong_avoid, no pacing-rate update); a D-SACK is still delivered.
+    return out;
+  }
   // tcp_rate_gen (Linux 7.0 tcp_input.c:1724), with rs.rtt = ca_rtt
   // (tcp_ack_update_rtt) and rs.is_ack_delayed (tcp_ack, 4404).
   c.sample = rate_gen(c.rate, rack, out.delivered, out.newly_lost, out.prior_in_flight,
