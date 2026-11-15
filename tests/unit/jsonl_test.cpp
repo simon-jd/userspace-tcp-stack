@@ -105,7 +105,7 @@ TEST(Jsonl, TraceEventKeys) {
       << s;
   EXPECT_NE(s.find("\"cwnd\":42,"), std::string::npos) << s;
   EXPECT_NE(s.find("\"srtt_us\":20113,\"rttvar_us\":0,\"rto_us\":-1,"), std::string::npos) << s;
-  EXPECT_TRUE(s.ends_with("\"snd_nxt_off\":0}")) << s;
+  EXPECT_TRUE(s.ends_with("\"snd_nxt_off\":0,\"gate_rate\":0,\"burst_start\":false}")) << s;
 }
 
 TEST(Jsonl, WriterWritesOneLinePerCall) {

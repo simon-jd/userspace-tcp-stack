@@ -16,8 +16,9 @@
 # and one line in $M1_RESULTS/rows.jsonl. row.json records the capture
 # directory ("captures_dir").
 #
-# Capture and analysis containers are named utcp-m1-accept-interop-* and
-# removed when they end. They share the network namespace of the testbed
+# Capture and analysis containers are named utcp-m1-accept-interop-* (with
+# UTCP_TB_PREFIX set to another prefix: <prefix>-interop-*) and removed when
+# they end. They share the network namespace of the testbed
 # container they watch (--network container:NAME), so the testbed scripts
 # are unchanged.
 #
@@ -39,7 +40,11 @@ M1_RESULTS=${M1_RESULTS:-$m1_repo/.logs/interop}
 m1_volume=utcp-data
 m1_voldir=${M1_VOLDIR:-m1-accept-interop/$(basename "$(realpath -m "$M1_RESULTS")")}
 m1_voldir=${m1_voldir%/}
-m1_prefix=utcp-m1-accept-interop
+if [[ $tb_prefix == utcp-m1 ]]; then
+  m1_prefix=utcp-m1-accept-interop
+else
+  m1_prefix=$tb_prefix-interop
+fi
 mkdir -p "$M1_RESULTS"
 
 m1_log() { echo "[$(date -u +%H:%M:%S)] $*"; }

@@ -104,13 +104,26 @@ public:
   // (tcp_data_queue_ofo); the engine may do the same. A rise is visible
   // through rcv_ssthresh() (AckPolicy::on_rcv_ssthresh_grew). rcv_mss is
   // unused (kept for the interface).
-  void on_in_order_data(std::uint32_t len, std::uint16_t rcv_mss, const RecvBuffer& rb);
+  //
+  // `read_upto` (an offset; 0: none): in-order data below it counts as read
+  // for the room (tcp_space). The engine passes the read offset plus the
+  // in-order data that arrived earlier in the current host batch
+  // (StackCore::host_batch): a Linux reader runs alongside the softirq and
+  // has taken that data, while the stack's application reads only after the
+  // host's whole receive batch, so counting it would make the decision
+  // depend on the batch size (DESIGN §3; M2 coordinator decision on the ACK
+  // frequency). Data left unread from earlier batches still counts, so a
+  // slow or stopped reader shrinks the room as in Linux.
+  void on_in_order_data(std::uint32_t len, std::uint16_t rcv_mss, const RecvBuffer& rb,
+                        std::uint64_t read_upto = 0);
   // The window state AckPolicy::on_window and on_read take (Linux
   // __tcp_select_window as __tcp_ack_snd_check and tcp_select_window see
   // it): data unread, the window before the SWS rule (rounded down) at least
   // last_window(), less than half the buffer free, and out-of-order data
-  // held.
-  [[nodiscard]] RcvWindowView ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss) const;
+  // held. `read_upto` as for on_in_order_data: in-order data below it counts
+  // as read for not_shrinking and low_space (`unread` stays the buffer's).
+  [[nodiscard]] RcvWindowView ack_view(const RecvBuffer& rb, std::uint16_t rcv_mss,
+                                       std::uint64_t read_upto = 0) const;
 
   // After the application read: whether a window update should be sent now
   // (window_update_after_read: rfc when the edge can move by >= min(rcv_buf /
@@ -148,6 +161,9 @@ private:
   [[nodiscard]] std::uint32_t compute(const RecvBuffer& rb, std::uint16_t rcv_mss) const;
   // The window before the SWS rule: free space, or Linux's target.
   [[nodiscard]] std::uint64_t target(const RecvBuffer& rb, std::uint16_t rcv_mss) const;
+  // The same for `free` bytes of free space in a buffer of `full` bytes.
+  [[nodiscard]] std::uint64_t target_of(std::uint64_t free, std::uint64_t full,
+                                        std::uint16_t rcv_mss) const;
   void rtt_update(Duration sample, bool win_dep, bool queue_empty);
   [[nodiscard]] std::optional<std::uint32_t> rcvbuf_grow(std::uint32_t copied);
 

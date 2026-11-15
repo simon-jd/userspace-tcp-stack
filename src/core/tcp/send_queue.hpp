@@ -122,9 +122,15 @@ public:
   // `fin` for a FIN riding on it, or len == 0 for a bare FIN at end()) and
   // advances nxt(). Retransmission: off and len are those of an existing
   // TxSeg; tx_count, last_tx, retrans flags and counters are updated. The rate
-  // snapshot is taken from `rate` (call rate_on_send first).
+  // snapshot is taken from `rate` (call rate_on_send first). `probe`: a
+  // loss-probe retransmission (Linux __tcp_retransmit_skb called directly by
+  // tcp_send_loss_probe): tx_count, last_tx, ever_retrans, the byte totals
+  // and the rate snapshot as for any retransmission, but retrans_inflight and
+  // retrans_out stay as they were (TCPCB_SACKED_RETRANS and retrans_out are
+  // set only by the tcp_retransmit_skb wrapper), and the TxSeg may be SACKed
+  // (Linux probes with the last skb whatever its SACK state).
   TxSeg& on_transmit(std::uint64_t off, std::uint32_t len, bool fin, Time now,
-                     const RateState& rate);
+                     const RateState& rate, bool probe = false);
 
   // Both call `fn` once per newly delivered segment, in sequence order, before
   // it is popped. `new_una` is clipped to end() by the caller. A TxSeg is

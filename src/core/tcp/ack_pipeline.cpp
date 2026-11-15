@@ -16,6 +16,11 @@ namespace {
 // Linux tcp_ack_update_rtt: delta < INT_MAX / (USEC_PER_SEC / TCP_TS_HZ).
 constexpr std::uint32_t tsecr_max_delta = 2'147'483;
 
+std::uint32_t saturate_u32(std::uint64_t v) {
+  return v > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
+                                                       : static_cast<std::uint32_t>(v);
+}
+
 void refresh_views(AckContext& c, Time now) {
   const Counters& k = c.q.counters();
   c.cc.ca_state = c.recovery.state();
@@ -29,11 +34,35 @@ void refresh_views(AckContext& c, Time now) {
   c.cc.delivered_time = c.rate.delivered_time;
   c.cc.srtt = c.rtt.srtt();
   c.cc.min_rtt = c.rtt.min_rtt();
+  c.cc.app_limited = c.rate.app_limited;  // one value (M2-DESIGN §2.1 item 7)
 }
 
-std::uint32_t saturate_u32(std::uint64_t v) {
-  return v > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
-                                                       : static_cast<std::uint32_t>(v);
+// Linux tcp_dsack_seen (tcp_input.c:1233): the number of segments a D-SACK
+// block counts as delivered, 0 if it is dubious. Flags go to out.
+std::uint32_t dsack_seen(AckContext& c, const LossRecovery& rec, Range d, AckOutcome& out) {
+  if (d.empty()) {
+    return 0;
+  }
+  const std::uint64_t len = d.end - d.begin;
+  // Dubious: longer than the largest window the peer advertised.
+  if (len > c.max_snd_wnd) {
+    return 0;
+  }
+  const std::uint64_t mss = std::max<std::uint64_t>(c.cc.mss, 1);
+  std::uint64_t dup_segs = 1;
+  if (len > mss) {
+    dup_segs = (len + mss - 1) / mss;
+  } else if (const auto tlp = rec.tlp_high_seq(); tlp && *tlp == d.end) {
+    out.flags |= ack_dsack_tlp;  // FLAG_DSACK_TLP
+  }
+  // Counted before the test, as Linux: the sum stays above total_retrans
+  // once duplicates the sender did not cause have arrived.
+  c.ctr.dsack_dups += dup_segs;
+  if (c.ctr.dsack_dups > c.ctr.total_retrans) {
+    return 0;  // not caused by our retransmissions
+  }
+  out.flags |= ack_dsack;  // FLAG_DSACKING_ACK
+  return saturate_u32(dup_segs);
 }
 
 }  // namespace
@@ -73,10 +102,18 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
       blocks[nblocks++] = r;
     }
   }
+  // D-SACK (RFC 2883; Linux tcp_check_dsack, tcp_dsack_seen; M2-DESIGN §1.6).
+  // TCPDSACKRecv counts D-SACK blocks; a valid one counts its segments as
+  // delivered ("a spurious retransmission is delivered").
+  std::uint32_t dsack_delivered = 0;
   if (in.dsack) {
     ++c.stats.TcpExtTCPDSACKRecv;
-    ++c.ctr.dsack_dups;
-    out.flags |= ack_dsack;
+    dsack_delivered = dsack_seen(c, c.recovery, *in.dsack, out);
+    if (dsack_delivered > 0) {
+      c.stats.TcpExtTCPDSACKRecvSegs += dsack_delivered;
+    } else {
+      ++c.stats.TcpExtTCPDSACKIgnoredDubious;
+    }
   }
 
   const std::uint32_t prior_packets = q.counters().packets_out;
@@ -86,6 +123,13 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
 
   RecoveryCtx rctx{q,       c.cc,     c.algo,  c.rtt,   c.cfg,      now,
                    c.snd_wnd, c.stats, c.sack_ok, c.backoff, c.rto_count};
+  rctx.in = &in;
+  rctx.ts_offset = c.ts_offset;
+  rctx.max_snd_wnd = c.max_snd_wnd;
+  rctx.total_retrans = c.ctr.total_retrans;
+  rctx.dsack_dups = c.ctr.dsack_dups;
+  rctx.delivered = c.rate.delivered;
+  rctx.pacing_delay = c.pacing_delay;
   const std::optional<std::uint64_t> recover = c.recovery.recover();
 
   // Per newly delivered segment (tcp_sacktag_one, tcp_clean_rtx_queue).
@@ -124,7 +168,7 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
     // tcp_remove_reno_sacks: one ACK acked the hole, the rest ate dupacks.
     cum_delivered = std::max(acked.pkts - std::min(acked.pkts, sacked_before_cum), 1u);
   }
-  out.delivered = out.newly_sacked + cum_delivered;
+  out.delivered = out.newly_sacked + cum_delivered + dsack_delivered;
   const std::uint64_t una_fin = q.una_with_fin();
   if (una_fin > prior_una_fin) {
     out.flags |= ack_una_advanced;
@@ -182,6 +226,11 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   out.seq_rtt = seq_rtt;
   out.ca_rtt = ca_rtt;
 
+  // The rate snapshot recovery reads (tcp_rack_update_reo_wnd).
+  rctx.has_prior = rack.has_prior;
+  rctx.prior_delivered = rack.prior_delivered;
+  rctx.delivered = c.rate.delivered;
+
   refresh_views(c, now);
   if (prior_packets > 0 && !in.old_ack) {
     AckSample sample;
@@ -195,6 +244,7 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   // Loss detection and the CaState (tcp_fastretrans_alert), timers.
   c.recovery.on_ack(rctx, in, out);
   c.rate.delivered += out.delivered - delivered_before_recovery;  // reno dupacks
+  rctx.delivered = c.rate.delivered;
   out.newly_lost = saturate_u32(q.lost_total() - prior_lost);
   out.in_flight = packets_in_flight(q.counters());
   c.stats.TcpExtTCPDelivered += out.delivered;
@@ -202,26 +252,39 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   if (in.old_ack) {
     return out;  // Linux old_ack: tcp_newly_delivered only, no rate sample, no CC
   }
-  const RateSample rs = rate_gen(c.rate, rack, out.delivered, out.newly_lost, out.prior_in_flight,
-                                 prior_sack_reneg, c.rtt.min_rtt(), now);
+  if (prior_packets == 0) {
+    // Linux no_queue (tcp_input.c:4357-4358, 4413-4433): nothing was
+    // outstanding, so no rate sample, no tcp_cong_control (no PRR, no
+    // cong_avoid, no pacing-rate update); a D-SACK is still delivered.
+    return out;
+  }
+  // tcp_rate_gen (Linux 7.0 tcp_input.c:1724), with rs.rtt = ca_rtt
+  // (tcp_ack_update_rtt) and rs.is_ack_delayed (tcp_ack, 4404).
+  c.sample = rate_gen(c.rate, rack, out.delivered, out.newly_lost, out.prior_in_flight,
+                      prior_sack_reneg, c.rtt.min_rtt(), out.ca_rtt,
+                      (out.flags & ack_maybe_delayed) != 0, now);
+  out.rs = &c.sample;
+  const RateSample& rs = c.sample;
 
-  // tcp_cong_control.
+  // tcp_cong_control (tcp_input.c:3858).
   refresh_views(c, now);
   if (c.algo.has_cong_control()) {
     c.algo.cong_control(c.cc, out, rs);
-  } else {
-    const CaState s = c.recovery.state();
-    if (s != CaState::cwr && s != CaState::recovery && acked.pkts > 0) {  // tcp_may_raise_cwnd
-      const bool limited = c.cc.cwnd_limited;
-      if (!c.cfg.cwnd_growth_needs_cwnd_limited) {
-        c.cc.cwnd_limited = true;
-      }
-      c.algo.cong_avoid(c.cc, out);
-      c.cc.cwnd_limited = limited;
-    }
-    c.cc.pacing_rate = pacing_rate_for(c.cc, q.counters().packets_out, c.cfg);
+    c.rate.app_limited = c.cc.app_limited;  // BBR's PROBE_RTT write (§2.1 item 7)
+    return out;  // the CC set the pacing rate itself
   }
-  out.rs = nullptr;  // M2b
+  const CaState s = c.recovery.state();
+  if (s == CaState::cwr || s == CaState::recovery) {  // tcp_in_cwnd_reduction
+    c.recovery.cwnd_reduction(rctx, out.delivered, rs.losses, out.flags);
+  } else if (c.recovery.may_raise_cwnd(rctx, out)) {
+    const bool limited = c.cc.cwnd_limited;
+    if (!c.cfg.cwnd_growth_needs_cwnd_limited) {
+      c.cc.cwnd_limited = true;
+    }
+    c.algo.cong_avoid(c.cc, out);
+    c.cc.cwnd_limited = limited;
+  }
+  c.cc.pacing_rate = pacing_rate_for(c.cc, q.counters().packets_out, c.cfg);  // tcp_update_pacing_rate
   return out;
 }
 

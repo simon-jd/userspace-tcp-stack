@@ -223,7 +223,7 @@ TEST(CcNewreno, StorageAndCurrentSsthresh) {
   EXPECT_EQ(utcp::cc_of(s).name(), "newreno");
   EXPECT_FALSE(utcp::cc_of(s).has_cong_control());
   EXPECT_EQ(utcp::cc_of(s).sndbuf_expand(), 2u);
-  EXPECT_EQ(utcp::cc_of(s).min_tso_segs(), 2u);
+  EXPECT_EQ(utcp::cc_of(s).min_tso_segs(utcp::CcConn{}), 2u);
   EXPECT_DEATH(utcp::cc_select(s, utcp::CcAlgo::cubic), "");
   CcConn c = conn(40, 10);
   EXPECT_EQ(utcp::current_ssthresh(c), 30u);  // 3/4 cwnd

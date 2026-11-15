@@ -48,7 +48,7 @@ void rate_on_delivered(RateState& rs, RateAck& ack, const TxSeg& seg, Time now) 
 
 RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacked,
                     std::uint32_t lost, std::uint32_t prior_in_flight, bool is_sack_reneg,
-                    Duration min_rtt, Time now) {
+                    Duration min_rtt, Duration ca_rtt, bool maybe_delayed, Time now) {
   // Clear the app-limited marker once the bubble is delivered.
   if (rs.app_limited != 0 && rs.delivered > rs.app_limited) {
     rs.app_limited = 0;
@@ -63,6 +63,8 @@ RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacke
   s.prior_delivered = ack.prior_delivered;
   s.is_app_limited = ack.is_app_limited;
   s.is_retrans = ack.is_retrans;
+  s.rtt = ca_rtt < Duration::zero() ? Duration{-1} : ca_rtt;  // tcp_ack_update_rtt
+  s.is_ack_delayed = maybe_delayed;                           // tcp_ack
   // No timing information, or SACK reneging (samples could count packets
   // SACKed before the reneging): invalid.
   if (!ack.has_prior || is_sack_reneg) {
@@ -81,6 +83,13 @@ RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacke
   }
   s.valid = true;
   return s;
+}
+
+std::uint64_t rate_delivery_rate(const RateState& rs, std::uint32_t mss) {
+  // m2b-rate-pacing: tcp_compute_delivery_rate from the record.
+  static_cast<void>(rs);
+  static_cast<void>(mss);
+  return 0;
 }
 
 void rate_check_app_limited(RateState& rs, std::uint64_t unsent_bytes, std::uint32_t mss,

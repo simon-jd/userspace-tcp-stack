@@ -5,7 +5,8 @@
 # takes the stack's place on a forwarded path with the same netem:
 #
 #   utcp-m1-peer 198.19.1.3 -- utcp-m1-net -- DUT eth0 198.19.1.2
-#   DUT 198.19.9.2 -- utcp-m1-accept-interop-refnet 198.19.9.0/24 (MTU 1500)
+#   DUT 198.19.9.2 -- utcp-m1-accept-interop-refnet 198.19.9.0/24 (MTU 1500;
+#        names and subnet follow UTCP_TB_PREFIX and UTCP_TB_NET_BASE, see below)
 #        -- 198.19.9.3 utcp-m1-accept-interop-ref (the Linux receiver)
 #
 # netem.sh's profile is on the DUT's eth0 egress (the receiver's ACKs) and
@@ -36,10 +37,19 @@ source "$(dirname "${BASH_SOURCE[0]}")/m1_lib.sh"
 port=5002
 ref=$m1_prefix-ref
 refnet=$m1_prefix-refnet
-refnet_subnet=198.19.9.0/24
-refnet_gw=198.19.9.1
-dut_ref_ip=198.19.9.2
-ref_ip=198.19.9.3
+# The receiver's subnet: 198.19.9.0/24 with the default subnet base, otherwise
+# the base + 3 (the /24 after the testbed's three), so a task with its own
+# UTCP_TB_NET_BASE does not share it.
+if ((tb_net_base == 1)); then
+  ref_o=9
+else
+  ref_o=$((tb_net_base + 3))
+  ((ref_o <= 254)) || tb_die "UTCP_TB_NET_BASE $tb_net_base leaves no subnet for the reference receiver"
+fi
+refnet_subnet=198.19.$ref_o.0/24
+refnet_gw=198.19.$ref_o.1
+dut_ref_ip=198.19.$ref_o.2
+ref_ip=198.19.$ref_o.3
 
 all_cases() {
   printf '%s\n' R-N0-l2l R-N1-l2l R-N3-l2l R-N4-l2l R-N4-100M-1-l2l R-N4-100M-2-l2l R-N4-100M-3-l2l \

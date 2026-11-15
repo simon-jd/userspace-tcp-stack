@@ -78,6 +78,13 @@ public:
   // monotonicity check (§3.4 item 4).
   [[nodiscard]] Time now() const noexcept { return now_; }
   void set_now(Time now) noexcept { now_ = now; }
+  // Host batches (§3.4, §8.2): every advance() starts one; the receives
+  // until the next advance() belong to it. The receiver's ACK decision counts
+  // the data a connection got earlier in the current batch as taken by the
+  // reader (RcvWindow::ack_view), as the host's application reads only after
+  // the batch.
+  [[nodiscard]] std::uint64_t host_batch() const noexcept { return host_batch_; }
+  void next_host_batch() noexcept { ++host_batch_; }
   // The runtime stream (test knobs such as test_renege_ppm; BBR in M2c).
   [[nodiscard]] Rng& rng() noexcept { return rng_; }
   // Key of the connection and TIME_WAIT tables (SipHash-1-3, §4.3).
@@ -223,6 +230,7 @@ private:
   StackConfig cfg_;
   StackStats stats_;
   Time now_;
+  std::uint64_t host_batch_ = 0;
   Rng rng_;
   TimerHeap timers_;
   ChunkPool chunks_;

@@ -258,7 +258,10 @@ void LossRecovery::on_transmit(RecoveryCtx& c, const TxSeg& seg, TxKind kind) {
   }
 }
 
-void LossRecovery::on_burst_end(RecoveryCtx& c) {
+void LossRecovery::on_burst_end(RecoveryCtx& c, bool new_data_sent) {
+  if (script_ != nullptr && script_->on_burst_end(c, new_data_sent)) {
+    return;
+  }
   if (c.q.counters().packets_out > 0) {
     if (timer_ != XmitTimer::rto) {
       arm(XmitTimer::rto, c.now + c.rtt.rto_backed_off(c.backoff));
@@ -290,6 +293,13 @@ void LossRecovery::on_rto(RecoveryCtx& c) {
     const TxSeg& s = c.q.segs()[i];
     if (!s.sacked) {
       c.q.mark_lost(s.off);
+      if (s.retrans_inflight) {
+        // A retransmission of a segment that was not marked lost (RFC 6675
+        // NextSeg rules 3-4) is lost with the rest: the second mark counts it
+        // so (tcp_mark_skb_lost on a LOST|SACKED_RETRANS skb), and the lost
+        // loop resends the segment. Linux never has such a segment.
+        c.q.mark_lost(s.off);
+      }
     }
   }
   refresh(c);
@@ -336,17 +346,114 @@ void LossRecovery::on_pmtu_drop(RecoveryCtx& c) {
   refresh(c);
 }
 
-std::pair<XmitTimer, Time> LossRecovery::xmit_timer(const RecoveryCtx&) const {
+std::pair<XmitTimer, Time> LossRecovery::xmit_timer(const RecoveryCtx& c) const {
+  if (script_ != nullptr) {
+    if (auto t = script_->xmit_timer(c)) {
+      return *t;
+    }
+  }
   return {timer_, deadline_};
 }
 
-void LossRecovery::on_xmit_timer(RecoveryCtx&, XmitTimer kind) {
+void LossRecovery::on_xmit_timer(RecoveryCtx& c, XmitTimer kind) {
+  if (script_ != nullptr && script_->on_xmit_timer(c, kind)) {
+    return;
+  }
   if (kind == timer_) {
     arm(XmitTimer::none, Time::never());
   }
 }
 
-CaState LossRecovery::state() const { return state_; }
+// ---- M2 hooks: m2-found stubs with M1 behaviour (m2a-recovery replaces
+// them, M2-DESIGN §1.4-1.9).
+
+void LossRecovery::cwnd_reduction(RecoveryCtx& c, std::uint32_t newly_acked_sacked,
+                                  std::uint32_t newly_lost, std::uint32_t flags) {
+  if (script_ != nullptr && script_->cwnd_reduction(c, newly_acked_sacked, newly_lost, flags)) {
+    return;
+  }
+  // M1: cwnd = ssthresh was set on entering Recovery; nothing per ACK.
+}
+
+bool LossRecovery::may_raise_cwnd(const RecoveryCtx& c, const AckOutcome& out) const {
+  if (script_ != nullptr) {
+    if (const auto r = script_->may_raise_cwnd(c, out)) {
+      return *r;
+    }
+  }
+  return out.acked_pkts > 0;  // tcp_may_raise_cwnd, FLAG_DATA_ACKED
+}
+
+std::optional<std::uint64_t> LossRecovery::next_seg_extra(RecoveryCtx& c) {
+  if (script_ != nullptr) {
+    if (auto r = script_->next_seg_extra(c)) {
+      return *r;
+    }
+  }
+  return std::nullopt;
+}
+
+TlpAction LossRecovery::on_pto(RecoveryCtx& c) {
+  if (script_ != nullptr) {
+    if (const auto r = script_->on_pto(c)) {
+      return *r;
+    }
+  }
+  return TlpAction::none;
+}
+
+void LossRecovery::on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent) {
+  if (script_ != nullptr && script_->on_tlp_sent(c, action, sent)) {
+    return;
+  }
+  // tcp_send_loss_probe ends in tcp_rearm_rto (Linux 7.0 tcp_output.c:3227-3230,
+  // tcp_input.c:3524-3549). A sent probe cleared the pending timer first, so
+  // the RTO is a full one from now; otherwise the PTO is still pending and the
+  // RTO gets the time left to the head's RTO (tcp_rto_delta_us), at least one
+  // jiffy and rounded up to whole jiffies (usecs_to_jiffies, HZ 1000). Both
+  // add the pacing delay (pace_delay = true), truncated to whole ms. M1 never
+  // arms a PTO, so the stub is reached only through the test seam; m2a keeps
+  // or replaces it with the rest of the TLP state (M2-DESIGN §1.7).
+  (void)action;
+  const auto segs = c.q.segs();
+  if (c.q.counters().packets_out == 0 || segs.empty()) {
+    timer_after_ack(c);
+    return;
+  }
+  const Duration rto = c.rtt.rto_backed_off(c.backoff);
+  constexpr Duration jiffy = std::chrono::milliseconds{1};
+  Duration d = rto;
+  if (!sent) {
+    const Duration left = std::max(segs.front().last_tx + rto - c.now, Duration{1});
+    d = (left + jiffy - Duration{1}) / jiffy * jiffy;
+  }
+  d += c.pacing_delay / jiffy * jiffy;
+  arm(XmitTimer::rto, c.now + d);
+}
+
+bool LossRecovery::exempt_from_cwnd(const RecoveryCtx& c, const TxSeg& seg) const {
+  if (script_ != nullptr) {
+    if (const auto r = script_->exempt_from_cwnd(c, seg)) {
+      return *r;
+    }
+  }
+  return fast_rexmit_pending_ && seg.off == c.q.una();
+}
+
+std::uint32_t LossRecovery::reordering(const TcpConfig& cfg) const { return cfg.dupthresh; }
+
+std::uint32_t LossRecovery::reord_seen() const { return 0; }
+
+std::optional<std::uint64_t> LossRecovery::tlp_high_seq() const { return std::nullopt; }
+
+CaState LossRecovery::state() const {
+  if (script_ != nullptr) {
+    if (const std::optional<CaState> s = script_->ca_state()) {
+      return *s;
+    }
+  }
+  return state_;
+}
 
 bool LossRecovery::fast_rexmit_pending() const { return fast_rexmit_pending_; }
 

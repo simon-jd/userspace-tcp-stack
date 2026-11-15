@@ -86,7 +86,7 @@ void SendQueue::snapshot(TxSeg& seg, const RateState& rate) const {
 }
 
 TxSeg& SendQueue::on_transmit(std::uint64_t off, std::uint32_t len, bool fin, Time now,
-                              const RateState& rate) {
+                              const RateState& rate, bool probe) {
   const bool new_data = off == nxt_ && (len > 0 || !fin_sent_);
   if (new_data) {
     UTCP_CHECK(len > 0 || fin);
@@ -113,13 +113,13 @@ TxSeg& SendQueue::on_transmit(std::uint64_t off, std::uint32_t len, bool fin, Ti
   TxSeg* seg = find_mut(off);
   UTCP_CHECK(seg != nullptr);
   UTCP_CHECK(seg->len == len && seg->fin == fin);
-  UTCP_CHECK(!seg->sacked);
+  UTCP_CHECK(probe || !seg->sacked);
   if (seg->tx_count < 0xffff) {
     ++seg->tx_count;
   }
   seg->last_tx = now;
   seg->ever_retrans = true;
-  if (!seg->retrans_inflight) {
+  if (!probe && !seg->retrans_inflight) {
     seg->retrans_inflight = true;
     ++ctr_.retrans_out;
   }

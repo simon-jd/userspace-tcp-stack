@@ -412,7 +412,11 @@ std::expected<TcpInfo, Error> TcpEngine::tcp_info(Handle h) const {
   i.data_segs_in = t.ctr.data_segs_in;
   i.pacing_rate = t.cc_conn.pacing_rate;
   i.delivered = t.rate.delivered;
-  i.app_limited = t.rate.app_limited != 0;
+  // tcpi_delivery_rate and tcpi_delivery_rate_app_limited come from the
+  // record tcp_rate_gen keeps (M2-DESIGN §2.6; tcp_get_info,
+  // tcp_compute_delivery_rate), not from tp->app_limited.
+  i.delivery_rate = rate_delivery_rate(t.rate, t.mss_cache);
+  i.app_limited = t.rate.rate_app_limited;
   // Linux tcp_get_info_chrono_stats: the running interval counts too.
   std::array<Duration, 4> total = t.chrono.total;
   if (t.chrono.type != ChronoType::none) {
@@ -427,8 +431,9 @@ std::expected<TcpInfo, Error> TcpEngine::tcp_info(Handle h) const {
   i.retrans = k.retrans_out;
   i.total_retrans = static_cast<std::uint32_t>(t.ctr.total_retrans);
   i.dsack_dups = static_cast<std::uint32_t>(t.ctr.dsack_dups);
-  i.reordering = cfg_.dupthresh;
-  i.reord_seen = static_cast<std::uint32_t>(t.ctr.reord_seen);
+  // Adaptive reordering is recovery's (M2-DESIGN §1.9).
+  i.reordering = t.recovery.reordering(cfg_);
+  i.reord_seen = t.recovery.reord_seen();
   i.rcv_rtt = t.rwin.rcv_rtt();
   i.rcv_space = t.rwin.rcv_space();
   i.rcv_ssthresh = t.rwin.rcv_ssthresh();

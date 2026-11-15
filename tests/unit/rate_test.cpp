@@ -106,10 +106,10 @@ TEST(Rate, AppLimitedMarkerClearsOnceDeliveredPassesIt) {
   ASSERT_EQ(rs.app_limited, 54u);
   const RateAck none;
   rs.delivered = 54;
-  utcp::rate_gen(rs, none, 4, 0, 4, false, 1ms, at(1s));
+  utcp::rate_gen(rs, none, 4, 0, 4, false, 1ms, Duration{-1}, false, at(1s));
   EXPECT_EQ(rs.app_limited, 54u);  // not past it yet
   rs.delivered = 55;
-  utcp::rate_gen(rs, none, 1, 0, 1, false, 1ms, at(2s));
+  utcp::rate_gen(rs, none, 1, 0, 1, false, 1ms, Duration{-1}, false, at(2s));
   EXPECT_EQ(rs.app_limited, 0u);
 }
 
@@ -149,7 +149,7 @@ TEST(Rate, SampleValidity) {
   rs.first_tx_time = at(0ms);
   // Without a prior snapshot: invalid.
   RateAck none;
-  RateSample s = utcp::rate_gen(rs, none, 2, 0, 5, false, 1ms, at(30ms));
+  RateSample s = utcp::rate_gen(rs, none, 2, 0, 5, false, 1ms, Duration{-1}, false, at(30ms));
   EXPECT_FALSE(s.valid);
   EXPECT_EQ(s.interval, Duration{-1});
   EXPECT_EQ(s.acked_sacked, 2u);
@@ -161,7 +161,7 @@ TEST(Rate, SampleValidity) {
   utcp::rate_on_delivered(rs, ack, seg(0, 1000, at(5ms), 10, at(0ms), at(0ms)), at(30ms));
   rs.delivered = 20;
   // Valid: interval = max(send 5 ms, ack 30 ms) = 30 ms >= min_rtt 20 ms.
-  s = utcp::rate_gen(rs, ack, 10, 1, 12, false, 20ms, at(30ms));
+  s = utcp::rate_gen(rs, ack, 10, 1, 12, false, 20ms, Duration{-1}, false, at(30ms));
   EXPECT_TRUE(s.valid);
   EXPECT_EQ(s.delivered, 10u);
   EXPECT_EQ(s.prior_delivered, 10u);
@@ -169,19 +169,19 @@ TEST(Rate, SampleValidity) {
   EXPECT_EQ(s.losses, 1u);
   EXPECT_EQ(s.prior_in_flight, 12u);
   // While reneging: invalid.
-  s = utcp::rate_gen(rs, ack, 10, 0, 12, true, 20ms, at(30ms));
+  s = utcp::rate_gen(rs, ack, 10, 0, 12, true, 20ms, Duration{-1}, false, at(30ms));
   EXPECT_FALSE(s.valid);
   // Interval below min_rtt: invalid (and before any min_rtt sample).
-  s = utcp::rate_gen(rs, ack, 10, 0, 12, false, 31ms, at(30ms));
+  s = utcp::rate_gen(rs, ack, 10, 0, 12, false, 31ms, Duration{-1}, false, at(30ms));
   EXPECT_FALSE(s.valid);
   EXPECT_EQ(s.interval, Duration{-1});
-  s = utcp::rate_gen(rs, ack, 10, 0, 12, false, Duration::max(), at(30ms));
+  s = utcp::rate_gen(rs, ack, 10, 0, 12, false, Duration::max(), Duration{-1}, false, at(30ms));
   EXPECT_FALSE(s.valid);
   // The send phase wins when it is longer (ACK compression).
   RateAck ack2;
   rs.first_tx_time = at(0ms);
   utcp::rate_on_delivered(rs, ack2, seg(0, 1000, at(40ms), 10, at(25ms), at(0ms)), at(30ms));
-  s = utcp::rate_gen(rs, ack2, 10, 0, 12, false, 20ms, at(30ms));
+  s = utcp::rate_gen(rs, ack2, 10, 0, 12, false, 20ms, Duration{-1}, false, at(30ms));
   EXPECT_TRUE(s.valid);
   EXPECT_EQ(s.interval, 40ms);
 }

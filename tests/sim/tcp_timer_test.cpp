@@ -252,7 +252,9 @@ TEST(TcpTimerSim, NagleOnAndOff) {
 // RFC 6298 §5.5-5.6, Karn: under 20 % loss each RTO expiry doubles the RTO
 // (up to rto_max) until a new RTT sample from never-retransmitted data; an
 // expiry right after another keeps ssthresh (§5.3, RFC 5681 §3.1 / Linux
-// tcp_enter_loss); SND.NXT never moves back (P6).
+// tcp_enter_loss); SND.NXT never moves back (P6). The rto event is traced
+// before the expiry is handled, so it shows the ssthresh the previous expiry
+// left, and the head's rto_rexmit the one this expiry set.
 TEST(TcpTimerSim, RtoBackoffUnderHeavyLoss) {
   for (const ProfileId profile : {ProfileId::rfc, ProfileId::linux_compat}) {
     SCOPED_TRACE(static_cast<int>(profile));
@@ -264,6 +266,7 @@ TEST(TcpTimerSim, RtoBackoffUnderHeavyLoss) {
     const TcpConfig cfg = tcp_config(profile);
     int doubled = 0, kept = 0;
     std::optional<TraceEvent> last_rto;
+    std::optional<std::uint32_t> keep;  // ssthresh a back-to-back expiry must keep
     std::uint64_t high_nxt = 0;
     bool sample_since = false;
     for (const Rec& r : o.trace) {
@@ -274,6 +277,11 @@ TEST(TcpTimerSim, RtoBackoffUnderHeavyLoss) {
       if (e.kind == TraceKind::tx) {
         EXPECT_GE(e.snd_nxt_off, high_nxt);
         high_nxt = std::max(high_nxt, e.snd_nxt_off);
+        if (keep && e.tx == TxKind::rto_rexmit) {
+          EXPECT_EQ(e.ssthresh, *keep);
+          kept += 1;
+          keep.reset();
+        }
       }
       if (e.kind == TraceKind::rtt) {
         sample_since = true;
@@ -284,12 +292,12 @@ TEST(TcpTimerSim, RtoBackoffUnderHeavyLoss) {
       if (e.kind != TraceKind::rto) {
         continue;
       }
+      keep.reset();
       if (last_rto && !sample_since) {
         EXPECT_EQ(e.rto_ns, std::min<std::int64_t>(2 * last_rto->rto_ns, cfg.rto_max.count()));
         doubled += 1;
         if (e.snd_una_off == last_rto->snd_una_off) {
-          EXPECT_EQ(e.ssthresh, last_rto->ssthresh);
-          kept += 1;
+          keep = e.ssthresh;
         }
       }
       last_rto = e;

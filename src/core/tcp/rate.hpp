@@ -1,5 +1,7 @@
-// Delivery-rate state and samples (DESIGN §5.3, §5.4; Linux tcp_rate.c).
-// Interface declared by m1-found; implemented by m1-tx (rate.cpp).
+// Delivery-rate state and samples (DESIGN §5.3, §5.4; Linux tcp_rate.c,
+// whose functions Linux 7.0 moved into tcp_input.c, tcp_output.c and tcp.c).
+// Interface declared by m1-found and extended by m2-found (M2-DESIGN §2.6);
+// implemented by m1-tx, then m2b-rate-pacing (rate.cpp).
 //
 // M1 keeps the per-connection state and the per-segment snapshots (TxSeg)
 // and counts `delivered`; samples are computed from M2b. Linux uses 0 as
@@ -24,6 +26,12 @@ struct RateState {
   // tp->app_limited: 0 = not application-limited, else the `delivered` value
   // (delivered + in_flight, or 1) below which samples are app-limited (§5.4).
   std::uint64_t app_limited = 0;
+  // The record kept for tcpi_delivery_rate (tcp_rate_gen, Linux 7.0
+  // tcp_input.c:1791-1797: tp->rate_delivered, rate_interval_us,
+  // rate_app_limited). Filled by m2b-rate-pacing; stays zero until then.
+  std::uint64_t rate_delivered = 0;  // packets
+  Duration rate_interval{0};
+  bool rate_app_limited = false;
 };
 
 // One rate sample per ACK (tcp_rate_gen, §5.4).
@@ -39,7 +47,7 @@ struct RateSample {
   std::uint32_t prior_in_flight = 0;
   bool is_app_limited = false;
   bool is_retrans = false;            // the newest delivered segment was retransmitted
-  bool is_ack_delayed = false;
+  bool is_ack_delayed = false;        // AckFlag ack_maybe_delayed (tcp_ack, FLAG_ACK_MAYBE_DELAYED)
 
   bool operator==(const RateSample&) const = default;
 };
@@ -69,11 +77,20 @@ void rate_on_send(RateState& rs, std::uint32_t packets_out, Time now);
 // SACKed segment's snapshot used (TxSeg::rate_used) is SendQueue's.
 void rate_on_delivered(RateState& rs, RateAck& ack, const TxSeg& seg, Time now);
 
-// tcp_rate_gen: the sample for one ACK. `delivered_now` is RateState::
-// delivered after this ACK, `lost` the packets newly marked lost.
+// tcp_rate_gen: the sample for one ACK, with RateState::delivered already
+// counting this ACK. `lost` is the packets newly marked lost, `ca_rtt` the
+// ACK's ca_rtt (-1: none) and `maybe_delayed` its ack_maybe_delayed flag:
+// they become rs.rtt (tcp_ack_update_rtt sets rs->rtt_us = ca_rtt_us) and
+// rs.is_ack_delayed (tcp_ack), whether or not the sample is valid. Also
+// keeps the delivery-rate record (RateState::rate_*; m2b-rate-pacing).
 RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacked,
                     std::uint32_t lost, std::uint32_t prior_in_flight, bool is_sack_reneg,
-                    Duration min_rtt, Time now);
+                    Duration min_rtt, Duration ca_rtt, bool maybe_delayed, Time now);
+
+// tcpi_delivery_rate from the record (Linux tcp_compute_delivery_rate,
+// tcp.c:396): rate_delivered * mss * 10^6 / rate_interval_us bytes/s, 0
+// without a record. Stub (0) until m2b-rate-pacing.
+[[nodiscard]] std::uint64_t rate_delivery_rate(const RateState& rs, std::uint32_t mss);
 
 // tcp_rate_check_app_limited, from tcp_send (§5.4): marks the connection
 // application-limited when less than one MSS is unsent, no packet of the

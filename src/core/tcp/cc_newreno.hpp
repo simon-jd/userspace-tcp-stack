@@ -1,6 +1,9 @@
 // NewReno congestion control (RFC 5681, RFC 6582; DESIGN §5.3) and the
 // storage that holds a connection's algorithm. Interface declared by
-// m1-found; implemented by m1-tx (cc_newreno.cpp).
+// m1-found; implemented by m1-tx, then m2b-cc (the NewReno methods in
+// cc_newreno.cpp). cc_select and cc_of are m2-found's: cc_select reaches
+// CUBIC and BBR through emplace_cubic and emplace_bbr (cc_cubic.cpp,
+// cc_bbr.cpp), so m2b-cc and m2c-bbr do not edit them.
 #pragma once
 
 #include <cstdint>
@@ -8,6 +11,8 @@
 #include <variant>
 
 #include "core/tcp/cc.hpp"
+#include "core/tcp/cc_bbr.hpp"
+#include "core/tcp/cc_cubic.hpp"
 #include "utcp/config.hpp"
 
 namespace utcp {
@@ -23,14 +28,14 @@ public:
   void cong_avoid(CcConn& c, const AckOutcome& out) override;
 };
 
-// The algorithm of one connection, in the TCB (no heap). M2b adds Cubic and
-// M2c Bbr to the list.
-using CcStorage = std::variant<NewReno>;
+// CcStorage (cc.hpp) is std::variant<NewReno, Cubic, Bbr>; this header
+// includes all three, so it is complete here.
 
 // The algorithm in `s` as its interface (std::visit).
 [[nodiscard]] CongestionControl& cc_of(CcStorage& s);
-// Replaces the algorithm in `s` by `algo` (M1: only CcAlgo::newreno;
-// others abort). The caller then calls init().
+// Replaces the algorithm in `s` by `algo` (newreno here, cubic through
+// emplace_cubic, bbr through emplace_bbr; those abort until m2b-cc and
+// m2c-bbr implement them). The caller then calls init().
 void cc_select(CcStorage& s, CcAlgo algo);
 
 }  // namespace utcp

@@ -64,10 +64,10 @@ CongestionControl& cc_of(CcStorage& s) {
 void cc_select(CcStorage& s, CcAlgo algo) {
   switch (algo) {
     case CcAlgo::newreno: s.emplace<NewReno>(); return;
-    case CcAlgo::cubic:
-    case CcAlgo::bbr: break;
+    case CcAlgo::cubic: emplace_cubic(s); return;
+    case CcAlgo::bbr: emplace_bbr(s); return;
   }
-  UTCP_CHECK(algo == CcAlgo::newreno);  // CUBIC is M2b, BBR M2c
+  UTCP_CHECK(false);  // not a CcAlgo value
 }
 
 }  // namespace utcp
