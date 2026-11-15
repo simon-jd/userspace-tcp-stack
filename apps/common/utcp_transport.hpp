@@ -56,8 +56,37 @@
 #include <vector>
 
 #include "common/transport.hpp"
+#include "utcp/trace.hpp"
 
 namespace utcp::app {
+
+// The stack's event trace for utcp-bulk --trace (DESIGN §14.6): events are
+// kept as TraceEvent structs in memory (the first block holds 64 MiB; when
+// it is full another block of the same size is added, nothing is dropped)
+// and written as JSONL (add_fields) only by write(), so a run pays no
+// formatting and no file I/O per event and nothing per loop wait.
+// Which kinds reach the sink is StackConfig::trace_mask; with
+// `tx_retransmissions_only`, tx events other than retransmissions
+// (fast_rexmit, rexmit, rto_rexmit, pmtu_rexmit, tlp) are not kept.
+class TraceRecorder final : public TraceSink {
+public:
+  static constexpr std::size_t block_bytes = std::size_t{64} << 20;
+  explicit TraceRecorder(bool tx_retransmissions_only);
+  void on_event(const TraceEvent& e) override;
+  [[nodiscard]] std::uint64_t events() const noexcept { return events_; }
+  [[nodiscard]] std::uint64_t blocks() const noexcept { return blocks_.size(); }
+  // Every kept event as one JSON line, in arrival order; an error message
+  // if the file cannot be written.
+  [[nodiscard]] std::expected<void, std::string> write(const std::string& path) const;
+
+  [[nodiscard]] static bool is_retransmission(TxKind k) noexcept;
+
+private:
+  static constexpr std::size_t block_events = block_bytes / sizeof(TraceEvent);
+  bool rexmit_only_;
+  std::vector<std::vector<TraceEvent>> blocks_;
+  std::uint64_t events_ = 0;
+};
 
 // Counters of the device side.
 struct DeviceStats {
@@ -72,6 +101,7 @@ struct DeviceStats {
   std::uint64_t pcap_records = 0;
   bool pcap_failed = false;                      // a pcap write failed; recording stopped
   bool device_failed = false;                    // the device reported an error (EPOLLERR/HUP)
+  std::uint64_t tx_batch_max = 0;                // most datagrams written by one drain of the stack
 };
 
 class UtcpTransport final : public Transport {
@@ -141,10 +171,21 @@ public:
   void flush_pcap();
   // One JSON object: "ev":"stack_stats", every StackStats field under its
   // name (for_each_stat order), then every DeviceStats field with the prefix
-  // "dev_". The destructor writes it, with a newline, to opts.stats_file if
-  // that is set (failures go to stderr), so a program that ends normally or
-  // by SIGINT/SIGTERM leaves the counters of the whole run.
+  // "dev_", then the EventLoop's statistics with the prefix "loop_"
+  // (loop_pending_calls counts the iterations in which connections blocked
+  // on transmit-queue or pool space resumed, §3.4; the lateness histogram as
+  // loop_lateness_count, loop_lateness_max_ns and one key
+  // loop_lateness_bucket_I per non-empty log2 bucket I, LatenessHistogram's
+  // layout), and with a trace, trace_events and trace_blocks. The
+  // destructor writes it, with a newline, to opts.stats_file if that is set
+  // (failures go to stderr), so a program that ends normally or by
+  // SIGINT/SIGTERM leaves the counters of the whole run.
   [[nodiscard]] std::string stats_json() const;
+  // Records the stack's trace events (the kinds of StackConfig::trace_mask)
+  // in memory; the destructor writes them to `path` as JSONL, after the
+  // --stats file. Call before run().
+  void enable_trace(std::string path, bool tx_retransmissions_only);
+  [[nodiscard]] const TraceRecorder* trace() const noexcept { return trace_.get(); }
 
 private:
   struct PcapWriter;
@@ -189,6 +230,8 @@ private:
   EventLoop loop_;
   Stack stack_;
   std::unique_ptr<PcapWriter> pcap_;
+  std::unique_ptr<TraceRecorder> trace_;
+  std::string trace_file_;
   std::vector<std::byte> rxbuf_;
   std::optional<TxPacket> pending_tx_;  // EAGAIN: written when EPOLLOUT arrives
   std::map<ConnId, Sock> socks_;

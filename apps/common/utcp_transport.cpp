@@ -68,6 +68,58 @@ std::expected<int, std::string> interface_mtu(const std::string& name) {
 
 }  // namespace
 
+// --- TraceRecorder.
+
+TraceRecorder::TraceRecorder(bool tx_retransmissions_only) : rexmit_only_(tx_retransmissions_only) {
+  blocks_.emplace_back().reserve(block_events);
+}
+
+bool TraceRecorder::is_retransmission(TxKind k) noexcept {
+  switch (k) {
+    case TxKind::fast_rexmit:
+    case TxKind::rexmit:
+    case TxKind::rto_rexmit:
+    case TxKind::pmtu_rexmit:
+    case TxKind::tlp:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void TraceRecorder::on_event(const TraceEvent& e) {
+  if (rexmit_only_ && e.kind == TraceKind::tx && !is_retransmission(e.tx)) {
+    return;
+  }
+  if (blocks_.back().size() == block_events) {
+    blocks_.emplace_back().reserve(block_events);  // no copy of what is kept
+  }
+  blocks_.back().push_back(e);
+  ++events_;
+}
+
+std::expected<void, std::string> TraceRecorder::write(const std::string& path) const {
+  std::FILE* f = std::fopen(path.c_str(), "w");
+  if (f == nullptr) {
+    return std::unexpected(errno_text("cannot open trace file " + path, errno));
+  }
+  bool ok = true;
+  JsonLine line;
+  for (const auto& b : blocks_) {
+    for (const TraceEvent& e : b) {
+      line.clear();
+      add_fields(line, e);
+      std::string text = line.str();
+      text += '\n';
+      ok = ok && std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    }
+  }
+  if (std::fclose(f) != 0 || !ok) {
+    return std::unexpected(errno_text("cannot write trace file " + path, errno));
+  }
+  return {};
+}
+
 // --pcap FILE: LINKTYPE_RAW, nanosecond timestamps (utcp/pcap.hpp).
 struct UtcpTransport::PcapWriter {
   std::FILE* f = nullptr;
@@ -236,6 +288,12 @@ UtcpTransport::~UtcpTransport() {
       std::fprintf(stderr, "utcp backend: cannot write --stats %s\n", opt_.stats_file.c_str());
     }
   }
+  if (trace_) {
+    stack_.set_trace_sink(nullptr);  // the Stack outlives trace_ only by declaration order
+    if (auto r = trace_->write(trace_file_); !r) {
+      std::fprintf(stderr, "utcp backend: %s\n", r.error().c_str());
+    }
+  }
   pending_tx_.reset();  // every TxPacket goes back before the Stack (stack.hpp)
   if (pcap_) {
     pcap_->close();
@@ -262,8 +320,30 @@ std::string UtcpTransport::stats_json() const {
       .add("dev_rx_batch_limit", dev_.rx_batch_limit)
       .add("dev_pcap_records", dev_.pcap_records)
       .add("dev_pcap_failed", dev_.pcap_failed)
-      .add("dev_device_failed", dev_.device_failed);
+      .add("dev_device_failed", dev_.device_failed)
+      .add("dev_tx_batch_max", dev_.tx_batch_max);
+  const LoopStats& ls = loop_.stats();
+  line.add("loop_iterations", ls.iterations)
+      .add("loop_deadline_calls", ls.deadline_calls)
+      .add("loop_pending_calls", ls.pending_calls)
+      .add("loop_lateness_count", ls.lateness.count)
+      .add("loop_lateness_max_ns", ls.lateness.max.count());
+  for (std::size_t i = 0; i < LatenessHistogram::bucket_count; ++i) {
+    if (ls.lateness.buckets[i] != 0) {
+      line.add("loop_lateness_bucket_" + std::to_string(i), ls.lateness.buckets[i]);
+    }
+  }
+  if (trace_) {
+    line.add("trace_events", trace_->events()).add("trace_blocks", trace_->blocks());
+  }
   return line.str();
+}
+
+void UtcpTransport::enable_trace(std::string path, bool tx_retransmissions_only) {
+  UTCP_CHECK(!in_run_);
+  trace_ = std::make_unique<TraceRecorder>(tx_retransmissions_only);
+  trace_file_ = std::move(path);
+  stack_.set_trace_sink(trace_.get());
 }
 
 // --- Device.
@@ -329,12 +409,14 @@ void UtcpTransport::read_batch() {
 }
 
 void UtcpTransport::drain_tx() {
+  std::uint64_t popped = 0;
   for (;;) {
     if (!pending_tx_) {
       pending_tx_ = stack_.pop_transmit();
       if (!pending_tx_) {
         break;
       }
+      dev_.tx_batch_max = std::max(dev_.tx_batch_max, ++popped);
     }
     const std::span<const std::byte> b = std::as_const(pending_tx_->buf).bytes();
     const ssize_t n = ::write(fd_, b.data(), b.size());

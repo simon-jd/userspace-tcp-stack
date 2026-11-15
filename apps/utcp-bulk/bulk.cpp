@@ -481,6 +481,20 @@ JsonLine clock_line() {
   return line;
 }
 
+JsonLine config_line(const BackendSelection& b) {
+  JsonLine line;
+  line.add("ev", "config");
+  std::string sets;
+  for (const auto& [name, value] : b.sets) {
+    sets += (sets.empty() ? "" : " ") + name + "=" + value;
+  }
+  line.add("set", sets);
+  for (const std::string_view name : config_field_names()) {
+    line.add(name, get_config_field(b.utcp.stack.tcp, name).value_or("?"));
+  }
+  return line;
+}
+
 int main_(int argc, const char* const* argv, const TransportFactory& make) {
   CliParser cli("utcp-bulk", "Bulk transfer over one TCP connection, SHA-256 of the stream.");
   add_options(cli);
@@ -513,6 +527,9 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     }
     jsonl.emplace(std::move(*w));
     jsonl->write(clock_line());
+    if (!backend->kernel) {
+      jsonl->write(config_line(*backend));
+    }
   }
   auto transport = make(*backend);
   if (!transport) {
