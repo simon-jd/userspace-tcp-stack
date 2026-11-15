@@ -1,0 +1,141 @@
+#include "core/tcp/rack.hpp"
+
+#include <algorithm>
+#include <chrono>
+
+namespace utcp {
+
+std::size_t SentFifo::first_in(std::span<const TxSeg> segs, std::uint64_t off) {
+  const auto it = std::lower_bound(segs.begin(), segs.end(), off,
+                                   [](const TxSeg& s, std::uint64_t o) { return s.off < o; });
+  return static_cast<std::size_t>(it - segs.begin());
+}
+
+bool SentFifo::entry_live(const SendQueue& q, const Entry& e) {
+  const std::span<const TxSeg> segs = q.segs();
+  for (std::size_t i = first_in(segs, e.off); i < segs.size() && in_range(e, segs[i]); ++i) {
+    if (segs[i].tx_count == e.tx_count && live(segs[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void SentFifo::pop_dead_front(const SendQueue& q) {
+  while (!fifo_.empty() && !entry_live(q, fifo_.front())) {
+    fifo_.pop_front();
+  }
+}
+
+void SentFifo::filter(const SendQueue& q) {
+  std::erase_if(fifo_, [&](const Entry& e) { return !entry_live(q, e); });
+}
+
+void SentFifo::on_transmit(const SendQueue& q, const TxSeg& seg) {
+  const Entry e{seg.off, seg.len, seg.tx_count, seg.last_tx};
+  // Usually the tail; a send at the tail's time but a lower offset (a
+  // retransmission after new data in the same instant) goes before the
+  // entries of that instant with higher offsets.
+  auto pos = fifo_.end();
+  while (pos != fifo_.begin()) {
+    const Entry& prev = *(pos - 1);
+    if (prev.t < e.t || (prev.t == e.t && prev.off < e.off)) {
+      break;
+    }
+    --pos;
+  }
+  fifo_.insert(pos, e);
+  // M2-DESIGN §1.5: at most 2 * packets_out + 64 entries after each append.
+  const std::size_t bound = 2 * std::size_t{q.counters().packets_out} + 64;
+  if (fifo_.size() > bound) {
+    filter(q);
+  }
+}
+
+void SentFifo::rebuild(const SendQueue& q) {
+  fifo_.clear();
+  for (const TxSeg& s : q.segs()) {
+    if (live(s)) {
+      fifo_.push_back(Entry{s.off, s.len, s.tx_count, s.last_tx});
+    }
+  }
+  std::stable_sort(fifo_.begin(), fifo_.end(), [](const Entry& a, const Entry& b) {
+    return a.t < b.t || (a.t == b.t && a.off < b.off);
+  });
+}
+
+std::vector<std::uint64_t> SentFifo::live_offsets(const SendQueue& q) const {
+  std::vector<std::uint64_t> out;
+  const std::span<const TxSeg> segs = q.segs();
+  for (const Entry& e : fifo_) {
+    for (std::size_t i = first_in(segs, e.off); i < segs.size() && in_range(e, segs[i]); ++i) {
+      if (segs[i].tx_count == e.tx_count && live(segs[i])) {
+        out.push_back(segs[i].off);
+      }
+    }
+  }
+  return out;
+}
+
+void rack_advance(RackState& r, const TxSeg& seg, Time now, Duration min_rtt) {
+  const Duration rtt = now - seg.last_tx;
+  if (seg.ever_retrans && rtt < min_rtt) {
+    // Ambiguous: the original or an earlier retransmission may be the one
+    // delivered; the original can be delayed up to aRTT + min_rtt.
+    return;
+  }
+  r.advanced = true;
+  r.rtt = rtt;
+  if (sent_after(seg.last_tx, r.xmit_ts, seg.end(), r.end)) {
+    r.xmit_ts = seg.last_tx;
+    r.end = seg.end();
+  }
+}
+
+Duration rack_reo_wnd(const RackState& r, std::uint32_t reord_seen, bool in_recovery,
+                      std::uint32_t sacked_out, std::uint32_t reordering, Duration min_rtt,
+                      Duration srtt) {
+  if (reord_seen == 0) {
+    // No reordering seen: as aggressive as the DupThresh rule in recovery
+    // or once DupThresh packets are SACKed.
+    if (in_recovery || sacked_out >= reordering) {
+      return Duration{0};
+    }
+  }
+  // min_rtt / 4 per step, up to srtt (min_rtt is Duration::max() before any
+  // sample: then srtt).
+  const Duration quarter = min_rtt / 4;
+  const auto steps = static_cast<Duration::rep>(r.reo_wnd_steps);
+  if (steps == 0 || quarter > srtt / steps) {
+    return std::max(srtt, Duration{0});
+  }
+  return std::min(quarter * steps, srtt);
+}
+
+Duration rack_detect_loss(RackState& r, SentFifo& fifo, SendQueue& q, Time now, Duration reo_wnd) {
+  Duration timeout{0};
+  fifo.walk(q, [&](const TxSeg& s) {
+    if (!sent_after(r.xmit_ts, s.last_tx, r.end, s.end())) {
+      return false;  // sent at or after the most recently delivered one
+    }
+    // tcp_rack_skb_timeout: not (S)ACKed within RACK.rtt + reo_wnd.
+    const Duration remaining = r.rtt + reo_wnd - (now - s.last_tx);
+    if (remaining <= Duration{0}) {
+      q.mark_lost(s.off);
+    } else {
+      timeout = std::max(timeout, remaining);
+    }
+    return true;
+  });
+  return timeout;
+}
+
+Time rack_reo_deadline(Time now, Duration timeout, Duration rto) {
+  constexpr Duration jiffy = std::chrono::milliseconds{1};
+  constexpr Duration min_slack = std::chrono::milliseconds{2};  // TCP_TIMEOUT_MIN_US
+  Duration d = timeout + min_slack;
+  d = (d + jiffy - Duration{1}) / jiffy * jiffy;  // usecs_to_jiffies rounds up
+  return now + std::min(d, rto);
+}
+
+}  // namespace utcp

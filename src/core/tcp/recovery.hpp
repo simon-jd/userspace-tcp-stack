@@ -15,7 +15,10 @@
 #include <utility>
 
 #include "core/tcp/cc.hpp"
+#include "core/tcp/prr.hpp"
+#include "core/tcp/rack.hpp"
 #include "core/tcp/rtt.hpp"
+#include "core/tcp/sack_scoreboard.hpp"
 #include "core/tcp/send_queue.hpp"
 #include "utcp/config.hpp"
 #include "utcp/stats.hpp"
@@ -241,25 +244,54 @@ public:
   // Rate samples are invalid (reneging seen at RTO, until recovery ends).
   [[nodiscard]] bool sack_reneg() const;
 
+  // m2a internals, read by the unit tests (M2-DESIGN §1.3).
+  [[nodiscard]] const PrrState& prr() const { return prr_; }
+  [[nodiscard]] const RackState& rack() const { return rack_; }
+  [[nodiscard]] const SentFifo& sent_fifo() const { return fifo_; }
+  [[nodiscard]] const Rfc6675Scoreboard& scoreboard() const { return sb_; }
+
 private:
   void refresh(RecoveryCtx& c) const;  // the CcConn views recovery owns
   void set_state(RecoveryCtx& c, CaState s);
   void fastretrans_alert(RecoveryCtx& c, bool dupack, bool advanced, AckOutcome& out);
   void enter_recovery(RecoveryCtx& c);
+  void init_cwnd_reduction(RecoveryCtx& c);
+  void end_cwnd_reduction(RecoveryCtx& c);
+  [[nodiscard]] bool time_to_recover(const RecoveryCtx& c) const;
+  // tcp_identify_packet_loss: true if a retransmission was marked lost
+  // (FLAG_LOST_RETRANS).
+  bool identify_packet_loss(RecoveryCtx& c, bool advanced);
+  void newreno_mark_lost(RecoveryCtx& c, bool advanced);
+  // tcp_rack_mark_lost: true if it armed the REO timer.
+  bool rack_mark_lost(RecoveryCtx& c);
+  [[nodiscard]] Duration rack_reo_wnd_now(const RecoveryCtx& c) const;
   void try_to_open(RecoveryCtx& c);
   void mark_head_lost(RecoveryCtx& c);
   void reno_dupack(RecoveryCtx& c, AckOutcome& out);
-  void timer_after_ack(RecoveryCtx& c);
+  // tcp_rearm_rto: the RTO from now, or the time left to the head's RTO while
+  // a REO or PTO timer is pending, plus the pacing delay; persist or none
+  // with nothing in flight (M1).
+  void rearm_rto(RecoveryCtx& c);
   [[nodiscard]] bool persist_wanted(const RecoveryCtx& c) const;
   void arm(XmitTimer kind, Time deadline);
+  // The RFC 6675 scoreboard rules apply (SACK on, rack_tlp off, §1.2).
+  [[nodiscard]] static bool uses_6675(const RecoveryCtx& c) { return c.sack_ok && !c.cfg.rack_tlp; }
+  [[nodiscard]] static bool uses_rack(const RecoveryCtx& c) { return c.sack_ok && c.cfg.rack_tlp; }
 
   CaState state_ = CaState::open;
   std::uint64_t recover_ = 0;  // Linux high_seq, as SendQueue::nxt_with_fin
   bool fast_rexmit_pending_ = false;
   bool sack_reneg_ = false;  // Linux is_sack_reneg
+  bool reo_armed_ = false;   // RACK armed the REO timer in this ACK (FLAG_SET_XMIT_TIMER cleared)
   XmitTimer timer_ = XmitTimer::none;
   Time deadline_ = Time::never();
   RecoveryScript* script_ = nullptr;  // test seam; null in production
+
+  PrrState prr_;           // §1.8
+  Rfc6675Scoreboard sb_;   // §1.4 (rfc)
+  RackState rack_;         // §1.6 (linux_compat)
+  SentFifo fifo_;          // §1.5 (linux_compat)
+  std::uint32_t reord_seen_ = 0;  // tcpi_reord_seen (§1.9, m2a part 2)
 };
 
 }  // namespace utcp

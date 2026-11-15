@@ -660,6 +660,19 @@ public:
 
 // The stack sends data to a scripted peer (Scripted) with 1460-byte segments,
 // SACK on and no timestamps; tx and timer events are traced.
+// M1's recovery: RFC 6675 marking (three SACKed segments above), cwnd =
+// ssthresh on entry and the fast retransmission exempt from the cwnd gate,
+// i.e. rack_tlp off and recovery_reduction rfc6675 (M2-DESIGN §1.2). The
+// tests below that check the engine's handling of an M1-style recovery use
+// it: the scripted handshake's RTT is 0, so min_rtt is 0 and linux_compat's
+// RACK has a zero reorder window (the first SACK above a segment sent at the
+// same time marks it lost, as Linux would).
+StackConfig m1_recovery(StackConfig cfg) {
+  cfg.tcp.rack_tlp = false;
+  cfg.tcp.recovery_reduction = utcp::RecoveryReduction::rfc6675;
+  return cfg;
+}
+
 struct Sender {
   static constexpr std::uint32_t mss = 1460;
   t::ScriptedRecovery script;
@@ -716,7 +729,7 @@ struct Sender {
 // exemption of the fast retransmission from the cwnd gate (not from the
 // pacing gate: Linux checks tcp_pacing_check before any retransmission).
 TEST(TcpTimer, PacedFastRetransmitWaitsForTheGateAndAdvancesIt) {
-  StackConfig cfg = config(Side::b);
+  StackConfig cfg = m1_recovery(config(Side::b));
   cfg.tcp.test_fixed_pacing_rate = 1'000'000;  // bytes/s: 1.46 ms per segment
   Sender x(cfg, false);
   ASSERT_TRUE(x.open(100));
@@ -765,7 +778,7 @@ TEST(TcpTimer, PacedFastRetransmitWaitsForTheGateAndAdvancesIt) {
 // as rexmit, not fast_rexmit); next_seg_extra names one more segment, sent
 // after the new data; on_burst_end learns whether new data went out.
 TEST(TcpTimer, ScriptedRecoveryDrivesTheRetransmissionHooks) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   x.script.exempt = [](const RecoveryCtx&, const utcp::TxSeg&) -> std::optional<bool> {
     return false;
   };
@@ -815,7 +828,7 @@ TEST(TcpTimer, ScriptedRecoveryDrivesTheRetransmissionHooks) {
 // A REO expiry (M2-DESIGN §1.6): recovery marks a segment lost, the engine
 // retransmits it and the xmit timer goes back to the RTO recovery reports.
 TEST(TcpTimer, ScriptedReoExpiryTransmitsAndRearmsTheRto) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   std::optional<Time> reo_at;
   x.script.timer = [&](const RecoveryCtx&) -> std::optional<std::pair<XmitTimer, Time>> {
     if (reo_at) {
@@ -1060,7 +1073,7 @@ TEST(TcpTimer, RtoResendsASegmentWhoseExtraRetransmissionWasInFlight) {
 // Linux tcp_send_loss_probe probes with the last skb whatever its SACK
 // state; a SACKed last segment is resent and stays SACKed (not in flight).
 TEST(TcpTimer, LossProbeResendsASackedLastSegment) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   PtoScript pto;
   pto.attach(x.script);
   pto.answer = TlpAction::retransmit_last;
@@ -1241,7 +1254,7 @@ TEST(TcpTimer, PacedRtoRetransmissionAdvancesPacingNext) {
 // included; none for a retransmission with data in flight, none for a bare
 // FIN, and a bare FIN does not move lsndtime.
 TEST(TcpTimer, TxStartOnDataSentWithNothingInFlight) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   const std::string tx_start =
       "cc_event " + std::to_string(static_cast<int>(utcp::CaEvent::tx_start));
   ASSERT_TRUE(x.open(10));

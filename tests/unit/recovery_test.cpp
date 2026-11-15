@@ -194,11 +194,12 @@ TEST(Recovery, SackThreeSackedSegmentsEnterRecovery) {
   r.resend(0, TxKind::fast_rexmit);
   EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + r.rtt.rto_backed_off(r.backoff)));
   EXPECT_NE(r.timer().second, first_deadline);
-  // Partial ACK up to the SACKed run: SND.UNA = 4000 is marked lost.
+  // Partial ACK up to the SACKed run: with SACK it marks nothing by itself
+  // (RFC 6675 IsLost only, M2-DESIGN §1.2); nothing is SACKed above 4000.
   r.ack(4000);
   EXPECT_EQ(r.rec.state(), CaState::recovery);
-  EXPECT_TRUE(r.at(4000).lost);
-  EXPECT_EQ(r.q.counters().lost_out, 1u);
+  EXPECT_FALSE(r.at(4000).lost);
+  EXPECT_EQ(r.q.counters().lost_out, 0u);
   // Full ACK: Open, cwnd = ssthresh.
   r.cc.cwnd = 8;
   r.ack(10'000);
