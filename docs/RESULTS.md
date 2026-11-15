@@ -161,11 +161,27 @@ and sat in the last ring block. The gate's captures were taken without a filter;
 captures with `not ether multicast`. The netem drop counter exceeds the data segments lost on the
 netem hop by the pings it dropped. Item 4's ping maxima are within 0.8 ms of the attainable target.
 
+**Testbed checks.** `tests/interop/m2_testbed.sh --slot 0` and `--slot 1` after the gate (commit 1b0105f):
+106 checks ok on each, none failed: containers, networks, addresses, routes, cpusets and sysctls; every
+`record.sh` item; `shape.sh` for the 8 (bandwidth, RTT, queue) combinations at 0, 0.1 and 1 % loss;
+2000 pings at 10 % loss with seed 1234 twice lose the same `icmp_seq` set and seed 1235 a different one;
+`down.sh` removes exactly the slot.
+
 **Scripted drops** (§4.2, `testbed/m2/drop.sh`, `tests/interop/m2_testbed_drops.sh`, M2 tasks test 10), on
 the non-timing slot 2 with the Linux sender, 100 Mbit/s, 20 ms, a 40×BDP queue, 5 MB per run; what r1
 (and r2) dropped is read from the captures before and after the router with `tools/m2/dropcheck.py`:
 
-DROP_TABLE
+| Case | Armed | Dropped by r1 (index in r1-in, offset, copy) | Dropped by r2 | Result |
+|---|---|---|---|---|
+| copy1 | r1: offset 1 448 000, copy 1 | #1003, 1 448 000, copy 1 | none | pass |
+| copy2 | r1: offset 1 448 000, copy 2; r2: copy 1 | #1326, 1 448 000, copy 2 | #1003 (of r1-out), 1 448 000, copy 1 | pass |
+| copy12 | r1: offset 1 448 000, copies 1 and 2 | #1003 copy 1 and #1293 copy 2, offset 1 448 000 | none | pass |
+| ct | r1: `ct original packets 500` | #500, offset 719 656, copy 1 (a first transmission) | none | pass |
+
+`tests/interop/m2_testbed_drops.sh --slot 2 --campaign m2d-testbed/drops-final` at commit 6b44b70; each
+capture complete (received by filter = captured, 0 dropped by kernel); 3458-3459 packets of the
+connection in r1-in, one fewer per dropped packet after the router. These 5 MB runs are shorter than the
+analysis window, so `summary.json` marks them invalid for the statistics; they are mechanism checks only.
 
 ## Gap rule and thresholds
 
