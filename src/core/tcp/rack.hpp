@@ -38,9 +38,11 @@ public:
   };
 
   // `seg` was just transmitted (SendQueue::on_transmit). Entries are kept in
-  // (time, offset) order: an append at the same time as the tail but at a
-  // lower offset goes before it (RACK compares transmissions by time, then
-  // end offset, tcp_skb_sent_after).
+  // (time, offset) order with the entries of one instant disjoint: an append
+  // at the tail's time but a lower offset goes before those above it, and a
+  // part of a transmission of the same instant resent at once splits that
+  // entry around it (RACK compares transmissions by time, then end offset,
+  // tcp_skb_sent_after).
   void on_transmit(const SendQueue& q, const TxSeg& seg);
   // Rebuilt from the live TxSegs sorted by (last_tx, off) (after a PMTU split).
   void rebuild(const SendQueue& q);

@@ -90,7 +90,6 @@ bool Rfc6675Scoreboard::is_lost(const SendQueue& q, std::uint64_t off, std::uint
 }
 
 void Rfc6675Scoreboard::on_enter_recovery(std::uint64_t head_end) {
-  dupacks_ = 0;
   high_rxt_ = head_end;
   rescue_rxt_ = head_end;
   rescue_named_.reset();

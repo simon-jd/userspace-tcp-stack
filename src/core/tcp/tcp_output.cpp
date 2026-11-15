@@ -566,6 +566,14 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         if (s == nullptr || s->sacked) {
           break;
         }
+        // retransmit_seg cuts a segment longer than the current MSS; the tail
+        // of a segment not marked lost stays in flight, so the cut adds a
+        // packet to in_flight besides the retransmission.
+        const std::uint32_t need = s->len > mss && !s->lost ? 2u : 1u;
+        if (packets_in_flight(t.sndq.counters()) + need > cc.cwnd) {
+          cwnd_limited = true;
+          break;
+        }
         if (t.pacing_gated(pacing, now, cfg_.test_fault)) {
           hold_for_pacing();
           break;

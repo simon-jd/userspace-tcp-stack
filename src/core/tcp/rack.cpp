@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 
 namespace utcp {
 
@@ -33,18 +34,38 @@ void SentFifo::filter(const SendQueue& q) {
 
 void SentFifo::on_transmit(const SendQueue& q, const TxSeg& seg) {
   const Entry e{seg.off, seg.len, seg.tx_count, seg.last_tx};
-  // Usually the tail; a send at the tail's time but a lower offset (a
-  // retransmission after new data in the same instant) goes before the
-  // entries of that instant with higher offsets.
-  auto pos = fifo_.end();
-  while (pos != fifo_.begin()) {
-    const Entry& prev = *(pos - 1);
-    if (prev.t < e.t || (prev.t == e.t && prev.off < e.off)) {
-      break;
-    }
+  const auto span_of = [](const Entry& x) -> std::uint64_t { return x.len == 0 ? 1u : x.len; };
+  // Times only grow, so the entries of this instant are at the tail; they are
+  // kept sorted by offset with disjoint ranges (RACK orders transmissions by
+  // time, then end offset, tcp_skb_sent_after). Usually the new entry goes
+  // last; a retransmission in the same instant at a lower offset goes before.
+  std::size_t pos = fifo_.size();
+  while (pos > 0 && fifo_[pos - 1].t == e.t && fifo_[pos - 1].off > e.off) {
     --pos;
   }
-  fifo_.insert(pos, e);
+  if (pos > 0 && fifo_[pos - 1].t == e.t) {
+    // A part of a transmission of this same instant is resent: that entry's
+    // range holds e's; split it around e.
+    const Entry prev = fifo_[pos - 1];
+    const std::uint64_t prev_end = prev.off + span_of(prev);
+    const std::uint64_t e_end = e.off + span_of(e);
+    if (e.off < prev_end) {
+      const auto at = fifo_.begin() + static_cast<std::ptrdiff_t>(pos - 1);
+      if (prev.off == e.off) {
+        fifo_.erase(at);
+        --pos;
+      } else {
+        at->len = static_cast<std::uint32_t>(e.off - prev.off);
+      }
+      if (e_end < prev_end) {
+        Entry rest = prev;
+        rest.off = e_end;
+        rest.len = static_cast<std::uint32_t>(prev_end - e_end);
+        fifo_.insert(fifo_.begin() + static_cast<std::ptrdiff_t>(pos), rest);
+      }
+    }
+  }
+  fifo_.insert(fifo_.begin() + static_cast<std::ptrdiff_t>(pos), e);
   // M2-DESIGN §1.5: at most 2 * packets_out + 64 entries after each append.
   const std::size_t bound = 2 * std::size_t{q.counters().packets_out} + 64;
   if (fifo_.size() > bound) {
