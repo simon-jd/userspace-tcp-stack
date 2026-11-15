@@ -90,7 +90,7 @@ def sh(cmd, check=True, capture=True, input=None, timeout=None):
     return r.stdout if capture else ""
 
 
-def dexec(c, script, check=True, timeout=None, input=None):
+def dexec(c, script, check=True, timeout=300, input=None):
     cmd = ["docker", "exec"] + (["-i"] if input is not None else []) + [c, "bash", "-c", script]
     return sh(cmd, check=check, timeout=timeout, input=input)
 
@@ -254,9 +254,14 @@ def run_analysis(args, timeout=900):
 def wait_for(c, script, what, timeout=10.0):
     end = time.time() + timeout
     while time.time() < end:
-        if subprocess.run(["docker", "exec", c, "bash", "-c", script], stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL).returncode == 0:
-            return
+        try:
+            # A docker exec that hangs (seen once on a busy host) must not
+            # stall the run: each check gets 20 s.
+            if subprocess.run(["docker", "exec", c, "bash", "-c", script], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=20).returncode == 0:
+                return
+        except subprocess.TimeoutExpired:
+            log(f"docker exec in {c} took more than 20 s ({what})")
         time.sleep(0.05)
     raise RuntimeError(f"timeout waiting for {what} in {c}")
 
@@ -304,6 +309,14 @@ def one_run(slot, campaign, run, spec, smeta=None):
     vol_write(slot.snd, f"{rd}/shape.txt", shape)
     pre = tb("record.sh", "--slot", slot.n, "pre")
     vol_write(slot.snd, f"{rd}/pre/record.txt", pre)
+    # §5.13 and §6: the host's load at the start (the full lists are in
+    # pre/record.txt).
+    rec = A.parse_record(pre)
+    meta["uptime"] = " ".join(rec.get(("host", "uptime"), [])).strip()
+    meta["top_cpu"] = rec.get(("host", "top"), [])[1:8]
+    meta["threads_on_8_15"] = rec.get(("host", "threads on 8-15"), [])
+    meta["module_parameters"] = rec.get(("host", "module parameters"), [])
+    vol_write(slot.snd, f"{rd}/meta.json", json.dumps(meta, indent=1, sort_keys=True) + "\n")
 
     caps = [("r1-in", slot.r1, slot.ifs["r1_a"]), ("r2-out", slot.r2, slot.ifs["r2_c"])]
     if spec.get("extra_capture"):
@@ -699,7 +712,7 @@ def expand_plan(plan, nslots=1):
         for k, impl in enumerate(impls):
             spec = {"bw": c["bw"], "rtt": c["rtt"], "loss": float(c.get("loss", 0)),
                     "queue_bdp": float(c["queue_bdp"]), "seed": netem_seed, "impl": impl, "cc": a["cc"],
-                    "profile": a.get("profile", "linux"),
+                    "profile": a.get("profile", "linux") if impl == "utcp" else "",
                     "duration": float(plan.get("duration", default_duration(c["rtt"]))),
                     "cell": cell, "rep": rep, "group": gi, "in_group": k, "plan_seed": plan["seed"],
                     "trace": bool(plan.get("trace", True))}
