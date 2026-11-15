@@ -54,16 +54,33 @@ public:
 
   // Calls fn(const TxSeg&) for every live TxSeg in FIFO order until fn returns
   // false. Pops dead entries at the front first. fn may mark the TxSeg lost.
+  // Dead entries the walk passes are counted; once they outnumber the rest
+  // (plus 64), the FIFO is filtered after the walk (Linux unlinks a SACKed
+  // skb at once), so a walk costs about the live entries it visits.
   template <class Fn>
   void walk(const SendQueue& q, Fn&& fn) {
     pop_dead_front(q);
+    std::size_t dead = 0;
+    bool stopped = false;
     for (const Entry& e : fifo_) {
       const std::span<const TxSeg> segs = q.segs();
+      bool any = false;
       for (std::size_t i = first_in(segs, e.off); i < segs.size() && in_range(e, segs[i]); ++i) {
-        if (segs[i].tx_count == e.tx_count && live(segs[i]) && !fn(segs[i])) {
-          return;
+        if (segs[i].tx_count == e.tx_count && live(segs[i])) {
+          any = true;
+          if (!fn(segs[i])) {
+            stopped = true;
+            break;
+          }
         }
       }
+      if (stopped) {
+        break;
+      }
+      dead += any ? 0 : 1;
+    }
+    if (dead > fifo_.size() / 2 + 64) {
+      filter(q);
     }
   }
 

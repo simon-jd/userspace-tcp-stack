@@ -47,9 +47,12 @@ std::uint32_t Rfc6675Scoreboard::mark_lost(SendQueue& q, std::uint32_t dupthresh
     return 0;
   }
   const std::size_t start = first_at_or_above(segs, std::max(lost_below_, q.una()));
+  // Nothing above the highest SACK is SACKed: start there.
+  const std::size_t top = high_sack_ == 0 ? segs.size()
+                                           : std::min(segs.size(), first_at_or_above(segs, high_sack_));
   std::uint32_t count = 0;
   std::uint64_t bytes = 0;
-  for (std::size_t i = segs.size(); i > start; --i) {
+  for (std::size_t i = top; i > start; --i) {
     const TxSeg& s = segs[i - 1];
     if (!s.sacked) {
       continue;
@@ -103,8 +106,9 @@ std::optional<std::uint64_t> Rfc6675Scoreboard::next_seg(const SendQueue& q, std
     return std::nullopt;
   }
   const auto in_window = [&](const TxSeg& s) { return s.off == q.una() || s.off < wnd_end; };
-  // The highest SACKed segment.
-  std::size_t top = segs.size();
+  // The highest SACKed segment (at or below high_sack_).
+  std::size_t top =
+      high_sack_ == 0 ? segs.size() : std::min(segs.size(), first_at_or_above(segs, high_sack_));
   while (top > 0 && !segs[top - 1].sacked) {
     --top;
   }

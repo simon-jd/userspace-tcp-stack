@@ -336,6 +336,9 @@ void LossRecovery::on_delivered(RecoveryCtx& c, const TxSeg& seg, bool via_sack)
   // tcp_clean_rtx_queue for a cumulatively acknowledged one that was not
   // SACKed (only those reach here), the latter skipped when the ACK's TSecr
   // predates its last transmission (tcp_skb_spurious_retrans).
+  if (uses_6675(c) && via_sack) {
+    sb_.on_sacked(seg.end());
+  }
   if (!uses_rack(c)) {
     return;
   }

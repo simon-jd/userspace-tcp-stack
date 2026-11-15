@@ -7,6 +7,7 @@
 // Offsets are stream offsets, as everywhere in the send path.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 
@@ -25,6 +26,10 @@ public:
   // Counted only outside loss recovery (`counting`).
   void on_ack(bool una_advanced, std::uint32_t newly_sacked, bool counting);
   [[nodiscard]] std::uint32_t dupacks() const { return dupacks_; }
+
+  // A TxSeg ending at `end` was newly SACKed (LossRecovery::on_delivered): the
+  // walks below start at the highest SACK instead of the top of the queue.
+  void on_sacked(std::uint64_t end) { high_sack_ = std::max(high_sack_, end); }
 
   // IsLost (RFC 6675 §4): S is lost once DupThresh SACKed segments, or more
   // than (DupThresh - 1) * SMSS SACKed bytes, lie above it. The IsLost
@@ -68,6 +73,10 @@ private:
   std::optional<std::uint64_t> rescue_rxt_;    // RescueRxt
   std::optional<std::uint64_t> rescue_named_;  // offset next_seg returned under rule 4
   std::uint32_t dupacks_ = 0;
+  // Highest end of a TxSeg reported SACKed through on_sacked; 0: none
+  // reported, the walks start at the top of the queue. Never too low (a
+  // SACK mark cleared by reneging leaves it high, which only costs a longer walk).
+  std::uint64_t high_sack_ = 0;
 };
 
 }  // namespace utcp
