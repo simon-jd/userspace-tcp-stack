@@ -311,6 +311,9 @@ def one_run(slot, campaign, run, spec, smeta=None):
     vol_write(slot.snd, f"{rd}/meta.json", json.dumps(meta, indent=1, sort_keys=True) + "\n")
     run_analysis(["captures", rd])
     summ = json.loads(run_analysis(["run", rd]).strip().splitlines()[-1])
+    log(f"{run}: captures " + ", ".join(
+        f"{k} {v.get('bytes')} B, {v.get('captured')} packets, {v.get('kernel_dropped')} dropped by kernel"
+        for k, v in sorted((summ.get("capture") or {}).items()) if isinstance(v, dict)))
     return meta, summ
 
 
@@ -512,6 +515,53 @@ def gate_markdown(r):
     return "\n".join(lines) + "\n"
 
 
+def gate_table(gates):
+    """The compact calibration table of RESULTS.md "Calibration": one row per
+    slot and (bandwidth, RTT, queue) with items 1-5, then item 6 per slot."""
+    out = ["| Slot | BW, RTT, queue | 1: ping median / p99 (ms) | 2: goodput, % of BW | "
+           "4: backlog max, % of Q; ping max - base / target (ms) | 3: loss % at 0.1 / 1 (expected count interval) "
+           "| 5: drops, squeeze | Pass |", "|---|---|---|---|---|---|---|---|"]
+    for g in gates:
+        cells = {}
+        for i in g["items"]:
+            if i["item"] in (1, 2, 3, 4, 5):
+                cells.setdefault((i["bw"], i["rtt"], i["queue_bdp"]), []).append(i)
+        for (bw, rtt, q), items in cells.items():
+            by = {}
+            for i in items:
+                by.setdefault(i["item"], []).append(i)
+            i1, i2, i4 = by[1][0], by[2][0], by[4][0]
+            l3 = " / ".join(f"{i['measured_pct']:.3f} ({i['lost']} in [{i['interval'][0]}, {i['interval'][1]}])"
+                            if "measured_pct" in i else i.get("error", "?")
+                            for i in sorted(by.get(3, []), key=lambda i: i["loss_pct"]))
+            bad5 = [i for i in by.get(5, []) if i["local_drops"] or i["time_squeeze"]
+                    or any(v for v in (i["captures"] or {}).values())]
+            ok = all(i["ok"] for i in items)
+            dmax = i4["ping_max_minus_base_ms"]
+            out.append(
+                f"| {g['slot']} | {bw} Mbit/s, {rtt} ms, {q:g}xBDP | {i1['median_ms']:.2f} / {i1['p99_ms']:.2f} "
+                f"| {100 * i2['fraction_of_bw']:.2f}{'' if i2['gated'] else ' (not gated)'} "
+                f"| {100 * i4['backlog_frac']:.1f}; {'-' if dmax is None else f'{dmax:.1f}'} / {i4['target_ms']:.1f} "
+                f"| {l3} | {len(bad5)} of {len(by.get(5, []))} runs "
+                f"| {'yes' if ok else 'NO'} |")
+    out += ["", "| Slot | Item 6 part | Result | Pass |", "|---|---|---|---|"]
+    for g in gates:
+        for i in g["items"]:
+            if i["item"] != 6:
+                continue
+            if i.get("part") == "ping":
+                res = (f"idle ping median rcv to stack {i['stack']['median_ms']} ms, snd kernel to rcv "
+                       f"{i['kernel']['median_ms']} ms")
+            else:
+                res = (f"stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP{', ' + i['stack_args'] if i['stack_args'] else ''}: "
+                       f"{i['goodput_bps'] / 1e6:.2f} Mbit/s (threshold {i['threshold_bps'] / 1e6:.2f}); "
+                       f"retransmitted {i['retrans_pct']:.2f} %; rwnd-limited {100 * (i['rwnd_limited_frac'] or 0):.1f} %, "
+                       f"sndbuf-limited {100 * (i['sndbuf_limited_frac'] or 0):.1f} %; loop lateness p99 bucket "
+                       f"<= {i['lateness_p99_ns']} ns; drops {i['local_drops'] or 'none'}")
+            out.append(f"| {g['slot']} | {i.get('part')} | {res} | {'yes' if i['ok'] else 'NO'} |")
+    return "\n".join(out) + "\n"
+
+
 # --------------------------------------------------------------------------
 
 
@@ -551,6 +601,8 @@ def main(argv):
     p = sub.add_parser("tables")
     p.add_argument("--campaign", required=True)
     p.add_argument("--out", required=True)
+    p = sub.add_parser("gate-table")
+    p.add_argument("--campaign", action="append", required=True, help="a calibration campaign (repeatable)")
     p = sub.add_parser("cat")
     p.add_argument("path")
     a = ap.parse_args(argv[1:])
@@ -578,6 +630,10 @@ def main(argv):
                 run_analysis(["run", d.rstrip("/")])
     elif a.cmd == "tables":
         run_analysis(["tables", a.out, "--campaign", f"/data/m2/{a.campaign}"])
+    elif a.cmd == "gate-table":
+        gates = [json.loads(sh(["docker", "run", "--rm", "--name", f"{JOB}-cat-{os.getpid()}", "-v",
+                                f"{VOLUME}:/data:ro", IMAGE, "cat", f"/data/m2/{c}/gate.json"])) for c in a.campaign]
+        print(gate_table(gates), end="")
     elif a.cmd == "cat":
         print(sh(["docker", "run", "--rm", "--name", f"{JOB}-cat-{os.getpid()}", "-v", f"{VOLUME}:/data:ro",
                   IMAGE, "cat", a.path]), end="")
