@@ -65,11 +65,12 @@ tbf sampler) convert with the clock pair that `utcp-bulk` writes first in its JS
 
 Percentiles interpolate linearly between closest ranks.
 
-**Captures.** `tcpdump -s 128` on r1's interface from the sender (`r1-in`) and on r2's interface to the
-receiver (`r2-out`), calibration also r1's interface toward r2 after netem (`r1-out`), written to the
-`utcp-data` volume under `/m2/<campaign>/<run>/`. Each capture's `packets dropped by kernel` and
-`packets received by filter` versus `captured` are checked; tcpdump is stopped 1.5 s after the last
-traffic so that its 1 s ring blocks are delivered.
+**Captures.** `tcpdump -s 128 'not ether multicast'` on r1's interface from the sender (`r1-in`) and on
+r2's interface to the receiver (`r2-out`), calibration also r1's interface toward r2 after netem
+(`r1-out`), written to the `utcp-data` volume under `/m2/<campaign>/<run>/`; the runner logs each
+capture's size. Each capture's `packets dropped by kernel` and `packets received by filter` versus
+`captured` are checked; tcpdump is stopped 1.5 s after the pings, which stop once the connection has
+closed at both ends, so that its 1 s ring blocks are delivered.
 
 **Raw data and archive.** Per run in the volume: `meta.json` (cell, implementation, algorithm,
 repetition, order, slot, start time, kernel, image id, commit, binary and core-library sha256, build,
@@ -86,12 +87,90 @@ an equal key; otherwise both sides of the cell rerun.
 
 ## Calibration
 
-Pending: filled from the gate runs on slots 0 and 1 (§5.4 of the M2 design).
+The calibration gate (M2 design §5.4, DESIGN §14.4), Linux to Linux (CUBIC) for items 1-5 and the stack
+for item 6, run on slot 0 and then on slot 1 on 2026-11-14 with commit d713941, kernel 7.0.0-42-generic,
+image `utcp-testbed:dev` (`sha256:42acf2a264d9`), `utcp-bulk` from `build/tb-gcc-release`:
+
+```
+testbed/m2/up.sh --slot 0; testbed/m2/up.sh --slot 1
+UTCP_M2_JOB=utcp-m2d-testbed tools/m2/matrix.py calibrate --slot 0 --campaign m2d-testbed/calib-s0
+UTCP_M2_JOB=utcp-m2d-testbed tools/m2/matrix.py calibrate --slot 1 --campaign m2d-testbed/calib-s1
+tools/m2/matrix.py gate-table --campaign m2d-testbed/calib-s0 --campaign m2d-testbed/calib-s1
+```
+
+Every run's files are in the `utcp-data` volume under `/m2/m2d-testbed/calib-s{0,1}/`, with `gate.json`
+and the per-item table `gate.md`. Items and pass conditions:
+
+1. Idle ping, 200 at 50 ms: median within [RTT, RTT + 1 ms], p99 ≤ RTT + 2 ms.
+2. One Linux CUBIC flow, 0 % loss: goodput ≥ 98 % of the payload rate (BW · 1448/1514), gated with the 2×BDP
+   queue; the 0.5×BDP value is reported.
+3. Loss 0.1 % and 1 % (Linux CUBIC, both queues): data segments lost on the netem hop, counted as r1-in
+   minus r1-out in the captures, inside the exact binomial interval for the offered count at
+   α = 0.01/16 (Bonferroni over the 16 tests).
+4. In item 2's run: the tbf backlog reaches the tail-drop bound at every drop (no drop interval with the
+   sampled backlog below Q − 1514 − B − BW · Δt, Δt the sample spacing), and ping max − base within 10 %
+   of the largest backlog a ping can find, ((Q − 98) div 1514 · 1514 + 98) · 8 / BW.
+5. In every run of items 2-3: no interface, qdisc or softnet drop, no `time_squeeze`, no capture drop.
+6. The stack: idle ping from the receiver to the stack within 0.2 ms of the kernel's; one stack NewReno run
+   at 100 Mbit/s, 20 ms, 0 %, 2×BDP with goodput at item 2's threshold, no drops, no device errors.
+
+| Slot | BW, RTT, queue | 1: ping median / p99 (ms) | 2: goodput, % of BW | 4: backlog max, % of Q; ping max - base / target (ms) | 3: loss % at 0.1 / 1 (lost segments in the accepted interval) | 5: drops, squeeze | Pass |
+|---|---|---|---|---|---|---|---|
+| 0 | 10 Mbit/s, 20 ms, 2xBDP | 20.10 / 20.20 | 95.49 | 99.9; 38.7 / 38.8 | 0.092 (23 in [10, 44]) / 1.058 (161 in [112, 196]) | 0 of 3 runs | yes |
+| 0 | 10 Mbit/s, 20 ms, 0.5xBDP | 20.10 / 20.10 | 95.48 (not gated) | 97.7; 9.2 / 9.8 | 0.089 (22 in [10, 43]) / 0.968 (155 in [119, 205]) | 0 of 3 runs | yes |
+| 0 | 10 Mbit/s, 100 ms, 2xBDP | 100.00 / 100.00 | 95.50 | 99.5; 198.0 / 199.9 | 0.112 (35 in [14, 52]) / 1.025 (68 in [40, 96]) | 0 of 3 runs | yes |
+| 0 | 10 Mbit/s, 100 ms, 0.5xBDP | 100.00 / 100.00 | 95.49 (not gated) | 99.5; 49.0 / 49.7 | 0.137 (31 in [8, 41]) / 1.069 (73 in [42, 98]) | 0 of 3 runs | yes |
+| 0 | 100 Mbit/s, 20 ms, 2xBDP | 20.10 / 20.20 | 95.63 | 99.6; 39.2 / 40.0 | 0.097 (60 in [37, 91]) / 1.088 (179 in [123, 210]) | 0 of 3 runs | yes |
+| 0 | 100 Mbit/s, 20 ms, 0.5xBDP | 20.10 / 20.20 | 95.63 (not gated) | 99.3; 9.1 / 9.9 | 0.086 (56 in [39, 94]) / 0.899 (163 in [137, 229]) | 0 of 3 runs | yes |
+| 0 | 100 Mbit/s, 100 ms, 2xBDP | 100.00 / 100.00 | 95.63 | 99.9; 200.0 / 200.0 | 0.083 (42 in [28, 77]) / 0.914 (74 in [52, 113]) | 0 of 3 runs | yes |
+| 0 | 100 Mbit/s, 100 ms, 0.5xBDP | 100.00 / 100.00 | 95.63 (not gated) | 99.8; 50.0 / 49.9 | 0.137 (28 in [7, 37]) / 0.837 (75 in [59, 123]) | 0 of 3 runs | yes |
+| 1 | 10 Mbit/s, 20 ms, 2xBDP | 20.10 / 20.20 | 95.49 | 99.9; 38.7 / 38.8 | 0.092 (23 in [10, 44]) / 1.065 (163 in [113, 197]) | 0 of 3 runs | yes |
+| 1 | 10 Mbit/s, 20 ms, 0.5xBDP | 20.10 / 20.20 | 95.48 (not gated) | 97.7; 9.0 / 9.8 | 0.093 (23 in [10, 43]) / 0.948 (153 in [120, 206]) | 0 of 3 runs | yes |
+| 1 | 10 Mbit/s, 100 ms, 2xBDP | 100.00 / 100.00 | 95.50 | 99.5; 198.0 / 199.9 | 0.108 (35 in [15, 53]) / 1.098 (69 in [38, 91]) | 0 of 3 runs | yes |
+| 1 | 10 Mbit/s, 100 ms, 0.5xBDP | 100.00 / 100.00 | 95.49 (not gated) | 99.5; 49.0 / 49.7 | 0.130 (30 in [9, 41]) / 1.142 (74 in [39, 94]) | 0 of 3 runs | yes |
+| 1 | 100 Mbit/s, 20 ms, 2xBDP | 20.10 / 20.20 | 95.63 | 99.9; 39.2 / 40.0 | 0.097 (61 in [37, 91]) / 1.066 (174 in [122, 208]) | 0 of 3 runs | yes |
+| 1 | 100 Mbit/s, 20 ms, 0.5xBDP | 20.10 / 20.20 | 95.61 (not gated) | 99.4; 9.2 / 9.9 | 0.086 (56 in [39, 94]) / 0.912 (166 in [138, 230]) | 0 of 3 runs | yes |
+| 1 | 100 Mbit/s, 100 ms, 2xBDP | 100.00 / 100.00 | 95.63 | 99.9; 200.0 / 200.0 | 0.078 (40 in [29, 78]) / 0.923 (71 in [49, 108]) | 0 of 3 runs | yes |
+| 1 | 100 Mbit/s, 100 ms, 0.5xBDP | 100.00 / 100.00 | 95.63 (not gated) | 99.6; 50.0 / 49.9 | 0.125 (26 in [7, 38]) / 0.904 (83 in [61, 126]) | 0 of 3 runs | yes |
+
+| Slot | Item 6 part | Result | Pass |
+|---|---|---|---|
+| 0 | ping | idle ping median rcv to stack 20.1 ms, snd kernel to rcv 20.1 ms | yes |
+| 0 | run | stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP: 65.42 Mbit/s (threshold 93.73); retransmitted 0.29 %; rwnd-limited 20.7 %, sndbuf-limited 0.0 %; loop lateness p99 bucket <= 32767 ns; drops none | NO |
+| 0 | path | stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP, --snd-buf 400000: 95.62 Mbit/s (threshold 93.73); retransmitted 0.00 %; rwnd-limited 0.0 %, sndbuf-limited 4.1 %; loop lateness p99 bucket <= 524287 ns; drops none | yes |
+| 1 | ping | idle ping median rcv to stack 20.2 ms, snd kernel to rcv 20.1 ms | yes |
+| 1 | run | stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP: 66.54 Mbit/s (threshold 93.73); retransmitted 0.28 %; rwnd-limited 19.7 %, sndbuf-limited 0.0 %; loop lateness p99 bucket <= 262143 ns; drops none | NO |
+| 1 | path | stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP, --snd-buf 400000: 95.62 Mbit/s (threshold 93.73); retransmitted 0.00 %; rwnd-limited 0.0 %, sndbuf-limited 7.7 %; loop lateness p99 bucket <= 1048575 ns; drops none | yes |
+
+**Result.** Items 1-5 (Linux to Linux) pass on both slots in all 8 (bandwidth, RTT, queue) cells. Item 6
+passes its ping part and fails its run on both slots: the stack (M1 code) reaches 65.4 and 66.5 Mbit/s
+against the 93.73 Mbit/s threshold. NewReno's slow-start overshoot overflows the 2×BDP queue (0.28-0.29 %
+of segments retransmitted, 647 and 632 tbf drops), and the M1 sender's recovery repairs about one hole
+per RTT (INTEROP.md open items), so the receiver's window stops advancing and the sender is
+rwnd-limited for 20 % of the window. The same run
+with the stack's send buffer at 400 000 B (below BDP + queue, no loss) carries 95.62 Mbit/s on both
+slots, so the TUN path is not the limit. The gate therefore has not passed: it is rerun in full on both slots
+with the M2 loss recovery (m2-found, m2a-recovery) and the final runner before the slots carry timing
+runs.
+
+Captures: 68 per slot, 996.7 MB (slot 0) and 996.4 MB (slot 1) in total, at most 95.6 MB for one
+capture; 0 packets dropped by kernel in every one. In 4 runs (1 on slot 0, 3 on slot 1) 1 to 5 packets
+were counted by the filter and not written (flag `capture_incomplete`); the last packets in those
+captures are the host's SSDP multicast (`198.19.X.1 > 239.255.255.250.1900`), which arrives in bursts
+and sat in the last ring block. The gate's captures were taken without a filter; since then the runner
+captures with `not ether multicast`. The netem drop counter exceeds the data segments lost on the
+netem hop by the pings it dropped. Item 4's ping maxima are within 0.8 ms of the attainable target.
+
+**Scripted drops** (§4.2, `testbed/m2/drop.sh`, `tests/interop/m2_testbed_drops.sh`, M2 tasks test 10), on
+the non-timing slot 2 with the Linux sender, 100 Mbit/s, 20 ms, a 40×BDP queue, 5 MB per run; what r1
+(and r2) dropped is read from the captures before and after the router with `tools/m2/dropcheck.py`:
+
+DROP_TABLE
 
 ## Gap rule and thresholds
 
-Fixed before the first matrix run, in the commit that added this section; not changed afterwards
-(PLAN 2d; M2 design §5.10). Implemented in `tools/m2/analyze.py` (`gap_verdict`, constants at the top).
+Fixed before the first matrix run, in commit d713941 (branch `m2d-testbed`), which added this section;
+not changed afterwards (PLAN 2d; M2 design §5.10). Implemented in `tools/m2/analyze.py` (`gap_verdict`, constants at the top).
 
 Per cell and algorithm, the stack (`linux_compat`) and Linux are compared on the statistics of their
 counted runs (next section): median, minimum and maximum of 5 runs.
@@ -120,7 +199,8 @@ stay as PLAN fixes them; these cells are marked in every table.
 
 ## Which runs count
 
-Fixed before the first matrix run, in the commit that added this section (M2 design §5.3, §5.6).
+Fixed before the first matrix run, in commit d713941 (branch `m2d-testbed`), which added this section
+(M2 design §5.3, §5.6).
 Implemented in `tools/m2/analyze.py` (`summarize_run`, `select_runs`).
 
 - **Invalid runs** (out of the statistics, kept and marked in `runs.csv`, rerun): a non-zero rx or tx

@@ -1446,10 +1446,12 @@ X = 10+4N for the timing slots N = 0, 1; X = 40+4(N-2) for N >= 2 (the M1 testbe
   sysctls, `nstat -asz` on sender and receiver; on the host `uname -r`, softnet_stat, the `cpu` lines of
   `/proc/stat`, `/proc/softirqs`, bridge-nf, `tcp_cubic`/`tcp_bbr` parameters, `uptime`, the top CPU users
   and the threads on CPUs 8-15. `analyze.py` parses this format.
-- Captures: `tcpdump -s 128 -B 16384 --time-stamp-precision nano` in the routers, r1-in (r1's a side),
-  r2-out (r2's c side) and for calibration r1-out (r1's b side, after netem). tcpdump hands packets over
-  in ring blocks retired after its 1 s timeout and loses an unretired block on SIGINT, so the runner
-  stops it 1.5 s after the last traffic; `capture.json` checks `captured` against `received by filter`.
+- Captures: `tcpdump -s 128 -B 16384 --time-stamp-precision nano 'not ether multicast'` in the routers,
+  r1-in (r1's a side), r2-out (r2's c side) and for calibration r1-out (r1's b side, after netem). The
+  filter leaves out the host's SSDP multicast from each bridge's gateway address. tcpdump hands packets
+  over in ring blocks retired after its 1 s timeout and loses an unretired block on SIGINT, so the
+  runner waits until both ends of the connection have left every state but TIME-WAIT, stops the pings
+  0.5 s later and tcpdump 1.5 s after that; `capture.json` checks `captured` against `received by filter`.
 - tbf sampler: one loop in r2, `$EPOCHREALTIME` and `tc -s qdisc show` every 10 ms (`tbf.txt`).
 
 ### 14.3 Runs and analysis

@@ -245,9 +245,12 @@ def one_run(slot, campaign, run, spec, smeta=None):
     caps = [("r1-in", slot.r1, slot.ifs["r1_a"]), ("r2-out", slot.r2, slot.ifs["r2_c"])]
     if spec.get("extra_capture"):
         caps.append(("r1-out", slot.r1, slot.ifs["r1_b"]))
+    # Ethernet multicast is left out: the host sends SSDP from every bridge's
+    # gateway address, which is not the run's traffic and, arriving in the last
+    # ring block, made captures look incomplete.
     for name, c, dev in caps:
         dexec_bg(c, f"exec tcpdump -i {dev} -s 128 -B 16384 -n --time-stamp-precision nano "
-                    f"-w {rd}/{name}.pcap 2> {rd}/{name}.tcpdump.txt")
+                    f"-w {rd}/{name}.pcap 'not ether multicast' 2> {rd}/{name}.tcpdump.txt")
     for name, c, dev in caps:
         wait_for(c, f"grep -q 'listening on' {rd}/{name}.tcpdump.txt", f"tcpdump {name}")
     dexec_bg(slot.r2, f"echo $$ > /run/utcp-tbf-sampler.pid; exec > {rd}/tbf.txt;"
@@ -519,7 +522,7 @@ def gate_table(gates):
     """The compact calibration table of RESULTS.md "Calibration": one row per
     slot and (bandwidth, RTT, queue) with items 1-5, then item 6 per slot."""
     out = ["| Slot | BW, RTT, queue | 1: ping median / p99 (ms) | 2: goodput, % of BW | "
-           "4: backlog max, % of Q; ping max - base / target (ms) | 3: loss % at 0.1 / 1 (expected count interval) "
+           "4: backlog max, % of Q; ping max - base / target (ms) | 3: loss % at 0.1 / 1 (lost segments in the accepted interval) "
            "| 5: drops, squeeze | Pass |", "|---|---|---|---|---|---|---|---|"]
     for g in gates:
         cells = {}
