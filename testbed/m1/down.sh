@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Removes the M1 testbed: containers utcp-m1-dut, utcp-m1-peer, utcp-m1-r and
-# networks utcp-m1-net, utcp-m1-net1400, utcp-m1-netb, then checks that none
-# of them is left. Only these names are removed; other utcp-m1-* objects
-# (other tasks' containers, e.g. utcp-m1-apps-*) are listed, not touched.
+# Removes the M1 testbed: containers <prefix>-dut, <prefix>-peer, <prefix>-r and
+# networks <prefix>-net, <prefix>-net1400, <prefix>-netb (prefix UTCP_TB_PREFIX,
+# default utcp-m1; common.sh), then checks that none of them is left. Only these
+# names are removed; other <prefix>-* objects (e.g. utcp-m1-apps-*) are listed,
+# not touched.
 # Exit status 1 if a testbed container or network remains.
 #
 # Usage: testbed/m1/down.sh
@@ -40,9 +41,9 @@ for n in "${tb_networks[@]}"; do
   fi
 done
 
-others=$(docker ps -a --format '{{.Names}}' | grep '^utcp-m1-' || true)
-other_nets=$(docker network ls --format '{{.Name}}' | grep '^utcp-m1-' || true)
+others=$(docker ps -a --format '{{.Names}}' | awk -v p="$tb_prefix-" 'index($0, p) == 1' || true)
+other_nets=$(docker network ls --format '{{.Name}}' | awk -v p="$tb_prefix-" 'index($0, p) == 1' || true)
 echo "testbed containers and networks left: $( ((left)) && echo some || echo none)"
-echo "utcp-m1-* containers now: ${others:-none}"
-echo "utcp-m1-* networks now: ${other_nets:-none}"
+echo "$tb_prefix-* containers now: ${others:-none}"
+echo "$tb_prefix-* networks now: ${other_nets:-none}"
 exit "$left"

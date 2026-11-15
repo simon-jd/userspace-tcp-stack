@@ -7,7 +7,9 @@
 # Usage: testbed/m1/build.sh [PRESET] [TARGET...]
 #   PRESET   a configure preset (default gcc-release)
 #   TARGET   build only these targets (default: everything)
-# Environment: UTCP_IMAGE (default utcp-testbed:dev).
+# Environment: UTCP_IMAGE (default utcp-testbed:dev); UTCP_TB_PREFIX names the
+# build container <prefix>-build-<preset> (common.sh), so tasks with their own
+# prefix can build at the same time.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 if [[ ${1:-} == -h || ${1:-} == --help ]]; then
@@ -25,7 +27,7 @@ for t in "${targets[@]}"; do
 done
 
 echo "building $dir (preset $preset${targets:+, targets ${targets[*]}}) in $tb_image"
-docker run --rm --name utcp-m1-build --user "$(id -u):$(id -g)" \
+docker run --rm --name "$tb_prefix-build-$preset" --user "$(id -u):$(id -g)" \
   --cpuset-cpus 16-31 -v "$tb_repo:$tb_repo" -w "$tb_repo" "$tb_image" \
   bash -euo pipefail -c '
     dir=$1 preset=$2
