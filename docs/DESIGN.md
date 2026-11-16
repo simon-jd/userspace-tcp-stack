@@ -1534,3 +1534,56 @@ at another sequence number is not counted as a copy. `tools/m2/dropcheck.py` lis
 by comparing the captures before and after it (transmissions told apart by IP ID and TSval);
 `tests/interop/m2_testbed_drops.sh` verifies copy 1, copy 2 (r2 drops copy 1 so that a copy 2 exists),
 copies 1 and 2, and a `ct` drop.
+
+### 14.6 The stack sender's options and counters
+
+`utcp-bulk` with the utcp backend (`apps/common/kernel_transport.hpp`):
+- `--set FIELD=VALUE`, repeatable, applies `set_config_field` to the profile's `TcpConfig` in command-line
+  order (sizes `64Mi`, durations `200ms`, rates `50Mbit` = bytes/s × 8); `check_tcp_config` runs after
+  the last one. The JSONL's second line is `{"ev":"config","set":"...",<every TcpConfig field>}`. With
+  `--backend kernel`, `--set` and `--trace` are errors.
+- `--trace FILE` keeps the stack's trace events as `TraceEvent` structs in memory (`TraceRecorder`, blocks of
+  64 MiB, added when one is full; nothing is formatted or written while the program runs) and writes them
+  as JSONL (`add_fields`) when the transport is destroyed. `--trace-kinds` selects the `TraceKind`s;
+  `rexmit` keeps only tx events of retransmissions (fast_rexmit, rexmit, rto_rexmit, pmtu_rexmit, tlp).
+  Default `cwnd,recovery,rto,rexmit` (M2 design §5.6). The core does not emit `cwnd` or `recovery`
+  events yet, so a trace holds the retransmissions and RTOs only.
+- `--stats FILE` (one line, written at exit or on SIGINT/SIGTERM): every StackStats counter, the
+  DeviceStats counters (`dev_*`; `dev_tx_batch_max` is the most datagrams one drain of the stack wrote),
+  the EventLoop's counters (`loop_*`; `loop_pending_calls` counts the iterations in which connections
+  blocked on transmit-queue or pool space resumed, §3.4), the lateness histogram (`loop_lateness_count`,
+  `loop_lateness_max_ns`, `loop_lateness_bucket_I` for each non-empty log2 bucket I) and, with a trace,
+  `trace_events`. Device errors invalidate a run; a non-zero `loop_pending_calls` flags it
+  (`stack_blocked`): the stack waited for the TUN, it lost nothing.
+- Both senders write the same sample keys (`add_fields` of `TcpInfo`), among them
+  `sndbuf_limited_us`, `rwnd_limited_us`, `total_retrans`, `data_segs_out`, `dsack_dups`.
+- Every stack run of the runner uses `--set snd_buf_max=64Mi --set rcv_buf_max=32Mi --set
+  gso_max_size=G` (M2 design §5.3), G = the sender eth0's `gso_ipv4_max_size` (measured per run with
+  `ip -d link`, 65536 on the server's veth) − 320 − 1, as TcpConfig's default derives it (device size −
+  MAX_TCP_HEADER − 1, MAX_TCP_HEADER taken as 320; `net/core/sock.c` is not in the server's partial
+  v7.0 tree, so the 320 is not checked here); `meta.json` has `gso_ipv4_max_size` and `stack_set`.
+  The sender's eth0 has tso and gso off, so the Linux sender sends single segments; what that means for
+  its pacing bursts is m2b-rate-pacing's question.
+
+### 14.7 Run plans, the parallel-mode proof and plots
+
+- `matrix.py run PLAN.toml --slot N [--slot M]` (format in `load_plan`; example
+  `testbed/m2/plans/mini.toml`): cells × algorithms × repetitions. One group per (cell, algorithm,
+  repetition) holds its runs (the stack's and Linux's when the algorithm lists both implementations)
+  back to back in one slot. From the plan's one seed, in order: the shuffle of the groups, then per group
+  its netem seed (shared by its runs) and the order inside it. Repetition r runs on slot r mod (number
+  of slots). `expand` prints the list; the expanded plan is stored as `plan.json` in the campaign and a
+  restart with a different plan is refused.
+- Resuming: a run whose `summary.json` exists is skipped; a run directory without it is moved to
+  `aside/<run>-<time>` and the run is repeated; each run first stops what an interrupted run left in the
+  slot (senders, pings, captures, the tbf sampler). Afterwards each invalid run is rerun as
+  `<run>-rerunK`, at most `A.RERUN_CAP` per cell and algorithm.
+- `matrix.py proof --campaign C` (M2 design §6): serial on slot 0, then the same list on slots 0 and 1 at
+  once, 5 repetitions of item 1 (idle ping) and items 2 and 4 (Linux CUBIC, 0 %, 2×BDP) for the four
+  (bandwidth, RTT) pairs and of stack NewReno at 100 Mbit/s, 20 ms, 0 %, 2×BDP with the trace; serially
+  also the stack run without the trace (the trace overhead, §5.6). `proof.json` and `proof.md` compare
+  each parallel slot with the serial runs (medians and ranges; the stack's lateness p99 from the pooled
+  `--stats` histograms, its max from the summary lines).
+- `matrix.py plot --campaign C` runs `tools/m2/plot.py` (matplotlib, in the image) in a helper container:
+  per (cell, algorithm) one PNG of the median-goodput valid run of each implementation, cwnd with the
+  retransmission and RTO marks, delivery and pacing rate, and the receiver's 100 ms goodput.

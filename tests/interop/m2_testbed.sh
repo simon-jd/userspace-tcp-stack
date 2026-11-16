@@ -41,8 +41,11 @@ ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
 expect() { if [[ $2 == "$3" ]]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi; }
 
-others_before=$(docker ps -a --format '{{.Names}}' | grep '^utcp-' | grep -v "^$m2_base-" | sort)
-nets_before=$(docker network ls --format '{{.Name}}' | grep '^utcp-' | grep -v "^$m2_base-" | sort)
+# Other testbed slots (helper containers of other tasks come and go by
+# themselves); one collation for sort and comm.
+export LC_ALL=C
+others_before=$(docker ps -a --format '{{.Names}}' | grep "^$m2_prefix-s[0-9]-" | grep -v "^$m2_base-" | sort)
+nets_before=$(docker network ls --format '{{.Name}}' | grep "^$m2_prefix-s[0-9]-" | grep -v "^$m2_base-" | sort)
 
 # --- up
 "$tbdir/up.sh" --slot "$slot" "${nontiming[@]}" >/tmp/m2_testbed_up.$$ 2>&1 || { cat /tmp/m2_testbed_up.$$; bad "up.sh failed"; exit 1; }
@@ -172,12 +175,12 @@ if ((!keep)); then
   expect "down: slot networks" "$(docker network ls --format '{{.Name}}' | grep -c "^$m2_base-")" 0
   # Containers of other tasks may come and go meanwhile; none may be removed by
   # down.sh, which only names the slot's own.
-  others_after=$(docker ps -a --format '{{.Names}}' | grep '^utcp-' | grep -v "^$m2_base-" | sort)
+  others_after=$(docker ps -a --format '{{.Names}}' | grep "^$m2_prefix-s[0-9]-" | grep -v "^$m2_base-" | sort)
   gone=$(comm -23 <(echo "$others_before") <(echo "$others_after") | tr '\n' ' ')
-  [[ -z ${gone// /} ]] && ok "down: other utcp-* containers untouched" || echo "note other utcp-* containers gone meanwhile: $gone"
-  nets_after=$(docker network ls --format '{{.Name}}' | grep '^utcp-' | grep -v "^$m2_base-" | sort)
+  [[ -z ${gone// /} ]] && ok "down: other testbed slots' containers untouched" || bad "down: other slots' containers gone: $gone"
+  nets_after=$(docker network ls --format '{{.Name}}' | grep "^$m2_prefix-s[0-9]-" | grep -v "^$m2_base-" | sort)
   gone=$(comm -23 <(echo "$nets_before") <(echo "$nets_after") | tr '\n' ' ')
-  [[ -z ${gone// /} ]] && ok "down: other utcp-* networks untouched" || echo "note other utcp-* networks gone meanwhile: $gone"
+  [[ -z ${gone// /} ]] && ok "down: other testbed slots' networks untouched" || bad "down: other slots' networks gone: $gone"
 fi
 echo "m2_testbed slot $slot: $( ((fail)) && echo FAIL || echo PASS)"
 exit "$fail"

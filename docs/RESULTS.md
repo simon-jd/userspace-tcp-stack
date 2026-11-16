@@ -42,7 +42,12 @@ equal dropped segments.
 
 **One run** (`tools/m2/matrix.py`): shape; `record.sh` before; captures and the tbf sampler start; the
 receiver listens; `ping -D -O -i 0.05 -s 56` from `snd` to `rcv` starts 3 s before the sender; the
-sender (`utcp-bulk --send --duration S --sample-ms 10`, `--cc X`) runs; `record.sh` after; analysis.
+sender (`utcp-bulk --send --duration S --sample-ms 10`, `--cc X`) runs; `record.sh` after; analysis. The
+stack sender also gets `--set snd_buf_max=64Mi --set rcv_buf_max=32Mi --set gso_max_size=G` (G from the
+sender interface's measured `gso_ipv4_max_size`, DESIGN §14.6), `--stats` and `--trace` (retransmissions
+and RTOs, kept in memory and written at exit). Plans (`matrix.py run PLAN.toml`, DESIGN §14.7) run each
+stack run and the Linux run of the same cell, algorithm and repetition back to back in one slot with one
+netem seed; the group order, the netem seeds and the order inside each pair come from the plan's seed.
 
 **Window.** Every metric uses [t₀ + 5 s, t₀ + S] on CLOCK_MONOTONIC, t₀ = the receiver's accept time (the
 `start` line of its JSONL); counters at the bounds are interpolated linearly between the 10 ms
@@ -60,8 +65,10 @@ tbf sampler) convert with the clock pair that `utcp-bulk` writes first in its JS
 | sndbuf-, rwnd-limited time | Δ`sndbuf_limited_us`, Δ`rwnd_limited_us` / window | sender JSONL |
 | Jain index | (Σx)² / (n·Σx²) over per-flow goodput in [t_join + 20 s, t₀ + S] | receiver JSONL per flow |
 | Convergence time | first t after flow n's join from which every flow's 1 s mean goodput (100 ms steps) stays within ±20 % of C/n for 5 s; "not converged" if none | receiver JSONL per flow |
-| Loop lateness p99, max | the stack's EventLoop histogram | `utcp-bulk` summary |
-| Testbed counters | netem and tbf sent/dropped, tbf backlog (10 ms sampler), interface and qdisc drops, softnet drops and time_squeeze on the slot CPUs, `nstat` | `record.sh` before and after, `tbf.txt` |
+| Loop lateness p99, max | the stack's EventLoop histogram | `utcp-bulk` summary; the histogram in `--stats` |
+| Sender counters | `TcpRetransSegs`, `TcpExtTCPSackRecovery`, `TcpExtTCPLossProbes`, `TcpExtTCPTimeouts`, ... (same names) | Linux: the sender's `nstat` before and after; stack: `--stats` |
+| Testbed counters | netem and tbf sent/dropped, tbf backlog (10 ms sampler), interface and qdisc drops, softnet drops and time_squeeze on the slot CPUs, `nstat`; the stack's device errors (invalid) and transmit-queue or pool waits (`loop_pending_calls`, flagged) | `record.sh` before and after, `tbf.txt`, `--stats` |
+| Softirq time on slot CPUs | Δ irq and softirq jiffies of the slot CPUs; Δ NET_RX, NET_TX, HRTIMER, TIMER | `/proc/stat`, `/proc/softirqs` in `record.sh` |
 
 Percentiles interpolate linearly between closest ranks.
 
@@ -74,8 +81,10 @@ closed at both ends, so that its 1 s ring blocks are delivered.
 
 **Raw data and archive.** Per run in the volume: `meta.json` (cell, implementation, algorithm,
 repetition, order, slot, start time, kernel, image id, commit, binary and core-library sha256, build,
-iproute2, cpusets, tbf B and Q, netem line and seed, reuse key), `snd.jsonl`, `rcv.jsonl`, `ping.txt`,
-`tbf.txt`, `pre/` and `post/record.txt`, the captures, `capture.json`, `summary.json`. In the repository
+iproute2, cpusets, tbf B and Q, netem line and seed, uptime and top CPU users, for the stack the `--set`
+list and the measured `gso_ipv4_max_size`, reuse key), `snd.jsonl`, `rcv.jsonl`, `ping.txt`, `tbf.txt`,
+`pre/` and `post/record.txt`, the captures, `capture.json`, for the stack `stats.json` and `trace.jsonl`,
+and `summary.json`. In the repository
 `docs/results/m2-<campaign>/runs.csv` and `cells.csv`. The analysis archive (every input except the
 captures, with a sha256 manifest) goes to `/m2/archive/` in the volume; `analyze.py tables --archive`
 regenerates `runs.csv` and `cells.csv` byte for byte from it.
@@ -245,6 +254,53 @@ Fixed parts (M2 design §6):
   ACKs' processing at the sender) runs mostly on the CPU that transmitted, the sender's core; the
   stack's loop lateness therefore includes it, and both senders see the same work on the same core.
 
-Pending (m2d-testbed, part 2): the parallel-mode proof (serial against two-slot runs of gate items 1,
-2 and 4 and of stack NewReno at 100 Mbit/s, 20 ms, 0 %, 2×BDP), the trace-overhead measurement, and the
-decision whether timing runs use one slot or two.
+**Decision: timing runs are serial**: never two timing runs at once on CPUs 8-15. Plans run with one
+slot (`matrix.py run PLAN --slot 0`); a gate run on slot 1 runs while slot 0 is idle. Two slots at once
+failed the pre-registered criterion of M2 design §6 (stack loop lateness p99 and max in parallel
+≤ 2 × serial) on slot 1.
+
+**Parallel-mode proof** (M2 design §6, DESIGN §14.7), 2026-11-15 08:33-09:30 PST, commit ba1766f, kernel
+7.0.0-42-generic, image `sha256:42acf2a264d9`, 5 repetitions per item; serial on slot 0, then the same
+list on slots 0 and 1 at once:
+
+```
+testbed/m2/up.sh --slot 0; testbed/m2/up.sh --slot 1
+UTCP_M2_JOB=utcp-m2d-testbed tools/m2/matrix.py proof --campaign m2d-testbed/proof
+```
+
+Files in `utcp-data` under `/m2/m2d-testbed/proof/` (`proof.json`, `proof.md`, `serial-s0/`,
+`parallel-s0/`, `parallel-s1/`). Gate items 1, 2 and 4 (Linux CUBIC, 2×BDP, 0 %) pass in all four
+(bandwidth, RTT) pairs on both parallel slots: ping medians equal to the serial ones (limit 0.2 ms),
+goodput medians within 0.005 % (limit 1 %), tbf backlog maxima within 0.004 % (limit 2 %), ranges
+overlapping. Stack NewReno, 100 Mbit/s, 20 ms, 0 %, 2×BDP, with the trace:
+
+| Metric | Serial (slot 0) | Parallel slot 0 | Parallel slot 1 | Limit | Pass |
+|---|---|---|---|---|---|
+| goodput median [range] (Mbit/s) | 65.93 [65.69, 67.44] | 65.73 [65.62, 65.83] | 65.94 [65.30, 67.84] | ±2 %, ranges overlap | yes / yes |
+| loop lateness p99, pooled histogram (ns) | 65 535 | 65 535 | 131 071 | ≤ 2 × serial | yes / **no** |
+| loop lateness max over 5 runs (ns) | 2 372 926 | 2 141 416 | 4 996 323 | ≤ 2 × serial | yes / **no** |
+| ping p99 median (ms), reported | 39.40 | 39.31 | 39.41 | - | - |
+
+Slot 1's p99 is one log2 bucket higher than the serial value (the histogram's resolution is a factor of
+2, so ≤ 2 × cannot be shown there); its per-run p99 was in that bucket in 3 of 5 runs, the serial and
+parallel slot 0 runs in 1 of 5 at most. Slot 1's max comes from one run (r4, 5.0 ms; the other four
+1.30-2.11 ms); 2.1 × the serial max. The serial runs were all on slot 0, so this does not separate the
+effect of the parallel run from a difference between the two slots' cores. The CPUs 8-15 are not
+isolated on this host: every run's `threads_on_8_15` lists other services' processes last seen there
+(airflow, grok-bot, kubelet, containerd, minio, editors, browsers), and the 1-minute load average was
+2.7-11.2 during the proof. Timing runs therefore record and keep this per run (meta.json `uptime`,
+`top_cpu`, `threads_on_8_15`), as M2 design §6 requires.
+
+The same runs check the buffers (§5.3): sndbuf-limited time 0 in every stack and Linux run. Linux's
+rwnd-limited time is 0; the stack sender is rwnd-limited for about 20.7 % of the window (13.1 % and 0 %
+in two runs, 18.0 % in one), with the Linux receiver's 32 MiB maximum buffer. The cause was not examined here; with M1
+recovery this run also falls short of the gate's goodput (Calibration, item 6), and m2-integrate's gate
+rerun on M2 recovery checks both.
+
+**Trace overhead** (M2 design §5.6), stack NewReno 100 Mbit/s, 20 ms, 0 %, 2×BDP, serial on slot 0,
+5 runs with `--trace` and 5 without, in the same proof campaign (`stack-trace-r*`, `stack-notrace-r*`):
+goodput median 65.93 Mbit/s [65.69, 67.44] with the trace and 65.89 [65.67, 68.83] without; pooled
+lateness p99 65 535 ns both; lateness max 1.81-2.37 ms with, 1.78-2.11 ms without; 623-709 trace events
+per run. No cost is visible at this event count. The core does not emit `cwnd` or `recovery` events
+yet (DESIGN §14.6), so these traces hold only retransmissions and RTOs; once those kinds are emitted
+the measurement is repeated.
