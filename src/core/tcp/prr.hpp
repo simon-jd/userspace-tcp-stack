@@ -35,9 +35,15 @@ void prr_init(PrrState& p, std::uint32_t cwnd);
 //
 // RFC 9937 divides by RecoverFS; Linux, and so the stack, by prior_cwnd
 // (M2-DESIGN §1.8 "RFC 9937 differences").
+//
+// `skip_force` (TestFault::prr_skip_force only): while prr.out is 0 the
+// formula counts one packet as sent already and does not force sndcnt to
+// 1, so the first retransmission has no room under cwnd (LossRecovery then
+// lets it bypass the cwnd gate, which the InFlightChecker must catch).
 [[nodiscard]] std::optional<std::uint32_t> prr_cwnd(PrrState& p, std::uint32_t ssthresh,
                                                     std::uint32_t in_flight,
                                                     std::uint32_t newly_acked_sacked,
-                                                    std::uint32_t newly_lost, bool una_advanced);
+                                                    std::uint32_t newly_lost, bool una_advanced,
+                                                    bool skip_force = false);
 
 }  // namespace utcp

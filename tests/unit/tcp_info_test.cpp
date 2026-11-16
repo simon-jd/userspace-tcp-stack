@@ -198,6 +198,7 @@ TEST(TcpInfo, SndbufLimited) {
 TEST(TcpInfo, TraceKindsOfAConnection) {
   StackConfig ca = config(Side::a);
   ca.trace_mask = utcp::trace_mask_all;
+  ca.tcp.rack_tlp = false;  // the RTO repairs the loss, not a tail loss probe (M2-DESIGN §1.7)
   t::TcpHarness h(ca, config(Side::b));
   Sink sink;
   h.a().set_trace_sink(&sink);

@@ -121,6 +121,7 @@ struct Rig {
       send_at(seg.off, exempt ? TxKind::fast_rexmit : TxKind::rexmit);
       sent.push_back(name('R', seg.off));
     }
+    bool new_sent = false;
     while (!cwnd_limited && q.nxt() < q.end()) {
       if (in_flight() >= cc.cwnd) {
         cwnd_limited = true;
@@ -128,6 +129,7 @@ struct Rig {
       }
       sent.push_back(name('N', q.nxt()));
       send_at(q.nxt(), TxKind::data);
+      new_sent = true;
     }
     while (!cwnd_limited && in_flight() < cc.cwnd) {
       auto c = rctx();
@@ -139,7 +141,7 @@ struct Rig {
       send_at(*off, TxKind::rexmit);
     }
     auto c = rctx();
-    rec.on_burst_end(c, false);
+    rec.on_burst_end(c, new_sent);
     return sent;
   }
 

@@ -441,9 +441,11 @@ TEST(AckPipeline, SackBlocksMustStartAboveTheNewSndUna) {
   EXPECT_FALSE(r.q.find(2000)->sacked);
   EXPECT_EQ(r.q.counters().sacked_out, 0u);
   EXPECT_EQ(r.rec.state(), CaState::open);
+  // tcp_set_xmit_timer: in Open with SACK the PTO (M2-DESIGN §1.7), 2 *
+  // srtt + 2 ms with two packets out; not the srtt/2 reneging timer.
   const auto timer = r.rec.xmit_timer(r.rctx());
-  EXPECT_EQ(timer.first, utcp::XmitTimer::rto);
-  EXPECT_EQ(timer.second, r.now + r.rtt.rto_backed_off(0));  // not the srtt/2 reneging timer
+  EXPECT_EQ(timer.first, utcp::XmitTimer::pto);
+  EXPECT_EQ(timer.second, r.now + 2 * r.rtt.srtt() + 2ms);
   // A block just above the new SND.UNA is valid.
   const std::vector<Range> ok{{3000, 4000}};
   EXPECT_EQ(r.ack(2000, ok, true).newly_sacked, 1u);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <span>
 
 #include "utcp/check.hpp"
 
@@ -26,6 +27,9 @@ Duration head_rto_left(const RecoveryCtx& c, Duration rto) {
   const Duration left = std::max(segs.front().last_tx + rto - c.now, Duration{1});
   return (left + jiffy - Duration{1}) / jiffy * jiffy;
 }
+
+// usecs_to_jiffies at HZ 1000: whole milliseconds, rounded up.
+Duration ceil_jiffies(Duration d) { return (d + jiffy - Duration{1}) / jiffy * jiffy; }
 
 bool is_retransmission(TxKind kind) {
   switch (kind) {
@@ -112,17 +116,171 @@ void LossRecovery::mark_head_lost(RecoveryCtx& c) {
 }
 
 void LossRecovery::reno_dupack(RecoveryCtx& c, AckOutcome& out) {
-  // Linux tcp_add_reno_sack: the increase of sacked_out is delivered.
-  const std::uint32_t before = c.q.counters().sacked_out;
+  // Linux tcp_add_reno_sack: the increase of sacked_out is delivered; the
+  // count is capped by tcp_check_reno_reordering's tcp_limit_reno_sacked,
+  // and a capped count means reordering (§1.9).
+  const Counters& k = c.q.counters();
+  const std::uint32_t before = k.sacked_out;
+  const std::uint32_t holes = std::min(std::max(k.lost_out, 1u), k.packets_out);
+  const bool limited = before + 1 + holes > k.packets_out;
   c.q.reno_dupack();
+  if (limited) {
+    check_reno_reordering(c, 0);
+  }
   out.delivered += c.q.counters().sacked_out - before;
 }
 
+void LossRecovery::check_sack_reordering(RecoveryCtx& c, std::uint64_t low, std::uint64_t fack) {
+  // Linux tcp_check_sack_reordering (tcp_input.c:1276): a never-retransmitted
+  // segment delivered below the highest SACK. The degree is the distance in
+  // full-MSS packets, up to max_reordering (dupthresh without adaptive
+  // reordering: the rfc profile keeps RFC 6675's DupThresh).
+  if (low >= fack) {
+    return;
+  }
+  const std::uint64_t mss = c.cc.mss;
+  const std::uint64_t metric = fack - low;
+  if (c.cfg.adaptive_reordering && mss > 0 && metric > std::uint64_t{reordering(c.cfg)} * mss) {
+    reordering_ = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>((metric + mss - 1) / mss, c.cfg.max_reordering));
+  }
+  ++reord_seen_;
+  ++c.stats.TcpExtTCPSACKReorder;
+}
+
+void LossRecovery::check_reno_reordering(RecoveryCtx& c, std::uint32_t addend) {
+  // Linux tcp_check_reno_reordering (tcp_input.c:2436), after the caller
+  // found tcp_limit_reno_sacked capping sacked_out: more duplicate ACKs than
+  // packets out.
+  if (c.cfg.adaptive_reordering) {
+    reordering_ = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        std::uint64_t{c.q.counters().packets_out} + addend, c.cfg.max_reordering));
+  }
+  ++reord_seen_;
+  ++c.stats.TcpExtTCPRenoReorder;
+}
+
+void LossRecovery::ack_reordering(RecoveryCtx& c, const AckInput& in, const AckOutcome& out) {
+  if (c.sack_ok) {
+    // tcp_sacktag_one: a D-SACK for a retransmitted segment already SACKed
+    // (the original and the retransmission both arrived) lowers reord too.
+    if (in.dsack && !in.dsack->empty()) {
+      const std::span<const TxSeg> segs = c.q.segs();
+      auto it = std::lower_bound(segs.begin(), segs.end(), in.dsack->begin,
+                                 [](const TxSeg& x, std::uint64_t o) { return x.off < o; });
+      for (; it != segs.end() && it->end() <= in.dsack->end; ++it) {
+        if (it->sacked && it->ever_retrans && it->len > 0) {
+          reord_sack_ = std::min(reord_sack_, it->off);
+        }
+      }
+    }
+    // End of tcp_sacktag_write_queue (undo_marker is unset only after a PMTU
+    // drop's Loss), then tcp_clean_rtx_queue's check of the filled hole
+    // against the highest SACK before this ACK.
+    if (reord_sack_ != no_reord && (state_ != CaState::loss || undo_marker_)) {
+      check_sack_reordering(c, reord_sack_, fack_);
+    }
+    const std::uint64_t prior_fack = std::max(prior_fack_, in.prior_una);
+    if (out.acked_pkts > 0 && reord_cum_ < prior_fack) {
+      check_sack_reordering(c, reord_cum_, std::max(fack_, c.q.una()));
+    }
+  } else if (out.acked_pkts > 0 && reno_sacked_prior_) {
+    // tcp_remove_reno_sacks: one ACK filled the hole, the rest ate duplicate
+    // ACKs; tcp_check_reno_reordering(acked) if the count still exceeds the
+    // packets out.
+    const Counters& k = c.q.counters();
+    const std::uint32_t prior = *reno_sacked_prior_;
+    const std::uint32_t left = prior - std::min(out.acked_pkts - 1, prior);
+    const std::uint32_t holes = std::min(std::max(k.lost_out, 1u), k.packets_out);
+    if (left + holes > k.packets_out) {
+      check_reno_reordering(c, out.acked_pkts);
+    }
+  }
+}
+
+void LossRecovery::update_reo_wnd(const RecoveryCtx& c) {
+  // Linux tcp_rack_update_reo_wnd (tcp_input.c:4220), after the cumulative
+  // step of an ACK whose delivered segments carried a rate snapshot.
+  if (!c.has_prior) {
+    return;
+  }
+  // A D-SACK less than a round (in delivered packets) after the last step
+  // is disregarded.
+  if (c.prior_delivered < rack_.last_delivered) {
+    rack_.dsack_seen = false;
+  }
+  if (rack_.dsack_seen) {
+    rack_.reo_wnd_steps = static_cast<std::uint8_t>(std::min(rack_.reo_wnd_steps + 1, 0xff));
+    rack_.dsack_seen = false;
+    rack_.last_delivered = c.delivered;
+    rack_.reo_wnd_persist = 16;  // TCP_RACK_RECOVERY_THRESH
+  } else if (rack_.reo_wnd_persist == 0) {
+    rack_.reo_wnd_steps = 1;
+  }
+}
+
+void LossRecovery::process_tlp_ack(RecoveryCtx& c, const AckInput& in, const AckOutcome& out) {
+  // Linux tcp_process_tlp_ack (tcp_input.c:4112), once SND.UNA reaches
+  // tlp_high_seq.
+  const std::uint64_t ack = c.q.una_with_fin();
+  if (!tlp_.active || ack < tlp_.high_seq) {
+    return;
+  }
+  if (!tlp_.retrans) {
+    tlp_ = TlpState{};  // a new-data probe was acknowledged
+  } else if ((out.flags & ack_dsack_tlp) != 0) {
+    tlp_ = TlpState{};  // the original and the probe both arrived: no loss
+  } else if (ack > tlp_.high_seq) {
+    // The probe repaired a loss: reduce cwnd at once (CWR entered and left;
+    // tcp_init_cwnd_reduction clears tlp_high_seq).
+    refresh(c);
+    init_cwnd_reduction(c);
+    set_state(c, CaState::cwr);
+    end_cwnd_reduction(c);
+    keep_open(c);
+    ++c.stats.TcpExtTCPLossProbeRecovery;
+  } else if (in.dupack && (out.flags & ack_una_advanced) == 0 && out.newly_sacked == 0) {
+    tlp_ = TlpState{};  // a pure duplicate ACK (no FLAG_NOT_DUP, no SACK): no loss
+  }
+}
+
+bool LossRecovery::schedule_loss_probe(RecoveryCtx& c, bool advancing_rto) {
+  // Linux tcp_schedule_loss_probe (tcp_output.c:3101): SACK connections in
+  // Open or CWR with packets out (tcp_early_retrans 3: RACK-TLP).
+  const Counters& k = c.q.counters();
+  if (!uses_rack(c) || k.packets_out == 0 || c.q.segs().empty() ||
+      (state_ != CaState::open && state_ != CaState::cwr)) {
+    return false;
+  }
+  // PTO = 2 * srtt plus rto_min (the delayed-ACK allowance) for a single
+  // packet, else plus 2 ms, in whole ms rounded up; 1 s without an RTT
+  // sample (TCP_TIMEOUT_INIT). RFC 8985 §7.2 adds max_ack_delay instead.
+  Duration timeout = std::chrono::seconds{1};
+  if (c.rtt.has_sample()) {
+    timeout = ceil_jiffies(2 * c.rtt.srtt() + (k.packets_out == 1 ? c.cfg.rto_min
+                                                                   : Duration{std::chrono::milliseconds{2}}));
+  }
+  // At most the RTO: a full one after an ACK (advancing_rto), else the time
+  // left to the head's RTO (tcp_rto_delta_us; none if already past).
+  const Duration rto = c.rtt.rto_backed_off(c.backoff);
+  const Duration delta = advancing_rto ? rto : c.q.segs().front().last_tx + rto - c.now;
+  if (delta > Duration{0}) {
+    timeout = std::min(timeout, ceil_jiffies(delta));
+  }
+  arm(XmitTimer::pto, c.now + timeout + pacing_delay_jiffies(c));
+  return true;
+}
+
 void LossRecovery::try_to_open(RecoveryCtx& c) {
-  // Linux tcp_try_to_open / tcp_try_keep_open (no ECN, so never CWR here).
+  // Linux tcp_try_to_open (no ECN): CWR is left only by its own exit.
   if (state_ == CaState::cwr) {
     return;
   }
+  keep_open(c);
+}
+
+void LossRecovery::keep_open(RecoveryCtx& c) {
+  // Linux tcp_try_keep_open.
   const Counters& k = c.q.counters();
   const CaState s =
       (k.sacked_out + k.lost_out > 0 || any_retrans_done(c.q)) ? CaState::disorder : CaState::open;
@@ -135,6 +293,7 @@ void LossRecovery::try_to_open(RecoveryCtx& c) {
 void LossRecovery::init_cwnd_reduction(RecoveryCtx& c) {
   // Linux tcp_init_cwnd_reduction (tcp_input.c:2970).
   recover_ = c.q.nxt_with_fin();
+  tlp_ = TlpState{};
   c.cc.cwnd_cnt = 0;
   c.cc.prior_cwnd = c.cc.cwnd;
   prr_init(prr_, c.cc.cwnd);
@@ -163,6 +322,7 @@ void LossRecovery::enter_recovery(RecoveryCtx& c) {
   }
   refresh(c);
   c.cc.prior_ssthresh = 0;
+  undo_marker_ = true;  // tcp_init_undo
   if (state_ != CaState::cwr && state_ != CaState::recovery) {  // !tcp_in_cwnd_reduction
     c.cc.prior_ssthresh = current_ssthresh(c.cc);
     init_cwnd_reduction(c);
@@ -268,6 +428,11 @@ void LossRecovery::fastretrans_alert(RecoveryCtx& c, bool dupack, bool advanced,
     end_cwnd_reduction(c);
     set_state(c, CaState::open);
   } else if ((state_ == CaState::recovery || state_ == CaState::loss) && una >= recover_) {
+    // tcp_try_undo_recovery without undo (§1.10): each end of a Recovery or
+    // Loss counts down the D-SACK reorder window's persistence (§1.6).
+    if (rack_.reo_wnd_persist > 0) {
+      --rack_.reo_wnd_persist;
+    }
     if (state_ == CaState::recovery && reno) {
       c.q.clear_all_sacked();  // tcp_reset_reno_sack
     }
@@ -339,6 +504,21 @@ void LossRecovery::on_delivered(RecoveryCtx& c, const TxSeg& seg, bool via_sack)
   if (uses_6675(c) && via_sack) {
     sb_.on_sacked(seg.end());
   }
+  // Reordering (§1.9): tcp_sacktag_one's reord for a never-retransmitted
+  // segment SACKed below the highest SACK so far (highest_sack advances as
+  // the walk goes up), tcp_clean_rtx_queue's for one cumulatively acked.
+  if (c.sack_ok) {
+    if (via_sack) {
+      if (!seg.ever_retrans && seg.off < fack_) {
+        reord_sack_ = std::min(reord_sack_, seg.off);
+      }
+      fack_ = std::max(fack_, seg.end());
+    } else if (!seg.ever_retrans) {
+      reord_cum_ = std::min(reord_cum_, seg.off);
+    }
+  } else if (!via_sack && !reno_sacked_prior_) {
+    reno_sacked_prior_ = c.q.counters().sacked_out;  // before tcp_remove_reno_sacks
+  }
   if (!uses_rack(c)) {
     return;
   }
@@ -360,14 +540,32 @@ void LossRecovery::on_ack(RecoveryCtx& c, const AckInput& in, AckOutcome& out) {
     sb_.on_ack(advanced, out.newly_sacked,
                state_ != CaState::recovery && state_ != CaState::loss);
   }
+  // tcp_dsack_seen's RACK part (§1.6): a valid D-SACK that is not a TLP's,
+  // once reordering has been seen (reord_seen before this ACK's checks).
+  if ((out.flags & ack_dsack) != 0 && (out.flags & ack_dsack_tlp) == 0 && reord_seen_ > 0) {
+    rack_.dsack_seen = true;
+  }
+  ack_reordering(c, in, out);
+  if (!in.old_ack) {
+    update_reo_wnd(c);
+    process_tlp_ack(c, in, out);
+  }
   // Linux tcp_ack_is_dubious (FLAG_CA_ALERT: newly SACKed data or a
-  // D-SACK), and num_dupack (not for a D-SACK).
+  // D-SACK; the state after tcp_process_tlp_ack), and num_dupack (not for a
+  // D-SACK).
   const bool dubious = in.dupack || out.newly_sacked > 0 || (out.flags & ack_dsack) != 0 ||
                        state_ != CaState::open;
   const bool dupack = in.dupack && !advanced && (out.flags & ack_dsack) == 0;
-  // FLAG_SET_XMIT_TIMER (tcp_clean_rtx_queue) as M1: data acknowledged, or
-  // nothing left outstanding.
-  bool rearm = advanced || c.q.counters().packets_out == 0;
+  // FLAG_SET_XMIT_TIMER (tcp_clean_rtx_queue): a segment cumulatively
+  // acknowledged, or a SACK-only ACK whose SACK RTT sample is older than the
+  // head's last (re)transmission ("the RTO does not continue to extend in
+  // loss recovery"); M1 also re-arms (persist or none) once nothing is out.
+  const auto segs_now = c.q.segs();
+  const bool sack_rtt_rearm = out.acked_pkts == 0 && !segs_now.empty() &&
+                              out.seq_rtt >= Duration{0} &&
+                              out.seq_rtt > c.now - segs_now.front().last_tx;
+  bool rearm = (!in.old_ack && (out.acked_pkts > 0 || sack_rtt_rearm)) ||
+               c.q.counters().packets_out == 0;
   reo_armed_ = false;
   if (dubious) {
     if ((out.flags & ack_sack_reneging) != 0 && advanced) {
@@ -379,13 +577,17 @@ void LossRecovery::on_ack(RecoveryCtx& c, const AckInput& in, AckOutcome& out) {
       fastretrans_alert(c, dupack, advanced, out);
     }
   }
-  // tcp_set_xmit_timer, not when RACK armed the REO timer in this ACK
-  // (tcp_identify_packet_loss clears FLAG_SET_XMIT_TIMER).
-  if (rearm && !reo_armed_) {
+  // tcp_set_xmit_timer: the PTO, else the RTO; not when RACK armed the REO
+  // timer in this ACK (tcp_identify_packet_loss clears FLAG_SET_XMIT_TIMER).
+  if (rearm && !reo_armed_ && !schedule_loss_probe(c, true)) {
     rearm_rto(c);
   }
   refresh(c);
   out.in_flight = c.cc.in_flight;
+  // The next ACK's prior_fack; this ACK's reordering candidates are spent.
+  prior_fack_ = fack_;
+  reord_sack_ = reord_cum_ = no_reord;
+  reno_sacked_prior_.reset();
 }
 
 void LossRecovery::on_transmit(RecoveryCtx& c, const TxSeg& seg, TxKind kind) {
@@ -447,10 +649,14 @@ void LossRecovery::on_burst_end(RecoveryCtx& c, bool new_data_sent) {
     return;
   }
   if (c.q.counters().packets_out > 0) {
-    // A REO or PTO timer pending stays (§1.7); the PTO schedule after new
-    // data is m2a part 2.
+    // A REO or PTO timer pending stays (§1.7).
     if (timer_ == XmitTimer::none || timer_ == XmitTimer::persist) {
       arm(XmitTimer::rto, c.now + c.rtt.rto_backed_off(c.backoff));
+    }
+    // tcp_write_xmit: one loss probe per tail loss episode, scheduled after
+    // new data went out (not after the probe itself, push_one = 2).
+    if (new_data_sent) {
+      (void)schedule_loss_probe(c, false);
     }
   } else if (persist_wanted(c)) {
     // tcp_check_probe_timer; after an expiry, the next probe interval with
@@ -473,6 +679,7 @@ void LossRecovery::on_rto(RecoveryCtx& c) {
     ++c.stats.TcpExtTCPSACKReneging;
     c.q.clear_all_sacked();
     sack_reneg_ = true;
+    fack_ = prior_fack_ = 0;  // tcp_highest_sack is reset with the marks
   } else if (!c.q.sack_ok()) {
     c.q.clear_all_sacked();  // tcp_reset_reno_sack
   }
@@ -503,11 +710,19 @@ void LossRecovery::on_rto(RecoveryCtx& c) {
     c.cc.prior_cwnd = c.cc.cwnd;
     c.cc.ssthresh = c.algo.ssthresh(c.cc);
     c.algo.cwnd_event(c.cc, CaEvent::loss);
+    undo_marker_ = true;  // tcp_init_undo
   }
   c.cc.cwnd = c.cc.in_flight + 1;
   c.cc.cwnd_cnt = 0;
+  // A timeout in Open or Disorder after DupThresh SACKed (or duplicate-ACKed)
+  // packets: the reordering degree was over-estimated (tcp_enter_loss, §1.9).
+  if ((state_ == CaState::open || state_ == CaState::disorder) &&
+      c.q.counters().sacked_out >= c.cfg.dupthresh) {
+    reordering_ = std::min(reordering(c.cfg), c.cfg.dupthresh);
+  }
   set_state(c, CaState::loss);
   recover_ = c.q.nxt_with_fin();
+  tlp_ = TlpState{};
   fast_rexmit_pending_ = false;
   sb_.reset_recovery();  // RFC 6675 §5.1: no recovery until SND.UNA reaches recover
   arm(XmitTimer::none, Time::never());  // re-armed by the rto_rexmit
@@ -535,6 +750,7 @@ void LossRecovery::on_pmtu_drop(RecoveryCtx& c) {
     recover_ = c.q.nxt_with_fin();
     c.cc.ssthresh = current_ssthresh(c.cc);
     c.cc.prior_ssthresh = 0;
+    undo_marker_ = false;  // tcp_simple_retransmit
     set_state(c, CaState::loss);
     sb_.reset_recovery();
     // A fast retransmit owed by Recovery becomes an ordinary lost segment,
@@ -599,7 +815,8 @@ void LossRecovery::cwnd_reduction(RecoveryCtx& c, std::uint32_t newly_acked_sack
   // tcp_cwnd_reduction (PRR, §1.8), with in_flight after this ACK's marking.
   const std::optional<std::uint32_t> cwnd =
       prr_cwnd(prr_, c.cc.ssthresh, packets_in_flight(c.q.counters()), newly_acked_sacked,
-               newly_lost, (flags & ack_una_advanced) != 0);
+               newly_lost, (flags & ack_una_advanced) != 0,
+               c.cfg.test_fault == TestFault::prr_skip_force);
   if (cwnd) {
     c.cc.cwnd = *cwnd;
   }
@@ -611,7 +828,13 @@ bool LossRecovery::may_raise_cwnd(const RecoveryCtx& c, const AckOutcome& out) c
       return *r;
     }
   }
-  return out.acked_pkts > 0;  // tcp_may_raise_cwnd, FLAG_DATA_ACKED (§1.9: m2a part 2)
+  // tcp_may_raise_cwnd (§1.9): with reordering above DupThresh any forward
+  // progress (FLAG_FORWARD_PROGRESS: data acked or newly SACKed), else only
+  // cumulatively acked data (FLAG_DATA_ACKED, RFC 5681).
+  if (reordering(c.cfg) > c.cfg.dupthresh) {
+    return out.acked_pkts > 0 || out.newly_sacked > 0;
+  }
+  return out.acked_pkts > 0;
 }
 
 std::optional<std::uint64_t> LossRecovery::next_seg_extra(RecoveryCtx& c) {
@@ -633,7 +856,33 @@ TlpAction LossRecovery::on_pto(RecoveryCtx& c) {
       return *r;
     }
   }
-  return TlpAction::none;  // m2a part 2 (§1.7)
+  // Linux tcp_send_loss_probe (tcp_output.c:3172): at most one probe
+  // outstanding (TestFault::double_tlp ignores that). A PTO left pending
+  // into Recovery or Loss sends nothing: Linux would probe (the timer is
+  // replaced there only by the head's retransmission), RFC 8985 §7.2 and the
+  // simulator's TLP rule do not.
+  if (tlp_.active && c.cfg.test_fault != TestFault::double_tlp) {
+    return TlpAction::none;
+  }
+  if (state_ != CaState::open && state_ != CaState::cwr) {
+    return TlpAction::none;
+  }
+  // New data if the receive window takes the next segment
+  // (tcp_snd_wnd_test); else the last segment of the retransmission queue.
+  const std::uint64_t nxt = c.q.nxt(), end = c.q.end();
+  if (nxt < end) {
+    const std::uint64_t len = std::min<std::uint64_t>(end - nxt, std::max(c.cc.mss, 1u));
+    if (nxt + len <= c.q.una() + c.snd_wnd) {
+      return TlpAction::new_data;
+    }
+  }
+  // __tcp_retransmit_skb resends nothing that starts beyond a shrunk
+  // receive window, except the head (a zero-window probe then).
+  const auto segs = c.q.segs();
+  if (segs.empty() || (segs.back().off >= c.q.una() + c.snd_wnd && segs.back().off != c.q.una())) {
+    return TlpAction::none;
+  }
+  return TlpAction::retransmit_last;
 }
 
 void LossRecovery::on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent) {
@@ -644,8 +893,13 @@ void LossRecovery::on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent) {
   // tcp_input.c:3524-3549). A sent probe cleared the pending timer first, so
   // the RTO is a full one from now; otherwise the PTO is still pending and the
   // RTO gets the time left to the head's RTO (tcp_rto_delta_us). Both add the
-  // pacing delay. The rest of the TLP state is m2a part 2 (M2-DESIGN §1.7).
-  (void)action;
+  // pacing delay.
+  if (sent) {
+    // tlp_high_seq = SND.NXT; tlp_retrans for the last-segment probe.
+    tlp_.active = true;
+    tlp_.high_seq = c.q.nxt_with_fin();
+    tlp_.retrans = action == TlpAction::retransmit_last;
+  }
   if (c.q.counters().packets_out == 0 || c.q.segs().empty()) {
     rearm_rto(c);
     return;
@@ -661,16 +915,27 @@ bool LossRecovery::exempt_from_cwnd(const RecoveryCtx& c, const TxSeg& seg) cons
       return *r;
     }
   }
+  // TestFault::prr_skip_force: the first retransmission of a PRR recovery
+  // bypasses the cwnd gate (PRR gave it no room, prr_cwnd's skip_force).
+  if (c.cfg.test_fault == TestFault::prr_skip_force &&
+      c.cfg.recovery_reduction == RecoveryReduction::prr && state_ == CaState::recovery &&
+      prr_.out == 0 && seg.lost && !seg.retrans_inflight) {
+    return true;
+  }
   // RFC 6675 §5 (4.3): the fast retransmit under RFC 6675's cwnd rule only
   // (fast_rexmit_pending_ is set only then).
   return fast_rexmit_pending_ && seg.off == c.q.una();
 }
 
-std::uint32_t LossRecovery::reordering(const TcpConfig& cfg) const { return cfg.dupthresh; }
+std::uint32_t LossRecovery::reordering(const TcpConfig& cfg) const {
+  return reordering_.value_or(cfg.dupthresh);
+}
 
 std::uint32_t LossRecovery::reord_seen() const { return reord_seen_; }
 
-std::optional<std::uint64_t> LossRecovery::tlp_high_seq() const { return std::nullopt; }
+std::optional<std::uint64_t> LossRecovery::tlp_high_seq() const {
+  return tlp_.active ? std::optional<std::uint64_t>{tlp_.high_seq} : std::nullopt;
+}
 
 CaState LossRecovery::state() const {
   if (script_ != nullptr) {

@@ -266,8 +266,22 @@ private:
   bool rack_mark_lost(RecoveryCtx& c);
   [[nodiscard]] Duration rack_reo_wnd_now(const RecoveryCtx& c) const;
   void try_to_open(RecoveryCtx& c);
+  void keep_open(RecoveryCtx& c);
   void mark_head_lost(RecoveryCtx& c);
   void reno_dupack(RecoveryCtx& c, AckOutcome& out);
+  // Adaptive reordering (§1.9): tcp_check_sack_reordering with the lowest
+  // reordered offset `low` and the highest SACK `fack`; tcp_check_reno_reordering.
+  void check_sack_reordering(RecoveryCtx& c, std::uint64_t low, std::uint64_t fack);
+  void check_reno_reordering(RecoveryCtx& c, std::uint32_t addend);
+  // The per-ACK reordering checks of tcp_sacktag_write_queue and
+  // tcp_clean_rtx_queue, from what on_delivered collected.
+  void ack_reordering(RecoveryCtx& c, const AckInput& in, const AckOutcome& out);
+  // tcp_rack_update_reo_wnd (§1.6).
+  void update_reo_wnd(const RecoveryCtx& c);
+  // tcp_process_tlp_ack (§1.7).
+  void process_tlp_ack(RecoveryCtx& c, const AckInput& in, const AckOutcome& out);
+  // tcp_schedule_loss_probe (§1.7): arms the PTO and returns true, or false.
+  bool schedule_loss_probe(RecoveryCtx& c, bool advancing_rto);
   // tcp_rearm_rto: the RTO from now, or the time left to the head's RTO while
   // a REO or PTO timer is pending, plus the pacing delay; persist or none
   // with nothing in flight (M1).
@@ -291,7 +305,30 @@ private:
   Rfc6675Scoreboard sb_;   // §1.4 (rfc)
   RackState rack_;         // §1.6 (linux_compat)
   SentFifo fifo_;          // §1.5 (linux_compat)
-  std::uint32_t reord_seen_ = 0;  // tcpi_reord_seen (§1.9, m2a part 2)
+
+  // Tail loss probe (§1.7): tlp_high_seq (SND.NXT with our FIN when the
+  // outstanding probe was sent) and tlp_retrans.
+  struct TlpState {
+    std::uint64_t high_seq = 0;
+    bool active = false;   // tlp_high_seq != 0
+    bool retrans = false;  // the probe resent the last segment
+  };
+  TlpState tlp_;
+  bool undo_marker_ = false;  // Linux undo_marker != 0 (only its tests, §1.10)
+
+  // Adaptive reordering (§1.9).
+  std::optional<std::uint32_t> reordering_;  // tp->reordering; nothing: cfg.dupthresh
+  std::uint32_t reord_seen_ = 0;             // tcpi_reord_seen
+  // tcp_highest_sack_seq: the highest end of a TxSeg SACKed (at most SND.UNA
+  // once nothing is SACKed); its value when the current ACK began (prior_fack).
+  std::uint64_t fack_ = 0, prior_fack_ = 0;
+  // Collected by on_delivered during one ACK: the lowest offset of a
+  // never-retransmitted TxSeg SACKed below fack (state->reord) and of one
+  // cumulatively acknowledged without a SACK (tcp_clean_rtx_queue's reord);
+  // without SACK, sacked_out before tcp_remove_reno_sacks.
+  static constexpr std::uint64_t no_reord = ~std::uint64_t{0};
+  std::uint64_t reord_sack_ = no_reord, reord_cum_ = no_reord;
+  std::optional<std::uint32_t> reno_sacked_prior_;
 };
 
 }  // namespace utcp
