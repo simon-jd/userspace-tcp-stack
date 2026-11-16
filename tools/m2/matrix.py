@@ -424,9 +424,13 @@ def capture_stop(c):
 
 def ping_only(slot, campaign, run, spec, src="snd", target=None, count=200):
     """Gate item 1 (and 6's ping): `count` pings at 50 ms with no load. The
-    RTTs come from a capture on r1's sender side (request in, reply out, ns
-    timestamps): iputils prints RTTs of 100 ms and more as whole milliseconds.
-    The statistics of ping's own output are kept as "text"."""
+    RTTs come from a capture next to the pinging end, where each request
+    enters the path and its reply leaves it (ns timestamps): r1's sender side
+    for pings from the sender, r2's receiver side for pings from the receiver
+    (netem sits between the two, on r1's b side, so the capture must have it
+    between request and reply). iputils prints RTTs of 100 ms and more as
+    whole milliseconds. The statistics of ping's own output are kept as
+    "text"."""
     base = f"/data/m2/{campaign}"
     rd = f"{base}/{run}"
     dexec(slot.snd, f"mkdir -p {rd}")
@@ -435,13 +439,15 @@ def ping_only(slot, campaign, run, spec, src="snd", target=None, count=200):
     c = slot.snd if src == "snd" else slot.rcv
     src_ip = slot.snd_ip if src == "snd" else slot.rcv_ip
     target = target or slot.rcv_ip
-    capture_start(slot.r1, slot.ifs["r1_a"], f"{rd}/ping.pcap", "icmp")
+    router, dev, where = ((slot.r1, slot.ifs["r1_a"], "r1, sender side") if src == "snd"
+                          else (slot.r2, slot.ifs["r2_c"], "r2, receiver side"))
+    capture_start(router, dev, f"{rd}/ping.pcap", "icmp")
     try:
         out = dexec(c, f"ping -D -i 0.05 -s 56 -c {count} {target} | tee {rd}/ping.txt")
     finally:
-        capture_stop(slot.r1)
+        capture_stop(router)
     st = json.loads(run_analysis(["pings", f"{rd}/ping.pcap", src_ip, target, str(count)]).strip().splitlines()[-1])
-    st["source"] = "capture r1 (sender side)"
+    st["source"] = f"capture {where}"
     st["text"] = A.ping_stats(A.parse_ping(out), count)
     return st
 
@@ -1486,6 +1492,8 @@ def main(argv):
     elif a.cmd == "run":
         if not a.gate and not a.no_gate:
             ap.error("run needs --gate CAMPAIGN (a passing calibration gate) or --no-gate")
+        if len(a.slot) > 1 and not a.parallel:
+            ap.error("timing runs are serial (RESULTS.md Timing hygiene): one --slot, or --parallel")
         errors = run_plan(a.plan, [Slot(n) for n in a.slot], rerun_invalid=not a.no_rerun, parallel=a.parallel,
                           nontiming=a.nontiming, gates=a.gate, no_gate=a.no_gate, rekey=a.rekey)
         return 1 if errors else 0

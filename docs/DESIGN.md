@@ -1482,14 +1482,26 @@ X = 10+4N for the timing slots N = 0, 1; X = 40+4(N-2) for N >= 2 (the M1 testbe
 - `record.sh` prints, per container, `ip -s -d link` (MTU, `gso_ipv4_max_size`, drops), `tc -s -raw qdisc`
   (`-raw` so that tbf shows its `limit`), offloads, routes, cpuset, the `net.ipv4.tcp_*`/`net.core.*`
   sysctls, `nstat -asz` on sender and receiver; on the host `uname -r`, softnet_stat, the `cpu` lines of
-  `/proc/stat`, `/proc/softirqs`, bridge-nf, `tcp_cubic`/`tcp_bbr` parameters, `uptime`, the top CPU users
-  and the threads on CPUs 8-15. `analyze.py` parses this format.
+  `/proc/stat`, `/proc/softirqs`, bridge-nf, `tcp_cubic`/`tcp_bbr` parameters, `uptime`, the top CPU users,
+  the threads on CPUs 8-15, `CLK_TCK` and each container's cgroup `cpu.stat` `usage_usec` (the cgroup
+  from `/proc/<pid>/cgroup` of its init). `analyze.py` parses this format. The foreign CPU time on the
+  slot's CPUs is bounded from these: lower = Δbusy − Δirq − Δsoftirq − Δcontainers, upper = Δbusy −
+  Δcontainers (the server's kernel has no `CONFIG_IRQ_TIME_ACCOUNTING`, so a tick in softirq while one
+  of our tasks runs counts in both softirq and that task's usage); the lower bound flags at 2 %.
 - Captures: `tcpdump -s 128 -B 16384 --time-stamp-precision nano 'not ether multicast'` in the routers,
   r1-in (r1's a side), r2-out (r2's c side) and for calibration r1-out (r1's b side, after netem). The
   filter leaves out the host's SSDP multicast from each bridge's gateway address. tcpdump hands packets
   over in ring blocks retired after its 1 s timeout and loses an unretired block on SIGINT, so the
   runner waits until both ends of the connection have left every state but TIME-WAIT, stops the pings
   0.5 s later and tcpdump 1.5 s after that; `capture.json` checks `captured` against `received by filter`.
+  `capture.json` also holds, per capture, the data segments and retransmissions toward the receiver in
+  10 ms bins, and for r1-in the sender's echo requests paired with their replies by ICMP id and
+  sequence ([seq, request time, RTT ns]).
+- Ping RTTs: iputils prints an RTT of 100 ms or more as whole milliseconds (10-100 ms with 0.1 ms), so
+  runs take them from the r1-in capture (request in, reply out; the two sender-r1 veth hops are left
+  out, and the idle base removes them anyway), and the idle pings of gate items 1 and 6 from a capture
+  `icmp` next to the pinging end (`analyze.py pings`): r1's sender side for the sender's pings, r2's
+  receiver side for the receiver's pings to the stack, so that netem lies between request and reply. `ping.txt` stays for runs without a capture.
 - tbf sampler: one loop in r2, `$EPOCHREALTIME` and `tc -s qdisc show` every 10 ms (`tbf.txt`).
 
 ### 14.3 Runs and analysis
@@ -1502,23 +1514,33 @@ X = 10+4N for the timing slots N = 0, 1; X = 40+4(N-2) for N >= 2 (the M1 testbe
   and `analyze.py run`. `calibrate` runs the gate (§14.4). Every run directory has `meta.json` with the
   reuse key (binary and core-library sha256, build, `uname -r`, image id, scripts hash, sysctls and
   module parameters).
-- `tools/m2/analyze.py`: the window [t₀ + 5 s, t₀ + S] with interpolated bounds; the metrics, validity
-  rules, flags, run counting and gap rule of `docs/RESULTS.md`; `tables` writes `runs.csv` and
+- `tools/m2/analyze.py`: the window [t₀ + 5 s, min(t₀ + S, sender start + S)] with interpolated bounds
+  (the sender's `start` line is its connect returning, one RTT before t₀, and its writes last S from
+  there); the metrics, validity rules, flags, run counting and gap rule of `docs/RESULTS.md`; the §5.9
+  cross-check: over the same window, the r1-in capture's data segments and retransmissions against the
+  sender's counters and r2-out's data segments against the receiver's `data_segs_in`, flagged beyond
+  max(20, 0.1 %) segments (retransmissions max(3, 5 %)), tolerances set from the 112 stored runs; `tables` writes `runs.csv` and
   `cells.csv`; `archive` writes the analysis archive (no captures) with a sha256 manifest, from which
   `tables --archive` regenerates both files byte for byte. Unit tests: `tools/m2/test_analyze.py`.
 
 ### 14.4 Calibration gate: deviations from the M2 design §5.4
 
 Found while running the gate; each follows the measured behaviour of tbf, netem and ping:
-- Item 3 (loss) counts netem's losses as r1-in minus r1-out data segments. The design's r1-in − r2-out −
-  tbf drops counts tbf drops of ping packets as data losses (seen: 23 vs 20 in one run); it is reported
-  next to it.
+- Item 3 (loss) counts netem's losses as r1-in minus r1-out data segments, with both captures complete
+  (a packet missing from r1-out would count as a loss). The design's r1-in − r2-out − tbf drops counts
+  tbf drops of ping packets as data losses (seen: 23 vs 20 in one run); it is reported next to it.
 - Item 4 (queue): a drop interval of the 10 ms sampler is accepted when max(b_i, b_i+1) ≥ Q − 1514 − B −
   R·Δt, the backlog a tail drop at the limit implies (tbf drops a frame only when backlog + frame > Q,
   and the queue drains at most at rate R plus the bucket). The design's 0.9·Q fails on correct tail drops:
   in 10 ms the queue drains 12 500 B at 10 Mbit/s and 125 000 B at 100 Mbit/s, as much as a 0.5×BDP queue
-  holds. The count against 0.9·Q is reported. The ping check compares with the largest backlog a ping
-  can find, the whole frames that fit below Q with it, instead of Q·8/BW (3 % lower for Q = 12 500 B).
+  holds. The count against 0.9·Q is reported. Where that level is not positive (Q ≤ 1514 + B + R·Δt: the
+  0.5×BDP queues at 20 ms) any backlog meets it; such intervals are counted as not testable and the
+  report says "not testable at 10 ms sampling" instead of passing them as tested. The ping check
+  compares with the largest backlog a ping can find, the whole frames that fit below Q with it, instead
+  of Q·8/BW (3 % lower for Q = 12 500 B).
+- Item 5 includes no `time_squeeze` and no capture kernel drop, as RESULTS.md states it.
+- The pass decisions are pure functions (`gate_item1` .. `gate_item6_run`), unit-tested at their bounds;
+  `gate.json` records the runs' reuse key.
 - Item 6 (stack) adds a "path" run with the stack's send buffer at 400 000 B (between BDP and BDP + Q), so
   the TUN path is measured without loss recovery in play, next to the design's run.
 
@@ -1530,7 +1552,10 @@ whose sequence is a target to a chain that adds a first copy to `seen1`, a copy 
 not `seen(j+1)` to `seen(j+1)`, and drops the copies listed. A watcher (`tcpdump --immediate-mode -c 1`
 for the SYN) adds ISN + 1 + OFF to `targets` within about 10 ms of the SYN, before the first data segment
 (one RTT later). `drop.sh ... ct --packet N` drops `ct original packets N`. A retransmission that starts
-at another sequence number is not counted as a copy. `tools/m2/dropcheck.py` lists what a router dropped
+at another sequence number is not counted as a copy. An offset must be a segment's start: a shorter
+segment earlier in the stream moves every later boundary and nothing is dropped (seen once on
+2026-11-16: the Linux sender sent 1360 bytes at offset 192 584 and the copy-1 case found no drop;
+`dropcheck.py` shows such a run as no packet missing). `tools/m2/dropcheck.py` lists what a router dropped
 by comparing the captures before and after it (transmissions told apart by IP ID and TSval);
 `tests/interop/m2_testbed_drops.sh` verifies copy 1, copy 2 (r2 drops copy 1 so that a copy 2 exists),
 copies 1 and 2, and a `ct` drop.
@@ -1554,8 +1579,9 @@ copies 1 and 2, and a `ct` drop.
   (`loop_lateness_count`, `loop_lateness_max_ns`, `loop_lateness_bucket_I` for each non-empty log2
   bucket I), with a trace `trace_events` and `trace_blocks`, and the DeviceStats counters (`dev_*`;
   `dev_tx_batch_max` is the most datagrams one drain of the stack wrote) ending with
-  `dev_device_failed`, which the M1 backend check reads at the line's end. Device errors invalidate a run; a non-zero `loop_pending_calls` flags it
-  (`stack_blocked`): the stack waited for the TUN, it lost nothing.
+  `dev_device_failed`, which the M1 backend check reads at the line's end. Device errors and datagrams
+  the stack dropped itself (`IpOutDiscards`, `TcpExtTCPRcvQDrop`, `TcpExtTCPOFODrop`) invalidate a run; a
+  non-zero `loop_pending_calls` flags it (`stack_blocked`): the stack waited for the TUN, it lost nothing.
 - Both senders write the same sample keys (`add_fields` of `TcpInfo`), among them
   `sndbuf_limited_us`, `rwnd_limited_us`, `total_retrans`, `data_segs_out`, `dsack_dups`.
 - Every stack run of the runner uses `--set snd_buf_max=64Mi --set rcv_buf_max=32Mi --set
@@ -1568,23 +1594,35 @@ copies 1 and 2, and a `ct` drop.
 
 ### 14.7 Run plans, the parallel-mode proof and plots
 
-- `matrix.py run PLAN.toml --slot N [--slot M]` (format in `load_plan`; example
-  `testbed/m2/plans/mini.toml`): cells × algorithms × repetitions. One group per (cell, algorithm,
-  repetition) holds its runs (the stack's and Linux's when the algorithm lists both implementations)
-  back to back in one slot. From the plan's one seed, in order: the shuffle of the groups, then per group
-  its netem seed (shared by its runs) and the order inside it. Repetition r runs on slot r mod (number
-  of slots). `expand` prints the list; the expanded plan is stored as `plan.json` in the campaign and a
-  restart with a different plan is refused.
+- `matrix.py run PLAN.toml --slot N (--gate CAMPAIGN | --no-gate)` (format in `load_plan`; example
+  `testbed/m2/plans/mini.toml`): cells × algorithms × repetitions. Each algorithm has a label, its
+  `name` or cc, "-PROFILE" for a stack profile other than linux and 8 hex digits of the sha256 of its
+  `stack_set`; runs are named `<cell>-<label>-r<rep>-<impl>` and cells, reruns and plots group by
+  (cell, label); two algorithms with one label may not share an implementation. One group per (cell,
+  algorithm, repetition) holds its runs (the stack's and Linux's when the algorithm lists both
+  implementations) back to back in one slot. From the plan's one seed, in order: the shuffle of the
+  groups, then per group its netem seed (shared by its runs) and the order inside it. Repetition r runs
+  on slot r mod (number of slots). `expand` prints the list; the expanded plan is stored as `plan.json`
+  in the campaign and a restart with a different plan is refused.
+- Checks before the first run: one slot unless `--parallel` (RESULTS.md: timing runs are serial); a slot
+  outside CPUs 8-15 only with `--nontiming`, which marks the runs `timing` false; a calibration gate
+  (`--gate`, repeatable) whose `gate.json` passed on that slot with the reuse key the runs get now
+  (static meta and a fresh `record.sh` sysctl dump), or `--no-gate`; no finished run of the plan with
+  another reuse key, or `--rekey`, which moves those groups' directories to `aside/<run>-rekey-<time>`.
 - Resuming: a run whose `summary.json` exists is skipped; a run directory without it is moved to
   `aside/<run>-<time>` and the run is repeated; each run first stops what an interrupted run left in the
-  slot (senders, pings, captures, the tbf sampler). Afterwards each invalid run is rerun as
-  `<run>-rerunK`, at most `A.RERUN_CAP` per cell and algorithm.
+  slot (senders, pings, captures, the tbf sampler). An invalid group is rerun as a whole right after it,
+  as `<run>-rerunK` with the same netem seed, in-group order and `order` (meta `rerun` = K), at most
+  `A.RERUN_CAP` times per cell and algorithm; the analysis counts the first 5 valid groups.
 - `matrix.py proof --campaign C` (M2 design §6): serial on slot 0, then the same list on slots 0 and 1 at
   once, 5 repetitions of item 1 (idle ping) and items 2 and 4 (Linux CUBIC, 0 %, 2×BDP) for the four
   (bandwidth, RTT) pairs and of stack NewReno at 100 Mbit/s, 20 ms, 0 %, 2×BDP with the trace; serially
   also the stack run without the trace (the trace overhead, §5.6). `proof.json` and `proof.md` compare
   each parallel slot with the serial runs (medians and ranges; the stack's lateness p99 from the pooled
-  `--stats` histograms, its max from the summary lines).
+  `--stats` histograms, its max from the summary lines). The decisions are `proof_evaluate`, a pure
+  function: the histogram percentile follows `LatenessHistogram::percentile` (rank correction, clamped
+  to the maximum), and since a log2 bucket is a factor of 2 wide, "p99 ≤ 2 × serial" is read as at most
+  one bucket higher; the maximum is exact and compared as ≤ 2 ×.
 - `matrix.py plot --campaign C` runs `tools/m2/plot.py` (matplotlib, in the image) in a helper container:
   per (cell, algorithm) one PNG of the median-goodput valid run of each implementation, cwnd with the
   retransmission and RTO marks, delivery and pacing rate, and the receiver's 100 ms goodput.

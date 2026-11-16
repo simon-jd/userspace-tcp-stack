@@ -2,7 +2,8 @@
 # stack NewReno at 10 Mbit/s, 20 ms, 0 %, 2xBDP, 2 repetitions. The stack's
 # NewReno runs in pairs with Linux reno (one netem seed and back to back);
 # Linux CUBIC runs alone.
-#   tools/m2/matrix.py run testbed/m2/plans/mini.toml --slot 0
+#   tools/m2/matrix.py run testbed/m2/plans/mini.toml --slot 0 --gate CALIBRATION_CAMPAIGN
+#   (or --no-gate outside timing campaigns)
 campaign = "m2d-testbed/mini"
 seed = 20261115
 reps = 2
