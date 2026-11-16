@@ -1002,6 +1002,12 @@ head at `sacked_out ≥ reordering`, and on a partial ACK in Recovery). With SAC
   re-runs detection and, if the flight changed outside Recovery, enters Recovery and runs `cwnd_reduction(1,
   newly_lost, 0)`; then the RTO is re-armed for the head's remaining time and the engine retransmits. At RTO with
   `rack_tlp` the head is always marked, another segment only if sent at least RACK.rtt ago.
+- **D-SACK reorder window** (Linux `tcp_rack_update_reo_wnd`). A valid D-SACK that is not a TLP's
+  (`ack_dsack_tlp`) sets `dsack_seen` once reordering has been seen. After the cumulative step of an ACK whose
+  delivered segments carried a rate snapshot: a `dsack_seen` whose snapshot is older than the last step's
+  `delivered` count is dropped (at most one step per delivered round); otherwise `reo_wnd_steps` + 1 (at most 255),
+  persist = 16; with no D-SACK pending and persist 0, steps return to 1. Every end of a Recovery or Loss counts
+  persist down by one (`tcp_try_undo_recovery` without undo).
 - **PRR** (`prr_cwnd`, Linux `tcp_cwnd_reduction`). Entry (`tcp_init_cwnd_reduction`) saves `prior_cwnd`, zeroes
   `prr_delivered`/`prr_out` and takes ssthresh from the CC, cwnd untouched; the CC step of the same ACK (or the REO
   timer) sets cwnd = in_flight + sndcnt (proportional part over `prior_cwnd` while in_flight > ssthresh, else
@@ -1009,11 +1015,36 @@ head at `sacked_out ≥ reordering`, and on a partial ACK in Recovery). With SAC
   counts every data segment sent in CWR or Recovery. No retransmission is exempt from the cwnd gate. With
   `recovery_reduction = rfc6675` cwnd = ssthresh at entry and the fast retransmission is exempt (RFC 6675 §5
   (4.2), (4.3)). Exit sets cwnd = ssthresh (`tcp_end_cwnd_reduction`, skipped when the CC has `cong_control`).
+- **Tail loss probe** (Linux `tcp_schedule_loss_probe`, `tcp_send_loss_probe`, `tcp_process_tlp_ack`; with
+  `rack_tlp` and SACK). The PTO is scheduled in Open or CWR with packets out: at the end of a `transmit()` call
+  that sent new data, capped at the head's remaining RTO time, and by an ACK with `FLAG_SET_XMIT_TIMER`, capped at
+  a full RTO; PTO = 2·srtt + 2 ms (+ `rto_min` instead of 2 ms with one packet out), whole ms rounded up, 1 s
+  without an RTT sample, plus the pacing delay. On expiry: nothing while a probe is outstanding (`tlp_high_seq`)
+  or outside Open/CWR; new data if the receive window takes the next segment (sent past cwnd by one, pacing-gated);
+  else the last segment, unless it starts beyond a shrunk window (`__tcp_retransmit_skb`). A sent probe sets
+  `tlp_high_seq` = SND.NXT and the RTO to a full RTO from now; otherwise the RTO gets the head's remaining time.
+  Once SND.UNA reaches `tlp_high_seq`: a new-data probe, a D-SACK of the probe or a pure duplicate ACK clear it;
+  an ACK above it after a resent probe means the probe repaired a loss: CWR entered and left at once (cwnd =
+  ssthresh from the CC), `TCPLossProbeRecovery`. Recovery entry and the RTO clear it. Deviation: a PTO left
+  pending into Recovery or Loss sends nothing (Linux would probe).
+- **Adaptive reordering** (Linux `tcp_check_sack_reordering`, `tcp_check_reno_reordering`). Per ACK, the lowest
+  start of a never-retransmitted segment SACKed below the highest SACK (or a D-SACKed retransmission already
+  SACKed), and of one cumulatively acknowledged below the highest SACK before the ACK, is compared with the
+  highest SACK (`fack`, SND.UNA once nothing is SACKed): `reord_seen` + 1, `TCPSACKReorder`, and if `fack − low >
+  reordering · MSS`, reordering = min(⌈(fack − low) / MSS⌉, `max_reordering`). Without SACK, a duplicate ACK
+  beyond `packets_out` (`tcp_limit_reno_sacked`) sets reordering = `packets_out` + acked, `TCPRenoReorder`. With
+  `adaptive_reordering` off (rfc) events are counted and reordering stays DupThresh. Reordering feeds RACK's
+  `sacked_out ≥ reordering` test, `tcp_newreno_mark_lost` and `may_raise_cwnd` (any forward progress when
+  reordering > DupThresh, else cumulatively acked data); an RTO in Open or Disorder with `sacked_out ≥ DupThresh`
+  sets it back to min(reordering, DupThresh).
 - **Timers** (M2-DESIGN §1.7). `tcp_rearm_rto`: a full RTO, or the head's remaining time while REO or PTO is
-  pending, plus the pacing delay in whole ms. New data re-arms only if nothing was out before or a PTO is pending; a
-  head retransmission re-arms a full RTO unless REO is pending; other retransmissions leave the timer.
-
-TLP, the D-SACK reorder-window steps and adaptive reordering are m2a part 2.
+  pending, plus the pacing delay in whole ms. An ACK re-arms (PTO, else RTO) only with `FLAG_SET_XMIT_TIMER`: a
+  segment cumulatively acknowledged, or a SACK RTT sample older than the head's last transmission; not when RACK
+  armed the REO timer. New data re-arms only if nothing was out before or a PTO is pending; a head retransmission
+  re-arms a full RTO unless REO is pending; other retransmissions leave the timer.
+- **Test faults.** `prr_skip_force`: PRR counts the first retransmission of a recovery as sent and gives it no
+  forced slot, and it bypasses the cwnd gate (so it goes out past cwnd). `double_tlp`: the PTO expiry ignores
+  `tlp_high_seq`.
 
 ### 5.2 Congestion-control interface
 

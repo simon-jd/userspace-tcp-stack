@@ -194,7 +194,7 @@ public:
                       std::uint32_t flags);
   // tcp_may_raise_cwnd (§1.9): whether cong_avoid runs outside CWR and
   // Recovery. Linux: forward progress (SND.UNA advanced or new SACK) when
-  // reordering > dupthresh, else data cumulatively acked. Stub: acked_pkts > 0.
+  // reordering > dupthresh, else data cumulatively acked.
   [[nodiscard]] bool may_raise_cwnd(const RecoveryCtx& c, const AckOutcome& out) const;
   // RFC 6675 NextSeg rules 3 and 4 (§1.4): after the engine's new-data loop
   // stopped with no data or no window left and cwnd - pipe >= 1, the offset of
@@ -203,14 +203,15 @@ public:
   [[nodiscard]] std::optional<std::uint64_t> next_seg_extra(RecoveryCtx& c);
   // PTO expiry (§1.7): what to send as the probe. new_data only when the
   // receive window takes one more segment (tcp_snd_wnd_test); the engine
-  // still applies the pacing gate to it. Stub: none (M1 never arms a PTO).
+  // still applies the pacing gate to it. none while a probe is outstanding
+  // (TestFault::double_tlp ignores that) or outside Open and CWR.
   TlpAction on_pto(RecoveryCtx& c);
   // After on_pto: `action` as returned, `sent` whether the engine sent it
   // (the engine counts TcpExtTCPLossProbes for a sent probe). Arms the RTO as
   // tcp_rearm_rto after tcp_send_loss_probe: a full RTO from now after a sent
   // probe, the head's remaining time (rounded up to whole ms, at least 1 ms)
   // otherwise, plus the pacing delay truncated to whole ms; with nothing in
-  // flight, as after an ACK. The stub does this arming and nothing else.
+  // flight, as after an ACK. A sent probe sets tlp_high_seq.
   void on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent);
   // The lost segment `seg` may be resent past the cwnd gate (RFC 6675 §5
   // (4.3): the fast retransmit with recovery_reduction = rfc6675); the engine
@@ -218,12 +219,12 @@ public:
   // fast_rexmit_pending().
   [[nodiscard]] bool exempt_from_cwnd(const RecoveryCtx& c, const TxSeg& seg) const;
   // The reordering degree in packets (tcpi_reordering, §1.9): starts at
-  // cfg.dupthresh. Stub: cfg.dupthresh.
+  // cfg.dupthresh.
   [[nodiscard]] std::uint32_t reordering(const TcpConfig& cfg) const;
-  // Reordering events detected (tcpi_reord_seen). Stub: 0.
+  // Reordering events detected (tcpi_reord_seen).
   [[nodiscard]] std::uint32_t reord_seen() const;
   // tlp_high_seq: SND.NXT (offset) when the outstanding probe was sent, or
-  // nothing (process_ack's ack_dsack_tlp test). Stub: nothing.
+  // nothing (process_ack's ack_dsack_tlp test).
   [[nodiscard]] std::optional<std::uint64_t> tlp_high_seq() const;
   // The test seam (RecoveryScript above); nullptr to remove.
   void set_script(RecoveryScript* script) noexcept { script_ = script; }
