@@ -10,7 +10,14 @@ if(utcp_sim_test_sources)
   utcp_target_warnings(utcp_sim_tests)
   gtest_discover_tests(utcp_sim_tests
     TEST_PREFIX "sim."
-    TEST_FILTER "-Corpus/SimCorpusEntry.*"
+    TEST_FILTER "-Corpus/SimCorpusEntry.*:Profiles/TcpRecoveryBulkSim.*"
+    DISCOVERY_MODE PRE_TEST)
+  # m2a-recovery test 7: 100 MB twice per case (the digest replay), about
+  # 60 s per case in gcc-debug and three to four times that with sanitizers.
+  gtest_discover_tests(utcp_sim_tests
+    TEST_PREFIX "sim."
+    TEST_FILTER "Profiles/TcpRecoveryBulkSim.*"
+    PROPERTIES TIMEOUT 1500
     DISCOVERY_MODE PRE_TEST)
   # The corpus replays every SIM-BUGS scenario exactly as the sweep found it,
   # one test per entry so that ctest runs them in parallel. The entries with

@@ -421,7 +421,7 @@ void rtt20(rg::Rig& r) {
 }
 
 // tcp_schedule_loss_probe after new data (transmit's on_burst_end).
-TEST(TlpSchedule, ProbeTimeouts) {
+TEST(RecoveryTlpSchedule, ProbeTimeouts) {
   {
     SCOPED_TRACE("3 packets: 2 * srtt + 2 ms = 42 ms");
     rg::Rig r(rg::linux_cfg());
@@ -484,7 +484,7 @@ TEST(TlpSchedule, ProbeTimeouts) {
 }
 
 // No PTO without SACK, in Recovery or in Loss, or in the rfc profile.
-TEST(TlpSchedule, OnlyOpenOrCwrWithSack) {
+TEST(RecoveryTlpSchedule, OnlyOpenOrCwrWithSack) {
   {
     SCOPED_TRACE("no SACK");
     rg::Rig r(rg::linux_cfg(), 14, false);
@@ -528,7 +528,7 @@ TEST(TlpSchedule, OnlyOpenOrCwrWithSack) {
 // else the last segment; tlp_high_seq = SND.NXT; at most one outstanding;
 // the RTO a full RTO from now after a sent probe, the head's remaining time
 // after a PTO that sends nothing.
-TEST(TlpProbe, NewDataOrLastSegmentAndOneOutstanding) {
+TEST(RecoveryTlpProbe, NewDataOrLastSegmentAndOneOutstanding) {
   {
     SCOPED_TRACE("new data");
     rg::Rig r(rg::linux_cfg());
@@ -580,7 +580,7 @@ TEST(TlpProbe, NewDataOrLastSegmentAndOneOutstanding) {
 }
 
 // tcp_process_tlp_ack, once SND.UNA reaches tlp_high_seq.
-TEST(TlpAck, FourOutcomes) {
+TEST(RecoveryTlpAck, FourOutcomes) {
   {
     SCOPED_TRACE("new-data probe acknowledged");
     rg::Rig r(rg::linux_cfg());
@@ -655,7 +655,7 @@ TEST(TlpAck, FourOutcomes) {
 // FLAG_SET_XMIT_TIMER for an ACK without cumulative progress: only when its
 // SACK RTT sample is older than the head's last transmission (rfc, so no
 // PTO or RACK timer: RTO 1 s).
-TEST(TlpTimers, SackOnlyAckRearmsOnlyUnderSetXmitTimer) {
+TEST(RecoveryTlpTimers, SackOnlyAckRearmsOnlyUnderSetXmitTimer) {
   {
     SCOPED_TRACE("head not resent: SACK RTT 100 ms = the head's age, no re-arm");
     rg::Rig r(rg::rfc_cfg());
@@ -683,7 +683,7 @@ TEST(TlpTimers, SackOnlyAckRearmsOnlyUnderSetXmitTimer) {
 }
 
 // on_burst_end schedules the PTO only when the transmit call sent new data.
-TEST(TlpTimers, BurstEndSchedulesOnlyAfterNewData) {
+TEST(RecoveryTlpTimers, BurstEndSchedulesOnlyAfterNewData) {
   rg::Rig r(rg::linux_cfg());
   rtt20(r);
   r.send_new(3);  // no burst end: the first transmission armed the RTO
@@ -698,7 +698,7 @@ TEST(TlpTimers, BurstEndSchedulesOnlyAfterNewData) {
 // tcp_pacing_delay with pacing_next 3.5 ms ahead: 3 ms (whole jiffies,
 // truncated) on the PTO and on the RTO armed by tcp_rearm_rto's paths, not
 // on the REO timer.
-TEST(TlpTimers, PacingDelay) {
+TEST(RecoveryTlpTimers, PacingDelay) {
   {
     rg::Rig r(rg::linux_cfg());
     rtt20(r);
@@ -737,7 +737,7 @@ TEST(TlpTimers, PacingDelay) {
 }
 
 // TestFault::double_tlp: on_pto ignores tlp_high_seq.
-TEST(TestFaults, DoubleTlpSendsASecondProbe) {
+TEST(RecoveryTestFaults, DoubleTlpSendsASecondProbe) {
   for (const bool fault : {false, true}) {
     SCOPED_TRACE(fault);
     utcp::TcpConfig cfg = rg::linux_cfg();
@@ -758,7 +758,7 @@ TEST(TestFaults, DoubleTlpSendsASecondProbe) {
 // it bypasses the cwnd gate. The PRR script's entry (prr_test.cpp): in_flight
 // 16, delta -2; with the fault sndcnt = (14 * 1 + 19) / 20 - 1 = 0, cwnd 16,
 // and R1 goes out exempt: in_flight 17 > cwnd. Without it cwnd 17.
-TEST(TestFaults, PrrSkipForceBypassesTheCwndGate) {
+TEST(RecoveryTestFaults, PrrSkipForceBypassesTheCwndGate) {
   for (const bool fault : {false, true}) {
     SCOPED_TRACE(fault);
     utcp::TcpConfig cfg = rg::linux_cfg();
@@ -792,7 +792,7 @@ TEST(TestFaults, PrrSkipForceBypassesTheCwndGate) {
 // end of 7 (nothing SACKed is left): 5 packets > reordering 3, so
 // reordering = ceil(5000 / 1000) = 5 (tcp_check_sack_reordering), capped at
 // max_reordering; rfc (no adaptive reordering) keeps DupThresh 3.
-TEST(AdaptiveReordering, HoleFilledFivePacketsBelowFack) {
+TEST(RecoveryAdaptiveReordering, HoleFilledFivePacketsBelowFack) {
   struct Case {
     const char* name;
     utcp::TcpConfig cfg;
@@ -821,7 +821,7 @@ TEST(AdaptiveReordering, HoleFilledFivePacketsBelowFack) {
 // (here a SACK-only ACK) lets cong_avoid run; at DupThresh only cumulative
 // progress does. An RTO in Disorder with sacked_out >= DupThresh sets
 // reordering back to min(reordering, DupThresh) (tcp_enter_loss).
-TEST(AdaptiveReordering, ForwardProgressAndRtoReset) {
+TEST(RecoveryAdaptiveReordering, ForwardProgressAndRtoReset) {
   rg::Rig r(rg::linux_cfg());
   const Time t0 = r.now;
   r.send_new(12);
@@ -855,7 +855,7 @@ TEST(AdaptiveReordering, ForwardProgressAndRtoReset) {
 // enter Recovery (head lost); a 4th would make sacked_out 4 + 1 hole > 4
 // packets out: capped at 3 (tcp_limit_reno_sacked), and reordering =
 // packets_out + 0 = 4.
-TEST(AdaptiveReordering, RenoMoreDupacksThanPacketsOut) {
+TEST(RecoveryAdaptiveReordering, RenoMoreDupacksThanPacketsOut) {
   rg::Rig r(rg::linux_cfg(), 14, false);
   r.send_new(4);
   r.now += 100ms;
