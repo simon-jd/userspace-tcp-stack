@@ -6,8 +6,7 @@
 // tcp_enter_loss/tcp_timeout_mark_lost with the reneging check, and the
 // choice of the connection's one `xmit` timer. M2a replaces the internals
 // (RFC 6675 scoreboard, RACK-TLP, PRR) without changing TxSeg or SendQueue;
-// the engine calls the M2 hooks below, whose m2-found stubs keep M1
-// behaviour.
+// the engine calls the M2 hooks below (implemented by m2a-recovery).
 #pragma once
 
 #include <cstdint>
@@ -142,7 +141,7 @@ public:
   void on_transmit(RecoveryCtx& c, const TxSeg& seg, TxKind kind);
   // End of the engine's transmit(): schedules the PTO (M2a) when
   // `new_data_sent` (new data went out in this call, Linux tcp_write_xmit's
-  // sent_pkts > 0 and push_one != 2); M1 and the stub ignore the flag.
+  // sent_pkts > 0 and push_one != 2).
   void on_burst_end(RecoveryCtx& c, bool new_data_sent = false);
   // RTO expiry (§5.3): reneging check (a SACKed head clears every SACK mark,
   // counts TcpExtTCPSACKReneging, and makes rate samples invalid until
@@ -182,14 +181,13 @@ public:
   // next arming event.
   void on_xmit_timer(RecoveryCtx& c, XmitTimer kind);
 
-  // ---- M2 hooks (M2-DESIGN §1.11); the m2-found stubs keep M1 behaviour.
+  // ---- M2 hooks (M2-DESIGN §1.11).
 
   // tcp_cwnd_reduction (PRR, §1.8): process_ack's CC step calls it in CWR and
   // Recovery when the CC has no cong_control, with newly_acked_sacked =
   // AckOutcome::delivered, newly_lost = RateSample::losses and the AckFlag
   // bits; the REO timer with (1, newly_lost, 0). Writes cc.cwnd. Does nothing
-  // with recovery_reduction = rfc6675. Stub: nothing (M1 sets cwnd = ssthresh
-  // on entry).
+  // with recovery_reduction = rfc6675 (cwnd = ssthresh at entry).
   void cwnd_reduction(RecoveryCtx& c, std::uint32_t newly_acked_sacked, std::uint32_t newly_lost,
                       std::uint32_t flags);
   // tcp_may_raise_cwnd (§1.9): whether cong_avoid runs outside CWR and
@@ -199,7 +197,8 @@ public:
   // RFC 6675 NextSeg rules 3 and 4 (§1.4): after the engine's new-data loop
   // stopped with no data or no window left and cwnd - pipe >= 1, the offset of
   // one more segment to send as TxKind::rexmit through the cwnd gate, or
-  // nothing. Stub: nothing.
+  // nothing. Only in Recovery with SACK and without RACK (the RFC 6675
+  // scoreboard's NextSeg).
   [[nodiscard]] std::optional<std::uint64_t> next_seg_extra(RecoveryCtx& c);
   // PTO expiry (§1.7): what to send as the probe. new_data only when the
   // receive window takes one more segment (tcp_snd_wnd_test); the engine
@@ -215,8 +214,9 @@ public:
   void on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent);
   // The lost segment `seg` may be resent past the cwnd gate (RFC 6675 §5
   // (4.3): the fast retransmit with recovery_reduction = rfc6675); the engine
-  // sends it as TxKind::fast_rexmit. Stub: M1's rule, `seg` is the head and
-  // fast_rexmit_pending().
+  // sends it as TxKind::fast_rexmit: `seg` is the head and
+  // fast_rexmit_pending(). TestFault::prr_skip_force also exempts the first
+  // retransmission of a PRR recovery.
   [[nodiscard]] bool exempt_from_cwnd(const RecoveryCtx& c, const TxSeg& seg) const;
   // The reordering degree in packets (tcpi_reordering, §1.9): starts at
   // cfg.dupthresh.
