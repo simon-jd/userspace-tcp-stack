@@ -1,5 +1,6 @@
-// m2a-recovery acceptance test 3: RACK and the send-time FIFO (M2-DESIGN
-// §1.5, §1.6; RFC 8985 §6; Linux 7.0 tcp_recovery.c, tcp_rack_advance).
+// m2a-recovery acceptance tests 3 and 4: RACK and the send-time FIFO, and
+// the D-SACK reorder window (M2-DESIGN §1.5, §1.6; RFC 8985 §6; Linux 7.0
+// tcp_recovery.c, tcp_rack_advance, tcp_rack_update_reo_wnd, tcp_dsack_seen).
 #include "core/tcp/rack.hpp"
 
 #include <gtest/gtest.h>
@@ -18,6 +19,7 @@ namespace {
 using namespace std::chrono_literals;
 using utcp::CaState;
 using utcp::Duration;
+using utcp::Range;
 using utcp::RackState;
 using utcp::SendQueue;
 using utcp::SentFifo;
@@ -25,6 +27,7 @@ using utcp::Time;
 using utcp::TxKind;
 using utcp::TxSeg;
 using utcp::XmitTimer;
+using utcp::test::rig::mss;
 using utcp::test::rig::off_of;
 using utcp::test::rig::Rig;
 using Sent = std::vector<std::string>;
@@ -341,6 +344,164 @@ TEST(RackPipeline, LostRetransmissionInLossEntersRecovery) {
   EXPECT_TRUE(r.pkt(2).lost);
   EXPECT_EQ(r.q.counters().retrans_out, 0u);
   EXPECT_EQ(r.stats.TcpExtTCPSackRecovery, 1u);
+}
+
+// ---- Acceptance test 4: the D-SACK reorder window (M2-DESIGN §1.6).
+
+// Packets 1-10 at t0; at +100 packet 1 is ACKed and 4 SACKed; at +101 the
+// hole 2-3 is filled: two never-retransmitted packets delivered below the
+// highest SACK (end of 4), a distance of 3 packets, not above reordering 3,
+// so reordering stays 3 but reord_seen is 1 (tcp_check_sack_reordering).
+// Five retransmissions are taken as sent before (total_retrans 5) so that
+// D-SACKs pass the dsack_dups <= total_retrans test.
+void make_reordered(Rig& r) {
+  const Time t0 = r.now;
+  r.send_new(10);
+  r.ctr.total_retrans = 5;
+  r.now = t0 + 100ms;
+  r.ack(2, {{4, 4}});
+  r.now = t0 + 101ms;
+  r.ack(5);
+  EXPECT_EQ(r.rec.reord_seen(), 1u);
+  EXPECT_EQ(r.rec.reordering(r.cfg), 3u);
+  EXPECT_EQ(r.rec.state(), CaState::open);
+}
+
+[[nodiscard]] Range dsack_of(std::uint32_t first, std::uint32_t last) {
+  return Range{off_of(first), off_of(last + 1)};
+}
+
+// tcp_dsack_seen: a valid D-SACK sets dsack_seen once reordering was seen;
+// not one of a TLP (FLAG_DSACK_TLP), one longer than the largest window the
+// peer offered, or one with more duplicates than retransmissions. The ACKs
+// below deliver nothing, so tcp_rack_update_reo_wnd returns at once and
+// dsack_seen stays visible.
+TEST(RackDsack, WhichDsacksCount) {
+  {
+    SCOPED_TRACE("valid");
+    Rig r(utcp::test::rig::linux_cfg());
+    make_reordered(r);
+    r.ack(5, {}, dsack_of(3, 3));
+    EXPECT_TRUE(r.rec.rack().dsack_seen);
+    EXPECT_EQ(r.ctr.dsack_dups, 1u);
+  }
+  {
+    SCOPED_TRACE("no reordering seen");
+    Rig r(utcp::test::rig::linux_cfg());
+    r.send_new(4);
+    r.ctr.total_retrans = 5;
+    r.now += 100ms;
+    r.ack(2);
+    r.ack(2, {}, dsack_of(1, 1));
+    EXPECT_EQ(r.rec.reord_seen(), 0u);
+    EXPECT_FALSE(r.rec.rack().dsack_seen);
+    EXPECT_EQ(r.stats.TcpExtTCPDSACKRecvSegs, 1u);  // valid, but not reordering
+  }
+  {
+    SCOPED_TRACE("TLP");
+    // The PTO resends the last packet, 10 (tlp_high_seq = end of 10); its
+    // D-SACK, at most one MSS ending at tlp_high_seq, is the probe's.
+    Rig r(utcp::test::rig::linux_cfg());
+    make_reordered(r);
+    r.ctr.total_retrans = 0;
+    EXPECT_EQ(r.fire_pto(), Sent{"P10"});
+    ASSERT_EQ(r.rec.tlp_high_seq(), off_of(11));
+    const auto out = r.ack(5, {}, dsack_of(10, 10));
+    EXPECT_NE(out.flags & utcp::ack_dsack_tlp, 0u);
+    EXPECT_NE(out.flags & utcp::ack_dsack, 0u);
+    EXPECT_FALSE(r.rec.rack().dsack_seen);
+  }
+  {
+    SCOPED_TRACE("longer than the max window");
+    Rig r(utcp::test::rig::linux_cfg());
+    make_reordered(r);
+    r.max_snd_wnd = 1500;
+    r.ack(5, {}, dsack_of(2, 3));  // 2000 bytes
+    EXPECT_FALSE(r.rec.rack().dsack_seen);
+    EXPECT_EQ(r.stats.TcpExtTCPDSACKIgnoredDubious, 1u);
+  }
+  {
+    SCOPED_TRACE("more duplicates than retransmissions");
+    Rig r(utcp::test::rig::linux_cfg());
+    make_reordered(r);
+    r.ctr.total_retrans = 0;
+    r.ack(5, {}, dsack_of(3, 3));
+    EXPECT_EQ(r.ctr.dsack_dups, 1u);  // counted before the test, as Linux
+    EXPECT_FALSE(r.rec.rack().dsack_seen);
+    EXPECT_EQ(r.stats.TcpExtTCPDSACKIgnoredDubious, 1u);
+  }
+}
+
+// One recovery entered by the REO timer and left by a full ACK: packets k to
+// k+3 at t; at t+100 k+1..k+3 are SACKed and k waits reo_wnd (reordering seen:
+// min_rtt / 4 * steps); the timer marks it lost, Recovery, R<k>; a full ACK
+// 100 ms later ends the recovery.
+void recovery_episode(Rig& r) {
+  const auto k = static_cast<std::uint32_t>(r.q.nxt() / mss + 1);
+  const Time t = r.now;
+  r.send_new(4);
+  r.now = t + 100ms;
+  r.ack(k, {{k + 1, k + 3}});
+  ASSERT_EQ(r.timer().first, XmitTimer::reo);
+  r.now = r.timer().second;
+  ASSERT_EQ(r.fire_reo(), Sent{"R" + std::to_string(k)});
+  ASSERT_EQ(r.rec.state(), CaState::recovery);
+  r.now += 100ms;
+  r.ack(k + 4);
+  ASSERT_EQ(r.rec.state(), CaState::open);
+}
+
+// tcp_rack_update_reo_wnd: a pending D-SACK raises reo_wnd_steps once per
+// delivered round (not again until a packet sent after the last step is
+// delivered), sets persist to 16; each end of a recovery counts persist down
+// (tcp_try_undo_recovery without undo); with persist 0 and no D-SACK the
+// next ACK resets the steps to 1.
+TEST(RackDsack, StepsOncePerRoundAndPersistOverSixteenRecoveries) {
+  Rig r(utcp::test::rig::linux_cfg());
+  make_reordered(r);
+  const Time t0 = r.now - 101ms;
+  EXPECT_EQ(r.rec.rack().reo_wnd_steps, 1u);
+  // +102: packet 5 ACKed with a D-SACK. Its snapshot (delivered 0 when sent
+  // at t0) is not before last_delivered 0: steps 2, persist 16,
+  // last_delivered = delivered after this ACK: 1 + 1 (first ACK) + 2 + 1 +
+  // 1 D-SACKed = 6.
+  r.now = t0 + 102ms;
+  r.ack(6, {}, dsack_of(3, 3));
+  EXPECT_EQ(r.rec.rack().reo_wnd_steps, 2u);
+  EXPECT_EQ(r.rec.rack().reo_wnd_persist, 16u);
+  EXPECT_EQ(r.rec.rack().last_delivered, 6u);
+  EXPECT_FALSE(r.rec.rack().dsack_seen);
+  // reo_wnd = min_rtt / 4 * 2 = 20 ms.
+  // +103: packet 6 with another D-SACK: its snapshot 0 is before 6, less
+  // than a round since the step: dropped, steps stay 2.
+  r.now = t0 + 103ms;
+  r.ack(7, {}, dsack_of(4, 4));
+  EXPECT_EQ(r.rec.rack().reo_wnd_steps, 2u);
+  EXPECT_FALSE(r.rec.rack().dsack_seen);
+  // Packets 11-12 sent at +104 carry delivered 8 (6, then 1 + 1 D-SACKed).
+  // +204: everything ACKed with a D-SACK; the newest delivered snapshot is
+  // 8, not before 6: steps 3.
+  r.now = t0 + 104ms;
+  r.send_new(2);
+  r.now = t0 + 204ms;
+  r.ack(13, {}, dsack_of(5, 5));
+  EXPECT_EQ(r.rec.rack().reo_wnd_steps, 3u);
+  EXPECT_EQ(r.rec.rack().reo_wnd_persist, 16u);
+  // Sixteen recoveries: steps stay 3 while persist counts 16 -> 0.
+  for (int i = 0; i < 16; ++i) {
+    SCOPED_TRACE(i);
+    recovery_episode(r);
+    if (HasFatalFailure()) {
+      return;
+    }
+    EXPECT_EQ(r.rec.rack().reo_wnd_persist, 15u - static_cast<unsigned>(i));
+    EXPECT_EQ(r.rec.rack().reo_wnd_steps, 3u);
+  }
+  // The next ACK that delivers something resets the steps.
+  r.send_new(1);
+  r.now += 100ms;
+  r.ack(static_cast<std::uint32_t>(r.q.nxt() / mss + 1));
+  EXPECT_EQ(r.rec.rack().reo_wnd_steps, 1u);
 }
 
 }  // namespace

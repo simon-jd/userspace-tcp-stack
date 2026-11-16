@@ -6,12 +6,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "core/buffer/chunk_pool.hpp"
 #include "core/tcp/cc_newreno.hpp"
 #include "core/tcp/rate.hpp"
+#include "recovery_rig.hpp"
 
 namespace {
 
@@ -401,6 +403,472 @@ TEST(Recovery, XmitTimerRtoAndPersist) {
   e.wnd = 0;
   e.ack(1000);
   EXPECT_EQ(e.timer().first, XmitTimer::none);
+}
+
+// ---- m2a-recovery acceptance tests 5 and 6 and the test faults (M2-DESIGN
+// §1.7, §1.9; the rig drives process_ack, recovery_rig.hpp). Packet k is
+// stream bytes [(k - 1) * 1000, k * 1000); "N<k>" new data, "R<k>" a
+// retransmission, "P<k>" a probe resending k.
+
+namespace rg = utcp::test::rig;
+using Sent = std::vector<std::string>;
+
+// srtt 20 ms from one sample: Linux rttvar = max(2 * 20 ms, rto_min) = 200 ms,
+// RTO 220 ms.
+void rtt20(rg::Rig& r) {
+  r.set_rtt({20ms});
+  ASSERT_EQ(r.rtt.rto(), 220ms);
+}
+
+// tcp_schedule_loss_probe after new data (transmit's on_burst_end).
+TEST(TlpSchedule, ProbeTimeouts) {
+  {
+    SCOPED_TRACE("3 packets: 2 * srtt + 2 ms = 42 ms");
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.write(3);
+    EXPECT_EQ(r.transmit(), (Sent{"N1", "N2", "N3"}));
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, r.now + 42ms));
+  }
+  {
+    SCOPED_TRACE("1 packet: min(2 * srtt + rto_min, RTO) = min(240, 220) = 220 ms");
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.write(1);
+    EXPECT_EQ(r.transmit(), Sent{"N1"});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, r.now + 220ms));
+  }
+  {
+    SCOPED_TRACE("1 packet, RTO above 240 ms: 240 ms");
+    // A first sample of 400 ms sets rttvar 800 ms, which no later sample
+    // lowers without the end of a round (SND.UNA never passes rtt_seq here);
+    // 400 samples of 20 ms bring srtt to 20 ms exactly, the RTO stays above
+    // 800 ms.
+    rg::Rig r(rg::linux_cfg());
+    r.set_rtt({400ms});
+    for (int i = 0; i < 400; ++i) {
+      r.rtt.on_srtt_sample(20ms, 0, 0);
+    }
+    ASSERT_EQ(r.rtt.srtt(), 20ms);
+    ASSERT_GT(r.rtt.rto(), 800ms);
+    r.write(1);
+    EXPECT_EQ(r.transmit(), Sent{"N1"});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, r.now + 240ms));
+  }
+  {
+    SCOPED_TRACE("srtt 300 ms: capped at the head's RTO expiry");
+    // RTO = 300 + 600 = 900 ms. Packet 1 at t0: one packet, min(800, 900) =
+    // 800 ms. Packets 2-3 at t0 + 500: min(602, time left to the head's RTO
+    // 900 - 500 = 400) = 400 ms, i.e. t0 + 900.
+    rg::Rig r(rg::linux_cfg());
+    r.set_rtt({300ms});
+    ASSERT_EQ(r.rtt.rto(), 900ms);
+    const Time t0 = r.now;
+    r.write(1);
+    EXPECT_EQ(r.transmit(), Sent{"N1"});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, t0 + 800ms));
+    r.now = t0 + 500ms;
+    r.write(2);
+    EXPECT_EQ(r.transmit(), (Sent{"N2", "N3"}));
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, t0 + 900ms));
+  }
+  {
+    SCOPED_TRACE("no RTT sample: 1 s (TCP_TIMEOUT_INIT)");
+    rg::Rig r(rg::linux_cfg());
+    r.rtt = utcp::RttEstimator(r.cfg);
+    ASSERT_EQ(r.rtt.rto(), 1s);
+    r.write(3);
+    r.transmit();
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, r.now + 1s));
+  }
+}
+
+// No PTO without SACK, in Recovery or in Loss, or in the rfc profile.
+TEST(TlpSchedule, OnlyOpenOrCwrWithSack) {
+  {
+    SCOPED_TRACE("no SACK");
+    rg::Rig r(rg::linux_cfg(), 14, false);
+    rtt20(r);
+    r.write(3);
+    r.transmit();
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + 220ms));
+  }
+  {
+    SCOPED_TRACE("Recovery");
+    rg::Rig r(rg::linux_cfg());
+    r.send_new(10);
+    r.now += 100ms;
+    r.ack(1, {{2, 4}});
+    ASSERT_EQ(r.rec.state(), CaState::recovery);
+    auto c = r.rctx();
+    r.rec.on_burst_end(c, true);
+    EXPECT_EQ(r.timer().first, XmitTimer::rto);
+  }
+  {
+    SCOPED_TRACE("Loss");
+    rg::Rig r(rg::linux_cfg());
+    r.send_new(2);
+    r.now += 400ms;
+    r.fire_rto();
+    ASSERT_EQ(r.rec.state(), CaState::loss);
+    auto c = r.rctx();
+    r.rec.on_burst_end(c, true);
+    EXPECT_EQ(r.timer().first, XmitTimer::rto);
+  }
+  {
+    SCOPED_TRACE("rfc");
+    rg::Rig r(rg::rfc_cfg());
+    r.write(3);
+    r.transmit();
+    EXPECT_EQ(r.timer().first, XmitTimer::rto);
+  }
+}
+
+// tcp_send_loss_probe: new data if the window takes it (past cwnd by one),
+// else the last segment; tlp_high_seq = SND.NXT; at most one outstanding;
+// the RTO a full RTO from now after a sent probe, the head's remaining time
+// after a PTO that sends nothing.
+TEST(TlpProbe, NewDataOrLastSegmentAndOneOutstanding) {
+  {
+    SCOPED_TRACE("new data");
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.cc.cwnd = 3;
+    const Time t0 = r.now;
+    r.write(5);
+    EXPECT_EQ(r.transmit(), (Sent{"N1", "N2", "N3"}));
+    r.now = t0 + 42ms;
+    EXPECT_EQ(r.fire_pto(), Sent{"N4"});
+    EXPECT_EQ(r.in_flight(), 4u);  // cwnd 3 + 1
+    EXPECT_EQ(r.rec.tlp_high_seq(), rg::off_of(5));
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbes, 1u);
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + 220ms));
+    // A second PTO (say from an ACK below tlp_high_seq) sends nothing; the
+    // RTO gets the head's time left: sent at t0, t0 + 220 ms.
+    r.now = t0 + 52ms;
+    EXPECT_EQ(r.fire_pto(), Sent{});
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbes, 1u);
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 220ms));
+  }
+  {
+    SCOPED_TRACE("last segment");
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.write(3);
+    r.transmit();
+    r.now += 42ms;
+    EXPECT_EQ(r.fire_pto(), Sent{"P3"});
+    EXPECT_EQ(r.rec.tlp_high_seq(), rg::off_of(4));
+    EXPECT_EQ(r.pkt(3).tx_count, 2u);
+    EXPECT_FALSE(r.pkt(3).retrans_inflight);  // __tcp_retransmit_skb alone
+    EXPECT_EQ(r.in_flight(), 3u);
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + 220ms));
+  }
+  {
+    SCOPED_TRACE("last segment beyond a shrunk window");
+    // __tcp_retransmit_skb resends nothing starting at or past SND.UNA +
+    // SND.WND but the head.
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.write(3);
+    r.transmit();
+    r.now += 42ms;
+    r.wnd = 1500;  // packet 3 starts at 2000
+    EXPECT_EQ(r.fire_pto(), Sent{});
+    EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
+  }
+}
+
+// tcp_process_tlp_ack, once SND.UNA reaches tlp_high_seq.
+TEST(TlpAck, FourOutcomes) {
+  {
+    SCOPED_TRACE("new-data probe acknowledged");
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.cc.cwnd = 3;
+    r.write(4);
+    r.transmit();
+    r.now += 42ms;
+    ASSERT_EQ(r.fire_pto(), Sent{"N4"});
+    r.now += 20ms;
+    r.ack(5);
+    EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
+    EXPECT_EQ(r.cc.cwnd, 3u);
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbeRecovery, 0u);
+  }
+  {
+    SCOPED_TRACE("D-SACK of the probe: no loss");
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.write(3);
+    r.transmit();
+    r.now += 42ms;
+    ASSERT_EQ(r.fire_pto(), Sent{"P3"});
+    r.now += 20ms;
+    r.ack(4, {}, Range{rg::off_of(3), rg::off_of(4)});
+    EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
+    EXPECT_EQ(r.cc.cwnd, 20u);
+    EXPECT_EQ(r.rec.state(), CaState::open);
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbeRecovery, 0u);
+  }
+  {
+    SCOPED_TRACE("ACK above tlp_high_seq after a resent probe: a loss repaired");
+    // init_cwnd_reduction (ssthresh 14), CWR, end_cwnd_reduction (cwnd =
+    // ssthresh), back to Open.
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.write(3);
+    r.transmit();
+    r.now += 42ms;
+    ASSERT_EQ(r.fire_pto(), Sent{"P3"});
+    r.write(1);
+    EXPECT_EQ(r.transmit(), Sent{"N4"});
+    r.now += 20ms;
+    r.ack(5);
+    EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
+    EXPECT_EQ(r.cc.ssthresh, 14u);
+    EXPECT_EQ(r.cc.cwnd, 14u);
+    EXPECT_EQ(r.rec.state(), CaState::open);
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbeRecovery, 1u);
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbes, 1u);
+  }
+  {
+    SCOPED_TRACE("pure duplicate ACK: the original and the probe arrived");
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.write(3);
+    r.transmit();
+    r.now += 42ms;
+    ASSERT_EQ(r.fire_pto(), Sent{"P3"});
+    r.write(1);
+    ASSERT_EQ(r.transmit(), Sent{"N4"});
+    r.now += 20ms;
+    r.ack(4);  // SND.UNA = tlp_high_seq, not a duplicate: kept
+    EXPECT_EQ(r.rec.tlp_high_seq(), rg::off_of(4));
+    r.ack(4);  // a pure duplicate (4 still out): cleared
+    EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
+    EXPECT_EQ(r.cc.cwnd, 20u);
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbeRecovery, 0u);
+  }
+}
+
+// FLAG_SET_XMIT_TIMER for an ACK without cumulative progress: only when its
+// SACK RTT sample is older than the head's last transmission (rfc, so no
+// PTO or RACK timer: RTO 1 s).
+TEST(TlpTimers, SackOnlyAckRearmsOnlyUnderSetXmitTimer) {
+  {
+    SCOPED_TRACE("head not resent: SACK RTT 100 ms = the head's age, no re-arm");
+    rg::Rig r(rg::rfc_cfg());
+    const Time t0 = r.now;
+    r.write(5);
+    r.transmit();
+    ASSERT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 1s));
+    r.now = t0 + 100ms;
+    r.ack(1, {{3, 3}});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 1s));
+  }
+  {
+    SCOPED_TRACE("head resent at +50: SACK RTT 100 ms > 50 ms, re-armed");
+    rg::Rig r(rg::rfc_cfg());
+    const Time t0 = r.now;
+    r.write(5);
+    r.transmit();
+    r.now = t0 + 50ms;
+    r.send_at(0, TxKind::rexmit);
+    ASSERT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 1050ms));
+    r.now = t0 + 100ms;
+    r.ack(1, {{3, 3}});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 1100ms));
+  }
+}
+
+// on_burst_end schedules the PTO only when the transmit call sent new data.
+TEST(TlpTimers, BurstEndSchedulesOnlyAfterNewData) {
+  rg::Rig r(rg::linux_cfg());
+  rtt20(r);
+  r.send_new(3);  // no burst end: the first transmission armed the RTO
+  ASSERT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + 220ms));
+  auto c = r.rctx();
+  r.rec.on_burst_end(c, false);
+  EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + 220ms));
+  r.rec.on_burst_end(c, true);
+  EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, r.now + 42ms));
+}
+
+// tcp_pacing_delay with pacing_next 3.5 ms ahead: 3 ms (whole jiffies,
+// truncated) on the PTO and on the RTO armed by tcp_rearm_rto's paths, not
+// on the REO timer.
+TEST(TlpTimers, PacingDelay) {
+  {
+    rg::Rig r(rg::linux_cfg());
+    rtt20(r);
+    r.pacing_delay = 3500us;
+    const Time t0 = r.now;
+    r.write(3);
+    r.transmit();
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, t0 + 45ms));
+    r.now = t0 + 45ms;
+    ASSERT_EQ(r.fire_pto(), Sent{"P3"});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 45ms + 223ms));
+    // A PTO that sends nothing: the head's time left (t0 + 220) + 3 ms.
+    r.now = t0 + 50ms;
+    ASSERT_EQ(r.fire_pto(), Sent{});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 223ms));
+  }
+  {
+    SCOPED_TRACE("tcp_rearm_rto after an ACK (no SACK, so no PTO)");
+    rg::Rig r(rg::linux_cfg(), 14, false);
+    r.pacing_delay = 3500us;
+    r.send_new(3);
+    r.now += 20ms;
+    r.ack(2);
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + r.rtt.rto_backed_off(0) + 3ms));
+  }
+  {
+    SCOPED_TRACE("REO: no pacing delay");
+    rg::Rig r(rg::linux_cfg());
+    r.pacing_delay = 3500us;
+    const Time t0 = r.now;
+    r.send_new(10);
+    r.now = t0 + 100ms;
+    r.ack(1, {{2, 2}});
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::reo, t0 + 112ms));
+  }
+}
+
+// TestFault::double_tlp: on_pto ignores tlp_high_seq.
+TEST(TestFaults, DoubleTlpSendsASecondProbe) {
+  for (const bool fault : {false, true}) {
+    SCOPED_TRACE(fault);
+    utcp::TcpConfig cfg = rg::linux_cfg();
+    cfg.test_fault = fault ? utcp::TestFault::double_tlp : utcp::TestFault::none;
+    rg::Rig r(cfg);
+    rtt20(r);
+    r.write(3);
+    r.transmit();
+    r.now += 42ms;
+    EXPECT_EQ(r.fire_pto(), Sent{"P3"});
+    r.now += 10ms;
+    EXPECT_EQ(r.fire_pto(), fault ? Sent{"P3"} : Sent{});
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbes, fault ? 2u : 1u);
+  }
+}
+
+// TestFault::prr_skip_force: PRR gives the first retransmission no room and
+// it bypasses the cwnd gate. The PRR script's entry (prr_test.cpp): in_flight
+// 16, delta -2; with the fault sndcnt = (14 * 1 + 19) / 20 - 1 = 0, cwnd 16,
+// and R1 goes out exempt: in_flight 17 > cwnd. Without it cwnd 17.
+TEST(TestFaults, PrrSkipForceBypassesTheCwndGate) {
+  for (const bool fault : {false, true}) {
+    SCOPED_TRACE(fault);
+    utcp::TcpConfig cfg = rg::linux_cfg();
+    cfg.test_fault = fault ? utcp::TestFault::prr_skip_force : utcp::TestFault::none;
+    rg::Rig r(cfg);
+    const Time t0 = r.now;
+    r.send_new(20);
+    r.now = t0 + 100ms;
+    r.ack(1, {{2, 2}});
+    r.now = t0 + 101ms;
+    r.ack(1, {{2, 3}});
+    r.now = t0 + 102ms;
+    r.ack(1, {{2, 4}});
+    ASSERT_EQ(r.rec.state(), CaState::recovery);
+    EXPECT_EQ(r.cc.cwnd, fault ? 16u : 17u);
+    auto c = r.rctx();
+    EXPECT_EQ(r.rec.exempt_from_cwnd(c, r.pkt(1)), fault);
+    EXPECT_EQ(r.transmit(), Sent{"R1"});
+    EXPECT_EQ(r.in_flight(), 17u);
+    // Only the first retransmission of the recovery.
+    auto d = r.rctx();
+    EXPECT_FALSE(r.rec.exempt_from_cwnd(d, r.pkt(1)));
+  }
+}
+
+// ---- Acceptance test 6: adaptive reordering (M2-DESIGN §1.9).
+
+// Packets 1-10 at t0; at +100 1-2 are ACKed and 7 SACKed (fack = end of 7);
+// at +101 the hole 3-6 is filled by a cumulative ACK: never-retransmitted
+// packets delivered below the prior fack, low = start of 3, fack = SND.UNA =
+// end of 7 (nothing SACKed is left): 5 packets > reordering 3, so
+// reordering = ceil(5000 / 1000) = 5 (tcp_check_sack_reordering), capped at
+// max_reordering; rfc (no adaptive reordering) keeps DupThresh 3.
+TEST(AdaptiveReordering, HoleFilledFivePacketsBelowFack) {
+  struct Case {
+    const char* name;
+    utcp::TcpConfig cfg;
+    std::uint32_t want;
+  };
+  utcp::TcpConfig capped = rg::linux_cfg();
+  capped.max_reordering = 4;
+  for (const Case& k : {Case{"linux_compat", rg::linux_cfg(), 5}, Case{"max 4", capped, 4},
+                        Case{"rfc", rg::rfc_cfg(), 3}}) {
+    SCOPED_TRACE(k.name);
+    rg::Rig r(k.cfg);
+    const Time t0 = r.now;
+    r.send_new(10);
+    r.now = t0 + 100ms;
+    r.ack(3, {{7, 7}});
+    EXPECT_EQ(r.rec.reord_seen(), 0u);
+    r.now = t0 + 101ms;
+    r.ack(8);
+    EXPECT_EQ(r.rec.reordering(r.cfg), k.want);
+    EXPECT_EQ(r.rec.reord_seen(), 1u);
+    EXPECT_EQ(r.stats.TcpExtTCPSACKReorder, 1u);
+  }
+}
+
+// tcp_may_raise_cwnd: with reordering above DupThresh any forward progress
+// (here a SACK-only ACK) lets cong_avoid run; at DupThresh only cumulative
+// progress does. An RTO in Disorder with sacked_out >= DupThresh sets
+// reordering back to min(reordering, DupThresh) (tcp_enter_loss).
+TEST(AdaptiveReordering, ForwardProgressAndRtoReset) {
+  rg::Rig r(rg::linux_cfg());
+  const Time t0 = r.now;
+  r.send_new(12);
+  r.now = t0 + 100ms;
+  r.ack(3, {{7, 7}});
+  r.now = t0 + 101ms;
+  r.ack(8);
+  ASSERT_EQ(r.rec.reordering(r.cfg), 5u);
+  // +150: 9-11 SACKed, 8 the hole (3 SACKed < reordering 5, and reo_wnd is
+  // min_rtt / 4 = 10 ms with reordering seen: not lost yet).
+  const int before = r.algo.cong_avoids;
+  r.now = t0 + 150ms;
+  r.ack(8, {{9, 11}});
+  EXPECT_EQ(r.rec.state(), CaState::disorder);
+  EXPECT_EQ(r.q.counters().sacked_out, 3u);
+  EXPECT_EQ(r.algo.cong_avoids, before + 1);
+  r.now = t0 + 151ms;
+  r.fire_rto();
+  EXPECT_EQ(r.rec.reordering(r.cfg), 3u);
+
+  // No reordering seen: the same kind of SACK-only ACK does not raise cwnd.
+  rg::Rig f(rg::linux_cfg());
+  f.send_new(12);
+  f.now += 100ms;
+  f.ack(1, {{2, 3}});
+  ASSERT_EQ(f.rec.state(), CaState::disorder);
+  EXPECT_EQ(f.algo.cong_avoids, 0);
+}
+
+// Without SACK (tcp_check_reno_reordering): 4 packets out, 3 duplicate ACKs
+// enter Recovery (head lost); a 4th would make sacked_out 4 + 1 hole > 4
+// packets out: capped at 3 (tcp_limit_reno_sacked), and reordering =
+// packets_out + 0 = 4.
+TEST(AdaptiveReordering, RenoMoreDupacksThanPacketsOut) {
+  rg::Rig r(rg::linux_cfg(), 14, false);
+  r.send_new(4);
+  r.now += 100ms;
+  for (int i = 0; i < 3; ++i) {
+    r.ack(1);
+  }
+  ASSERT_EQ(r.rec.state(), CaState::recovery);
+  EXPECT_EQ(r.rec.reord_seen(), 0u);
+  r.ack(1);
+  EXPECT_EQ(r.q.counters().sacked_out, 3u);
+  EXPECT_EQ(r.rec.reordering(r.cfg), 4u);
+  EXPECT_EQ(r.rec.reord_seen(), 1u);
+  EXPECT_EQ(r.stats.TcpExtTCPRenoReorder, 1u);
 }
 
 }  // namespace

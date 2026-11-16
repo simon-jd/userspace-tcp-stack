@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
@@ -201,6 +202,44 @@ struct Rig {
       sent.push_back(std::move(s));
     }
     return sent;
+  }
+
+  // The engine's PTO expiry (tcp_timers.cpp, M2-DESIGN §1.7): on_pto's answer
+  // goes out as one TxKind::tlp segment, new data past cwnd ("N<k>") or the
+  // last segment again without the retransmission scoreboard ("P<k>", a
+  // SendQueue probe); TcpExtTCPLossProbes counts a sent probe; then
+  // on_tlp_sent.
+  std::vector<std::string> fire_pto() {
+    auto c = rctx();
+    const TlpAction a = rec.on_pto(c);
+    std::vector<std::string> sent;
+    if (a == TlpAction::new_data && q.nxt() < q.end()) {
+      sent.push_back(name('N', q.nxt()));
+      send_at(q.nxt(), TxKind::tlp);
+    } else if (a == TlpAction::retransmit_last && !q.segs().empty()) {
+      const TxSeg last = q.segs().back();
+      sent.push_back(name('P', last.off));
+      rate_on_send(rate, q.counters().packets_out, now);
+      const TxSeg& s = q.on_transmit(last.off, last.len, false, now, rate, true);
+      auto t = rctx();
+      rec.on_transmit(t, s, TxKind::tlp);
+      ++ctr.total_retrans;
+    }
+    if (!sent.empty()) {
+      ++stats.TcpExtTCPLossProbes;
+    }
+    auto d = rctx();
+    rec.on_tlp_sent(d, a, !sent.empty());
+    return sent;
+  }
+
+  // Restarts the RTT estimator with these samples (min_rtt stays 40 ms).
+  void set_rtt(std::initializer_list<Duration> samples) {
+    rtt = RttEstimator(cfg);
+    for (const Duration d : samples) {
+      rtt.on_srtt_sample(d, 0, 0);
+    }
+    rtt.on_min_rtt_sample(40ms, false, now);
   }
 
   const TxSeg& pkt(std::uint32_t k) const {
