@@ -7,7 +7,8 @@
 #   copy2:  r1 drops copy 2 of offset 1448000 and r2 drops copy 1, so that a
 #           copy 2 exists: r1 loses exactly copy 2, r2 exactly copy 1;
 #   copy12: r1 drops copies 1 and 2 (a lost retransmission);
-#   ct:     r1 drops `ct original packets 500` (a first transmission).
+#   ct:     r1 drops `ct original packets 500`, which must be a data segment's
+#           first transmission (copy 1).
 # For each, tools/m2/dropcheck.py lists what r1 dropped (r1-in vs r1-out) and,
 # for copy2, what r2 dropped (r1-out vs r2-out); the script checks that the
 # list is exactly the intended packets. Prints PASS/FAIL per case; exit 1 if
@@ -54,7 +55,11 @@ exp = {\"r1\": [tuple(x) if isinstance(x, list) else x for x in want[\"r1\"]],
        \"r2\": [tuple(x) for x in want[\"r2\"]]}
 print(json.dumps({\"isn\": r1[\"isn\"], \"r1_in\": r1[\"before\"], \"r1_out\": r1[\"after\"],
                   \"r2_out\": r2[\"after\"], \"r1_dropped\": r1[\"missing\"], \"r2_dropped\": r2[\"missing\"]}))
-print(\"PASS\" if got == exp else \"FAIL expected %s got %s\" % (exp, got))
+ok = got == exp
+# The ct case: the dropped packet must be a first transmission of data.
+if want.get(\"first_tx\"):
+    ok = ok and all(m[\"copy\"] == 1 and m[\"len\"] > 0 for m in r1[\"missing\"])
+print(\"PASS\" if ok else \"FAIL expected %s got %s (copy, len %s)\" % (exp, got, [(m[\"copy\"], m[\"len\"]) for m in r1[\"missing\"]]))
 ' '$2'")
   echo "== $1: $(tail -1 <<<"$out")"
   head -1 <<<"$out"
@@ -68,6 +73,6 @@ check copy2 "{\"by\": \"seq\", \"r1\": [[$off, 2]], \"r2\": [[$off, 1]]}" \
   --drop "arm --router r2 --offsets $off --copies 1 --log /data/m2/$campaign/copy2/drop-r2.log"
 check copy12 "{\"by\": \"seq\", \"r1\": [[$off, 1], [$off, 2]], \"r2\": []}" \
   --drop "arm --router r1 --offsets $off --copies 1,2 --log /data/m2/$campaign/copy12/drop-r1.log"
-check ct "{\"by\": \"index\", \"r1\": [500], \"r2\": []}" --drop "ct --router r1 --packet 500"
+check ct "{\"by\": \"index\", \"r1\": [500], \"r2\": [], \"first_tx\": true}" --drop "ct --router r1 --packet 500"
 echo "m2_testbed_drops: $( ((fail)) && echo FAIL || echo PASS)"
 exit "$fail"

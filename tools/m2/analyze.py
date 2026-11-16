@@ -12,14 +12,18 @@ Pure functions (unit-tested in test_analyze.py) plus a command line:
   analyze.py archive CAMPAIGN_DIR FILE
                                    the analysis archive (every analysis input,
                                    no pcaps) with a sha256 manifest
+  analyze.py pings PCAP SRC DST [COUNT]
+                                   idle-ping statistics (gate item 1) from the
+                                   echo requests SRC -> DST in a capture
 
 Conventions
 - Times: CLOCK_MONOTONIC nanoseconds (the "t" of utcp-bulk's JSONL). CLOCK_REALTIME
   times (ping -D, the tbf sampler) convert with utcp-bulk's clock line:
   mono = rt - realtime_ns + monotonic_ns.
-- Window (§5.6): [t0 + 5 s, t0 + S], t0 = the receiver's start line (accept
-  time), S = the run length; counters at the bounds are interpolated linearly
-  between the 10 ms samples.
+- Window (§5.6): [t0 + 5 s, min(t0 + S, sender start + S)], t0 = the
+  receiver's start line (accept time), S = the run length, sender start = the
+  sender's start line, from which its writes last S (run_window); counters at
+  the bounds are interpolated linearly between the 10 ms samples.
 - Percentiles: linear interpolation between closest ranks (numpy's default),
   p in [0, 1].
 """
@@ -175,7 +179,10 @@ def window(t0_ns, duration_s):
 
 
 # --------------------------------------------------------------------------
-# ping -D -O output
+# ping -D -O output. iputils prints an RTT of 100 ms or more as whole
+# milliseconds (10-100 ms with 0.1 ms), so the runs take ping RTTs from the
+# r1-in capture instead (icmp_echoes) and use this text only when a run has no
+# capture.
 
 _PING_REPLY = re.compile(r"^\[(\d+)\.(\d+)\] \d+ bytes from [^:]+: icmp_seq=(\d+) .*time=([\d.]+) ms")
 _PING_NOANS = re.compile(r"^\[(\d+)\.(\d+)\] no answer yet for icmp_seq=(\d+)")
@@ -210,6 +217,14 @@ def parse_ping(text, interval_s=0.05):
     out = dict(noans)
     out.update(replies)  # a late reply wins over "no answer yet"
     return [out[k] for k in sorted(out)]
+
+
+def ping_stats(pings, count=None):
+    """Item 1 statistics of an idle ping series: replies, lost, median, p99, max (ms)."""
+    rtts = [p.rtt_ms for p in pings if p.rtt_ms is not None]
+    n_sent = count if count is not None else len(pings)
+    return {"n": len(rtts), "lost": n_sent - len(rtts), "median_ms": median(rtts),
+            "p99_ms": percentile(rtts, 0.99), "max_ms": max(rtts) if rtts else None}
 
 
 def ping_metrics(pings, clock, t0_ns, lo_ns, hi_ns):
@@ -391,8 +406,20 @@ def cpu_list(spec):
     return out
 
 
+def parse_cgroup_usage(lines):
+    """{container: usage_usec} of record.sh's "cgroup cpu.stat" section
+    ("<container> usage_usec N"); None when the section is absent."""
+    out = {}
+    for line in lines:
+        f = line.split()
+        if len(f) >= 3 and f[1] == "usage_usec" and f[2].isdigit():
+            out[f[0]] = int(f[2])
+    return out
+
+
 def record_counters(rec, containers):
-    """Per container: qdiscs and links; host: softnet and /proc/stat."""
+    """Per container: qdiscs and links; host: softnet, /proc/stat, the
+    containers' cgroup CPU usage and the clock tick."""
     out = {"qdisc": {}, "link": {}}
     for c in containers:
         out["qdisc"][c] = parse_qdiscs(rec.get((c, "tc -s -raw qdisc"), rec.get((c, "tc -s qdisc"), [])))
@@ -401,6 +428,9 @@ def record_counters(rec, containers):
     out["stat"] = parse_proc_stat(rec.get(("host", "/proc/stat"), []))
     out["softirqs"] = parse_softirqs(rec.get(("host", "/proc/softirqs"), []))
     out["nstat"] = {c: parse_nstat(rec.get((c, "nstat -asz"), [])) for c in containers}
+    out["cgroup_usage"] = parse_cgroup_usage(rec.get(("host", "cgroup cpu.stat"), []))
+    tck = [l.strip() for l in rec.get(("host", "clk_tck"), []) if l.strip().isdigit()]
+    out["clk_tck"] = int(tck[0]) if tck else 100
     return out
 
 
@@ -447,6 +477,39 @@ def cpu_deltas(pre, post, cpus):
         if a and b:
             out[cpu] = {k: b[k] - a[k] for k in ("irq", "softirq", "busy", "total")}
     return out
+
+
+FOREIGN_CPU_FLAG_FRACTION = 0.02   # foreign CPU time >= 2 % of the slot CPUs' time flags
+
+
+def foreign_cpu(pre, post, cpus, containers):
+    """CPU time on the slot's CPUs that is not the run's (RESULTS.md "Which runs
+    count"), between the pre and post records, as fractions of the slot CPUs'
+    time. ours = the four containers' cgroup usage (they are pinned to the
+    slot CPUs; docker exec processes join the container's cgroup). The
+    server's kernel has no CONFIG_IRQ_TIME_ACCOUNTING: irq and softirq time
+    is sampled per tick, and a tick that hits softirq work while one of our
+    tasks runs counts in both /proc/stat softirq and that task's usage. So
+      lower = busy - irq - softirq - ours   (softirq counted as ours)
+      upper = busy - ours                   (all softirq outside our tasks as foreign)
+    bound the foreign time; the flag uses the lower bound. None when the
+    records lack the cgroup section."""
+    pu, qu = pre.get("cgroup_usage") or {}, post.get("cgroup_usage") or {}
+    if not qu or any(c not in pu or c not in qu for c in containers):
+        return None
+    hz = post.get("clk_tck", 100)
+    d = cpu_deltas(pre, post, cpus)
+    if not d:
+        return None
+    us = 1e6 / hz
+    total = sum(v["total"] for v in d.values()) * us
+    busy = sum(v["busy"] for v in d.values()) * us
+    irq = sum(v["irq"] + v["softirq"] for v in d.values()) * us
+    ours = sum(qu[c] - pu[c] for c in containers)
+    if total <= 0:
+        return None
+    return {"lower_frac": max(0.0, busy - irq - ours) / total, "upper_frac": max(0.0, busy - ours) / total,
+            "ours_frac": ours / total, "busy_frac": busy / total}
 
 
 def softirq_deltas(pre, post, cpus):
@@ -517,13 +580,19 @@ def queue_check(samples, q_bytes, rate_bps=None, burst_bytes=0, lo_rt=None, hi_r
     §5.4 asks for a sample >= 0.9·Q in every drop interval; at 10 ms the queue
     drains R·10 ms between samples (12 500 B at 10 Mbit/s, 125 000 B at
     100 Mbit/s, as much as a 0.5xBDP queue holds), so that test fails on
-    correct tail drops; drop_intervals_below_frac still counts it (DESIGN §14)."""
+    correct tail drops; drop_intervals_below_frac still counts it (DESIGN §14).
+    Where the level is <= 0 (Q <= 1514 + B + R·Δt: the 0.5xBDP queues at
+    20 ms) any backlog meets it, so such an interval is counted as
+    drop_intervals_untestable and not as tested; "drop_check" is "tested",
+    "not testable at 10 ms sampling" (every drop interval untestable),
+    "partly testable" or "no drops"."""
     s = [x for x in samples if (lo_rt is None or x[0] >= lo_rt) and (hi_rt is None or x[0] <= hi_rt)]
     if not s:
         return {"backlog_max": None, "reaches": False, "drop_intervals": 0, "drop_intervals_low": 0,
-                "drop_intervals_below_frac": 0, "min_level": None}
+                "drop_intervals_below_frac": 0, "drop_intervals_untestable": 0, "min_level": None,
+                "drop_check": "no samples"}
     bmax = max(x[1] for x in s)
-    n = low = below = 0
+    n = low = below = untestable = 0
     min_level = None
     for a, b in zip(s, s[1:]):
         if a[2] is not None and b[2] is not None and b[2] > a[2]:
@@ -534,11 +603,22 @@ def queue_check(samples, q_bytes, rate_bps=None, burst_bytes=0, lo_rt=None, hi_r
             else:
                 level = frac * q_bytes
             min_level = level if min_level is None else min(min_level, level)
-            low += top < level
+            if level <= 0:
+                untestable += 1
+            else:
+                low += top < level
             below += top < frac * q_bytes
+    if n == 0:
+        check = "no drops"
+    elif untestable == n:
+        check = "not testable at 10 ms sampling"
+    elif untestable:
+        check = "partly testable"
+    else:
+        check = "tested"
     return {"backlog_max": bmax, "reaches": frac * q_bytes <= bmax <= q_bytes,
             "drop_intervals": n, "drop_intervals_low": low, "drop_intervals_below_frac": below,
-            "min_level": min_level}
+            "drop_intervals_untestable": untestable, "min_level": min_level, "drop_check": check}
 
 
 # --------------------------------------------------------------------------
@@ -629,18 +709,53 @@ def tcp_segments(path):
                      struct.unpack(">H", ip[4:6])[0], _tsval(t[20:doff]))
 
 
+def icmp_echoes(path, src_ip, dst_ip):
+    """Echo requests src_ip -> dst_ip in a capture paired with their replies by
+    ICMP id and sequence number: [Ping(seq, request time, rtt_ms or None)] in
+    request order. Both directions cross the capturing interface (r1-in sees
+    the request on its way in and the reply on its way out), so the RTT is
+    the capture's own time difference with nanosecond timestamps; it leaves
+    out the two sender-r1 veth hops, which the run's idle base removes too."""
+    req, out = {}, []
+    for ts, ip in read_pcap(path):
+        if len(ip) < 28 or ip[0] >> 4 != 4 or ip[9] != 1:
+            continue
+        ihl = (ip[0] & 15) * 4
+        icmp = ip[ihl:]
+        if len(icmp) < 8:
+            continue
+        src = ".".join(map(str, ip[12:16]))
+        dst = ".".join(map(str, ip[16:20]))
+        ident, seq = struct.unpack(">HH", icmp[4:8])
+        if icmp[0] == 8 and src == src_ip and dst == dst_ip:
+            p = Ping(seq, ts, None)
+            req.setdefault((ident, seq), p)
+            out.append(p)
+        elif icmp[0] == 0 and src == dst_ip and dst == src_ip:
+            p = req.get((ident, seq))
+            if p is not None and p.rtt_ms is None:
+                p.rtt_ms = (ts - p.send_rt_ns) / 1e6
+    return out
+
+
 def seq_leq(a, b):
     """a <= b in 32-bit sequence space."""
     d = (b - a) & 0xFFFFFFFF
     return d == 0 or d < 0x80000000
 
 
-def capture_summary(path, dst_ip, dport=None):
-    """Data segments toward dst_ip (payload > 0): count, retransmissions
-    (segments whose end is not above the highest end already seen, per flow),
-    and per-flow lists of (seq, len) for the copy-number checks."""
+CAPTURE_BIN_NS = 10_000_000
+
+
+def capture_summary(path, dst_ip, dport=None, bin_ns=None):
+    """Data segments toward dst_ip (payload > 0): count and retransmissions
+    (segments whose end is not above the highest end already seen, per flow).
+    With bin_ns also "bins": the counts per bin of bin_ns from t0_rt_ns (the
+    first data segment's bin), for the window cross-check (counts_series)."""
     n = retrans = 0
     high = {}
+    t_first = None
+    data_bins, rexmit_bins = [], []
     for s in tcp_segments(path):
         if s.dst != dst_ip or s.payload <= 0 or (dport is not None and s.dport != dport):
             continue
@@ -648,11 +763,38 @@ def capture_summary(path, dst_ip, dport=None):
         key = (s.src, s.sport, s.dport)
         end = (s.seq + s.payload) & 0xFFFFFFFF
         h = high.get(key)
-        if h is not None and seq_leq(end, h):
+        is_rexmit = h is not None and seq_leq(end, h)
+        if is_rexmit:
             retrans += 1
         else:
             high[key] = end
-    return {"data_segs": n, "retrans_segs": retrans}
+        if bin_ns:
+            if t_first is None:
+                t_first = s.ts_ns - s.ts_ns % bin_ns
+            i = (s.ts_ns - t_first) // bin_ns
+            while len(data_bins) <= i:
+                data_bins.append(0)
+                rexmit_bins.append(0)
+            data_bins[i] += 1
+            rexmit_bins[i] += is_rexmit
+    out = {"data_segs": n, "retrans_segs": retrans}
+    if bin_ns:
+        out["bins"] = {"t0_rt_ns": t_first, "bin_ns": bin_ns, "data": data_bins, "retrans": rexmit_bins}
+    return out
+
+
+def counts_series(bins, key):
+    """Cumulative series [(rt_ns, count up to rt_ns)] at the bin edges of a
+    capture_summary "bins" object; interp() between edges, as for the 10 ms
+    counter samples."""
+    if not bins or bins.get("t0_rt_ns") is None:
+        return []
+    t, step = bins["t0_rt_ns"], bins["bin_ns"]
+    out, acc = [(t, 0)], 0
+    for i, c in enumerate(bins[key]):
+        acc += c
+        out.append((t + (i + 1) * step, acc))
+    return out
 
 
 def binom_interval(n, p, alpha):
@@ -747,47 +889,90 @@ def read_text(p):
         return None
 
 
+# Local drops inside the stack (§5.2: pool or transmit-queue problems
+# invalidate): StackStats counters of datagrams the stack dropped itself.
+STACK_LOCAL_DROPS = ("IpOutDiscards", "TcpExtTCPRcvQDrop", "TcpExtTCPOFODrop")
+# Capture cross-check (§5.9): a sender's (receiver's) window count against the
+# capture next to it, flagged when they differ by more than
+# max(absolute, relative * count). Both sides are 10 ms series interpolated at
+# the window bounds.
+CAPTURE_SEGS_TOL = (20, 0.002)
+CAPTURE_RETRANS_TOL = (5, 0.10)
+
+
+def counts_agree(a, b, tol):
+    return abs(a - b) <= max(tol[0], tol[1] * max(abs(a), abs(b)))
+
+
+def run_window(meta, rcv, snd):
+    """(t0, lo, hi, sender start) of a run (§5.6, DESIGN §14.3): t0 = the
+    receiver's start line (its accept), lo = t0 + 5 s, hi = t0 + S but not
+    later than the sender's start line + S, where its writes stop. All delay
+    is on the data path, so the sender's start (its connect returning) is one
+    RTT before t0 and t0 + S alone would put an RTT after the last write into
+    the window. None without a receiver start line."""
+    start = find_event(rcv, "start")
+    if start is None:
+        return None
+    S = float(meta["duration_s"])
+    t0 = start["t"]
+    lo, hi = window(t0, S)
+    s = find_event(snd, "start")
+    snd_start = s["t"] if s else None
+    if snd_start is not None:
+        hi = min(hi, snd_start + int(S * NS))
+    return t0, lo, hi, snd_start
+
+
 def summarize_run(rundir):
     """summary.json of a run directory (§5.13): every §5.9 metric that the run
     has inputs for, the validity flags and the reasons."""
     rd = Path(rundir)
     meta = json.loads((rd / "meta.json").read_text())
-    S = float(meta["duration_s"])
     out = {"run": meta.get("run", rd.name), "valid": True, "invalid": [], "flags": []}
+
+    def invalid(why):
+        out["valid"] = False
+        out["invalid"].append(why)
+
+    lost_files = [(n, who) for n, who in (("rcv.jsonl", "receiver"), ("snd.jsonl", "sender"))
+                  if not (rd / n).exists()]
+    for _, who in lost_files:
+        invalid(f"no {who} JSONL")
+    if lost_files:
+        return out
     rcv = read_jsonl(rd / "rcv.jsonl")
     snd = read_jsonl(rd / "snd.jsonl")
-    start = find_event(rcv, "start")
-    if start is None:
-        out["valid"] = False
-        out["invalid"].append("no receiver start line")
+    w = run_window(meta, rcv, snd)
+    if w is None:
+        invalid("no receiver start line")
         return out
-    t0 = start["t"]
-    lo, hi = window(t0, S)
+    t0, lo, hi, snd_start = w
     out["t0_ns"] = t0
+    out["sender_start_ns"] = snd_start
+    out["window_end_ns"] = hi
     out["window_s"] = (hi - lo) / NS
     rbytes = series(rcv, "bytes_received")
     d = delta(rbytes, lo, hi)
     if d is None:
-        out["valid"] = False
-        out["invalid"].append("receiver samples do not cover the window")
+        invalid("receiver samples do not cover the window")
         out["goodput_bps"] = None
     else:
         out["goodput_bps"] = d * 8 * NS / (hi - lo)
     rsum = find_event(rcv, "summary")
     ssum = find_event(snd, "summary")
     if not rsum or not rsum.get("ok"):
-        out["valid"] = False
-        out["invalid"].append("receiver not ok")
+        invalid("receiver not ok")
     if not ssum or not ssum.get("ok"):
-        out["valid"] = False
-        out["invalid"].append("sender not ok")
+        invalid("sender not ok")
     if rsum and ssum and rsum.get("sha256") != ssum.get("sha256"):
-        out["valid"] = False
-        out["invalid"].append("sha256 differs")
+        invalid("sha256 differs")
     # Sender counters over the window.
     dsegs = delta(series(snd, "data_segs_out"), lo, hi)
     dret = delta(series(snd, "total_retrans"), lo, hi)
     ddsack = delta(series(snd, "dsack_dups"), lo, hi)
+    if dsegs is None or dret is None:
+        invalid("sender samples do not cover the window")
     out["data_segs_out"] = dsegs
     out["retrans_segs"] = dret
     out["retrans_pct"] = (100.0 * dret / dsegs) if dsegs and dret is not None else None
@@ -802,11 +987,23 @@ def summarize_run(rundir):
         for k in ("lateness_p50_ns", "lateness_p99_ns", "lateness_max_ns", "total_retrans"):
             if k in ssum:
                 out["sender_" + k] = ssum[k]
-    # Ping.
-    ptxt = read_text(rd / "ping.txt")
     clock = clock_of(snd) or clock_of(rcv)
-    if ptxt is not None and clock is not None:
-        out.update(ping_metrics(parse_ping(ptxt), clock, t0, lo, hi))
+    cap_t = read_text(rd / "capture.json")
+    cap = json.loads(cap_t) if cap_t else None
+    # Ping: from the r1-in capture (ns timestamps) when it has the pings, else
+    # from ping.txt (whole milliseconds at 100 ms RTT).
+    cp = ((cap or {}).get("r1-in") or {}).get("pings")
+    pings = None
+    if cp:
+        pings = [Ping(seq, t, None if r is None else r / 1e6) for seq, t, r in cp]
+        out["ping_source"] = "capture r1-in"
+    else:
+        ptxt = read_text(rd / "ping.txt")
+        if ptxt is not None:
+            pings = parse_ping(ptxt)
+            out["ping_source"] = "ping.txt"
+    if pings is not None and clock is not None:
+        out.update(ping_metrics(pings, clock, t0, lo, hi))
     # Records.
     roles = meta.get("containers", {})
     pre_t, post_t = read_text(rd / "pre" / "record.txt"), read_text(rd / "post" / "record.txt")
@@ -818,27 +1015,31 @@ def summarize_run(rundir):
         out["local_drops"] = bad
         out["time_squeeze"] = squeeze
         if bad:
-            out["valid"] = False
-            out["invalid"].append("local drops")
+            invalid("local drops")
         if squeeze:
             out["flags"].append("time_squeeze")
         out["cpu"] = {str(k): v for k, v in cpu_deltas(pre, post, cpus).items()}
         out["softirqs"] = softirq_deltas(pre, post, cpus)
+        fc = foreign_cpu(pre, post, cpus, list(roles.values()))
+        out["foreign_cpu"] = fc
+        out["foreign_cpu_frac"] = None if fc is None else fc["lower_frac"]
+        if fc is not None and fc["lower_frac"] >= FOREIGN_CPU_FLAG_FRACTION:
+            out["flags"].append("foreign_cpu")
         if meta.get("impl") != "utcp":
             out["sender_counters"] = nstat_deltas(pre, post, roles["snd"])
         ifs = meta.get("ifaces", {})
         if ifs:
             out["netem"] = qdisc_delta(pre, post, roles["r1"], ifs["r1_b"])
             out["tbf"] = qdisc_delta(pre, post, roles["r2"], ifs["r2_c"])
+            # The ACK path's interfaces are noqueue (m2_testbed.sh checks it);
+            # a qdisc there that dropped would invalidate the run. Their link
+            # drops are in local_drops.
             ack = {}
             for role, key in (("r2", "r2_b"), ("r1", "r1_a")):
-                q = qdisc_delta(pre, post, roles[role], ifs[key])
-                ack[key] = q
+                ack[key] = qdisc_delta(pre, post, roles[role], ifs[key])
             out["ack_path"] = ack
-            ack_drops = sum((q or {}).get("dropped", 0) for q in ack.values())
-            if ack_drops:
-                out["valid"] = False
-                out["invalid"].append("ACK-path qdisc drops")
+            if sum((q or {}).get("dropped", 0) for q in ack.values()):
+                invalid("ACK-path qdisc drops")
     # tbf sampler.
     ttxt = read_text(rd / "tbf.txt")
     if ttxt is not None and clock is not None:
@@ -850,23 +1051,42 @@ def summarize_run(rundir):
         rate = float(bw) * 1e6 if bw else None
         out["queue"] = queue_check(samples, q, rate, int(meta.get("burst_bytes", 0)), lo_rt, hi_rt) if q else None
     # Captures (capture.json, made by `analyze.py captures`).
-    cap = read_text(rd / "capture.json")
     if cap:
-        c = json.loads(cap)
-        out["capture"] = c
-        for name, v in c.items():
+        out["capture"] = {k: ({kk: vv for kk, vv in v.items() if kk not in ("bins", "pings")}
+                              if isinstance(v, dict) else v) for k, v in cap.items()}
+        for name, v in cap.items():
             if isinstance(v, dict) and v.get("kernel_dropped"):
                 out["flags"].append(f"capture_drops:{name}")
             if isinstance(v, dict) and v.get("received_by_filter") not in (None, v.get("captured")):
                 out["flags"].append(f"capture_incomplete:{name}")
-    if cap:
-        r1 = out["capture"].get("r1-in") or {}
+        r1 = cap.get("r1-in") or {}
         if r1.get("data_segs"):
-            # Cross-check of the retransmission rate (§5.9), whole run.
-            out["retrans_pct_capture"] = 100.0 * r1["retrans_segs"] / r1["data_segs"]
-    # Stack counters (--stats): device problems invalidate (§5.2); transmit
-    # queue or pool blocking (loop_pending_calls, the iterations in which a
-    # blocked connection resumed) is reported and flagged (DESIGN §14.6).
+            out["retrans_pct_capture_run"] = 100.0 * r1["retrans_segs"] / r1["data_segs"]
+        # §5.9 cross-check over the same window: the r1-in capture against the
+        # sender's counters, r2-out against the receiver's data_segs_in. A
+        # difference shows a drop where no counter looks (host veth, bridge)
+        # or a counter that does not count what the capture sees.
+        if clock is not None:
+            lo_rt = lo - clock.monotonic_ns + clock.realtime_ns
+            hi_rt = hi - clock.monotonic_ns + clock.realtime_ns
+            cw = {}
+            for name, key, col in (("r1-in", "data", "r1in_data_segs"), ("r1-in", "retrans", "r1in_retrans_segs"),
+                                   ("r2-out", "data", "r2out_data_segs")):
+                cw[col] = delta(counts_series((cap.get(name) or {}).get("bins"), key), lo_rt, hi_rt)
+            cw["rcv_data_segs_in"] = delta(series(rcv, "data_segs_in"), lo, hi)
+            out["capture_window"] = cw
+            if cw["r1in_data_segs"]:
+                out["retrans_pct_capture"] = 100.0 * (cw["r1in_retrans_segs"] or 0) / cw["r1in_data_segs"]
+            for a, b, tol, what in ((cw["r1in_data_segs"], dsegs, CAPTURE_SEGS_TOL, "data_segs_out"),
+                                    (cw["r1in_retrans_segs"], dret, CAPTURE_RETRANS_TOL, "total_retrans"),
+                                    (cw["r2out_data_segs"], cw["rcv_data_segs_in"], CAPTURE_SEGS_TOL,
+                                     "data_segs_in")):
+                if a is not None and b is not None and not counts_agree(a, b, tol):
+                    out["flags"].append(f"capture_mismatch:{what}")
+    # Stack counters (--stats): device problems and datagrams the stack dropped
+    # itself invalidate (§5.2); transmit queue or pool blocking
+    # (loop_pending_calls, the iterations in which a blocked connection
+    # resumed) is reported and flagged (DESIGN §14.6).
     st = read_text(rd / "stats.json")
     if st:
         s = json.loads(st.strip().splitlines()[-1])
@@ -875,8 +1095,11 @@ def summarize_run(rundir):
             devbad["dev_device_failed"] = 1
         out["stack_device"] = devbad
         if devbad:
-            out["valid"] = False
-            out["invalid"].append("stack device errors")
+            invalid("stack device errors")
+        sdrops = {k: s[k] for k in STACK_LOCAL_DROPS if s.get(k)}
+        out["stack_local_drops"] = sdrops
+        if sdrops:
+            invalid("stack local drops")
         out["stack_blocked_resumes"] = s.get("loop_pending_calls")
         if s.get("loop_pending_calls"):
             out["flags"].append("stack_blocked")
@@ -885,12 +1108,17 @@ def summarize_run(rundir):
         out["sender_counters"] = {n: s.get(n, 0) for n in SENDER_COUNTERS}
         out["stack_lateness_hist"] = {k[len("loop_lateness_bucket_"):]: v for k, v in s.items()
                                       if k.startswith("loop_lateness_bucket_")}
+        if "loop_lateness_max_ns" in s:
+            out["stack_lateness_max_ns"] = s["loop_lateness_max_ns"]
     return out
 
 
 def captures_of_run(rundir, meta=None):
     """capture.json: per capture the data segments toward the receiver and the
-    retransmissions seen, and tcpdump's own drop count (from <name>.tcpdump.txt)."""
+    retransmissions seen, their 10 ms bins (the window cross-check), tcpdump's
+    own counts (from <name>.tcpdump.txt), and for r1-in the sender's pings to
+    the receiver paired with their replies ([seq, request CLOCK_REALTIME ns,
+    rtt ns or null])."""
     rd = Path(rundir)
     meta = meta or json.loads((rd / "meta.json").read_text())
     rcv_ip = meta["rcv_ip"]
@@ -899,7 +1127,10 @@ def captures_of_run(rundir, meta=None):
         p = rd / f"{name}.pcap"
         if not p.exists():
             continue
-        c = capture_summary(p, rcv_ip)
+        c = capture_summary(p, rcv_ip, bin_ns=CAPTURE_BIN_NS)
+        if name == "r1-in" and meta.get("snd_ip"):
+            c["pings"] = [[x.seq, x.send_rt_ns, None if x.rtt_ms is None else round(x.rtt_ms * 1e6)]
+                          for x in icmp_echoes(p, meta["snd_ip"], rcv_ip)]
         c["bytes"] = p.stat().st_size
         log = read_text(rd / f"{name}.tcpdump.txt") or ""
         m = re.search(r"(\d+) packets? dropped by kernel", log)
@@ -919,22 +1150,50 @@ def captures_of_run(rundir, meta=None):
 METRICS = ("goodput_bps", "retrans_pct", "qdelay_p50_ms", "qdelay_p99_ms")
 
 
+def group_of(meta):
+    """A run's group (M2 design §5.6, DESIGN §14.7): the runs of one (cell,
+    algorithm, repetition) that ran back to back in one slot with one netem
+    seed, and each rerun of them as a whole. (plan group, rerun number); runs
+    without a plan group (calibration, hand-made) use their repetition."""
+    g = meta.get("group")
+    return (g if g is not None else f"rep{meta.get('rep')}", int(meta.get("rerun", 0)))
+
+
 def select_runs(runs):
-    """Run counting (§5.6, RESULTS.md "Which runs count") for the runs of one
-    (cell, algorithm): per side the first RUNS_PER_SIDE valid runs in order;
-    invalid runs are kept but not counted; the cell is invalid when it needed
-    more than RERUN_CAP reruns (invalid runs over both sides) or a side has fewer
-    than RUNS_PER_SIDE valid runs. Returns (counted {impl: [runs]}, status)."""
-    counted, invalid = {}, 0
-    for impl in sorted({r["impl"] for r in runs}):
-        side = sorted((r for r in runs if r["impl"] == impl), key=lambda r: (r["order"], r["run"]))
-        valid = [r for r in side if r["valid"]]
-        invalid += sum(1 for r in side if not r["valid"])
-        counted[impl] = valid[:RUNS_PER_SIDE]
+    """Run counting (RESULTS.md "Which runs count") for the runs of one (cell,
+    algorithm). runs: dicts with impl, order, valid, run and group (group_of).
+    A group is valid when it holds a run of every
+    implementation of the cell and all its runs are valid; the statistics use
+    the runs of the first RUNS_PER_SIDE valid groups in run order (order, then
+    rerun number), so the counted stack and Linux runs are the same pairs.
+    The cell is "invalid (rerun cap)" when more than RERUN_CAP groups were
+    invalid (each is rerun as a whole), "incomplete" with fewer than
+    RUNS_PER_SIDE valid groups. Returns (counted {impl: [runs]}, status)."""
+    impls = sorted({r["impl"] for r in runs})
+    groups = {}
+    for r in runs:
+        groups.setdefault(r["group"], []).append(r)
+
+    def key(g):
+        rs = groups[g]
+        return (min(r["order"] for r in rs), g[1] if isinstance(g[1], int) else 0, min(r["run"] for r in rs))
+
+    counted = {impl: [] for impl in impls}
+    n_valid = n_invalid = 0
+    for g in sorted(groups, key=key):
+        rs = groups[g]
+        ok = sorted({r["impl"] for r in rs}) == impls and all(r["valid"] for r in rs)
+        if not ok:
+            n_invalid += 1
+            continue
+        if n_valid < RUNS_PER_SIDE:
+            for r in sorted(rs, key=lambda r: (r["order"], r["run"])):
+                counted[r["impl"]].append(r)
+        n_valid += 1
     status = "ok"
-    if invalid > RERUN_CAP:
+    if n_invalid > RERUN_CAP:
         status = "invalid (rerun cap)"
-    elif any(len(v) < RUNS_PER_SIDE for v in counted.values()):
+    elif n_valid < RUNS_PER_SIDE:
         status = "incomplete"
     return counted, status
 
@@ -947,8 +1206,10 @@ def stats(xs):
 
 
 def gap_verdict(metric, stack, linux, loss_pct):
-    """Gap rule of §5.10 between the stack's and Linux's 5-run statistics."""
-    if stack is None or linux is None:
+    """Gap rule of §5.10 between the stack's and Linux's 5-run statistics; "n/a"
+    when a side has fewer than RUNS_PER_SIDE values of the metric (a counted
+    run without it, e.g. no ping replies in the window)."""
+    if stack is None or linux is None or min(stack.get("n", 0), linux.get("n", 0)) < RUNS_PER_SIDE:
         return "n/a"
     overlap = ranges_overlap(stack["min"], stack["max"], linux["min"], linux["max"])
     diff = stack["median"] - linux["median"]
@@ -968,15 +1229,22 @@ def gap_verdict(metric, stack, linux, loss_pct):
 # Tables
 
 
-RUN_COLUMNS = ("campaign", "run", "cell", "bw_mbit", "rtt_ms", "loss_pct", "queue_bdp", "impl",
-               "profile", "cc", "rep", "order", "slot", "commit", "valid", "invalid", "flags",
+RUN_COLUMNS = ("campaign", "run", "cell", "bw_mbit", "rtt_ms", "loss_pct", "queue_bdp", "impl", "algo",
+               "profile", "cc", "rep", "group", "rerun", "order", "slot", "timing", "commit", "reuse_key",
+               "valid", "invalid", "flags",
                "goodput_bps", "retrans_pct", "spurious_retrans", "qdelay_p50_ms", "qdelay_p99_ms",
                "ping_lost", "sndbuf_limited_frac", "rwnd_limited_frac", "sender_lateness_p99_ns",
-               "sender_lateness_max_ns", "backlog_max", "netem_dropped", "tbf_dropped")
+               "sender_lateness_max_ns", "backlog_max", "netem_dropped", "tbf_dropped", "foreign_cpu_frac",
+               "retrans_pct_capture")
 
-CELL_COLUMNS = ("cell", "bw_mbit", "rtt_ms", "loss_pct", "queue_bdp", "cc", "impl", "transient", "status",
-                "n_counted", "n_invalid", "commits") + tuple(
-    f"{m}_{s}" for m in METRICS for s in ("median", "min", "max")) + tuple(f"gap_{m}" for m in METRICS)
+CELL_COLUMNS = ("cell", "bw_mbit", "rtt_ms", "loss_pct", "queue_bdp", "algo", "cc", "impl", "transient", "status",
+                "n_counted", "n_invalid", "commits", "reuse_keys") + tuple(
+    f"{m}_{s}" for m in METRICS for s in ("median", "min", "max", "n")) + tuple(f"gap_{m}" for m in METRICS)
+
+
+def algo_of(meta):
+    """The algorithm label of a run (matrix.algo_label; older runs: cc)."""
+    return meta.get("algo") or meta.get("cc")
 
 
 def fmt(v, kind="g"):
@@ -1002,16 +1270,18 @@ def run_row(meta, summ):
     row = {
         "campaign": meta.get("campaign"), "run": meta.get("run"), "cell": meta.get("cell"),
         "bw_mbit": meta.get("bw_mbit"), "rtt_ms": meta.get("rtt_ms"), "loss_pct": meta.get("loss_pct"),
-        "queue_bdp": meta.get("queue_bdp"), "impl": meta.get("impl"), "profile": meta.get("profile"),
-        "cc": meta.get("cc"), "rep": meta.get("rep"), "order": meta.get("order"), "slot": meta.get("slot"),
-        "commit": meta.get("commit"), "valid": summ.get("valid"), "invalid": summ.get("invalid"),
-        "flags": summ.get("flags"),
+        "queue_bdp": meta.get("queue_bdp"), "impl": meta.get("impl"), "algo": algo_of(meta),
+        "profile": meta.get("profile"), "cc": meta.get("cc"), "rep": meta.get("rep"),
+        "group": meta.get("group"), "rerun": meta.get("rerun", 0), "order": meta.get("order"),
+        "slot": meta.get("slot"), "timing": meta.get("timing"), "commit": meta.get("commit"),
+        "reuse_key": (meta.get("reuse_key") or "")[:12], "valid": summ.get("valid"),
+        "invalid": summ.get("invalid"), "flags": summ.get("flags"),
         "backlog_max": q.get("backlog_max"), "netem_dropped": netem.get("dropped"),
         "tbf_dropped": tbf.get("dropped"),
     }
     for k in ("goodput_bps", "retrans_pct", "spurious_retrans", "qdelay_p50_ms", "qdelay_p99_ms",
               "ping_lost", "sndbuf_limited_frac", "rwnd_limited_frac", "sender_lateness_p99_ns",
-              "sender_lateness_max_ns"):
+              "sender_lateness_max_ns", "foreign_cpu_frac", "retrans_pct_capture"):
         row[k] = summ.get(k)
     return row
 
@@ -1042,12 +1312,16 @@ def cell_rows(pairs):
     for meta, summ in pairs:
         if meta.get("impl") not in ("utcp", "linux"):
             continue
-        groups.setdefault((meta["cell"], meta["cc"]), []).append((meta, summ))
-    for (cell, cc) in sorted(groups):
-        members = groups[(cell, cc)]
+        groups.setdefault((meta["cell"], algo_of(meta)), []).append((meta, summ))
+    for (cell, algo) in sorted(groups):
+        members = groups[(cell, algo)]
         runs = [{"impl": m["impl"], "order": m.get("order", 0), "run": m["run"], "valid": s["valid"],
-                 "summary": s, "meta": m} for m, s in members]
+                 "group": group_of(m), "summary": s, "meta": m} for m, s in members]
         counted, status = select_runs(runs)
+        # §5.13: the counted runs of a cell must share one reuse key.
+        keys = sorted({r["meta"].get("reuse_key") or "" for rs in counted.values() for r in rs})
+        if status == "ok" and len(keys) > 1:
+            status = "mixed reuse keys"
         st = {impl: {m: stats([r["summary"].get(m) for r in rs]) for m in METRICS}
               for impl, rs in counted.items()}
         m0 = members[0][0]
@@ -1059,16 +1333,20 @@ def cell_rows(pairs):
                 verdicts[m] = gap_verdict(m, st["utcp"][m], st["linux"][m], m0["loss_pct"])
         for impl in sorted(counted):
             row = {"cell": cell, "bw_mbit": m0.get("bw_mbit"), "rtt_ms": m0.get("rtt_ms"),
-                   "loss_pct": m0.get("loss_pct"), "queue_bdp": m0.get("queue_bdp"), "cc": cc,
+                   "loss_pct": m0.get("loss_pct"), "queue_bdp": m0.get("queue_bdp"), "algo": algo,
+                   "cc": ";".join(sorted({str(m.get("cc")) for m, _ in members if m["impl"] == impl})),
                    "impl": impl, "status": status, "n_counted": len(counted[impl]),
                    "transient": transient(m0.get("bw_mbit"), m0.get("rtt_ms"), m0.get("loss_pct"),
-                                          m0.get("queue_bdp"), cc),
+                                          m0.get("queue_bdp"), m0.get("cc")),
                    "n_invalid": sum(1 for r in runs if r["impl"] == impl and not r["valid"]),
-                   "commits": sorted({r["meta"].get("commit", "") for r in counted[impl]})}
+                   "commits": sorted({r["meta"].get("commit", "") for r in counted[impl]}),
+                   "reuse_keys": [k[:12] for k in keys]}
             for m in METRICS:
                 s = st[impl][m]
-                for k in ("median", "min", "max"):
+                for k in ("median", "min", "max", "n"):
                     row[f"{m}_{k}"] = None if s is None else s[k]
+                if s is None:
+                    row[f"{m}_n"] = 0
                 row[f"gap_{m}"] = verdicts[m]
             rows.append(row)
     return rows
@@ -1077,7 +1355,8 @@ def cell_rows(pairs):
 def make_tables(campdir, outdir):
     pairs = campaign_runs(campdir)
     rows = [run_row(m, s) for m, s in pairs]
-    rows.sort(key=lambda r: (str(r["cell"]), str(r["cc"]), str(r["impl"]), r.get("order") or 0, str(r["run"])))
+    rows.sort(key=lambda r: (str(r["cell"]), str(r["algo"]), str(r["impl"]), r.get("order") or 0,
+                             r.get("rerun") or 0, str(r["run"])))
     Path(outdir).mkdir(parents=True, exist_ok=True)
     write_csv(Path(outdir) / "runs.csv", RUN_COLUMNS, rows)
     write_csv(Path(outdir) / "cells.csv", CELL_COLUMNS, cell_rows(pairs))
@@ -1150,6 +1429,11 @@ def main(argv):
     p = sub.add_parser("archive", help="the analysis archive of a campaign")
     p.add_argument("campaign")
     p.add_argument("file")
+    p = sub.add_parser("pings", help="ping statistics from a capture")
+    p.add_argument("pcap")
+    p.add_argument("src")
+    p.add_argument("dst")
+    p.add_argument("count", type=int, nargs="?")
     a = ap.parse_args(argv[1:])
     if a.cmd == "run":
         s = summarize_run(a.rundir)
@@ -1166,6 +1450,8 @@ def main(argv):
             make_tables(a.campaign, a.outdir)
     elif a.cmd == "archive":
         print(f"{archive(a.campaign, a.file)} files in {a.file}")
+    elif a.cmd == "pings":
+        print(json.dumps(ping_stats(icmp_echoes(a.pcap, a.src, a.dst), a.count), sort_keys=True))
     return 0
 
 

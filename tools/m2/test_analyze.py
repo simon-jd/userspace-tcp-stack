@@ -109,16 +109,26 @@ def ping_text():
     return "\n".join(out) + "\n"
 
 
-def record(label, extra_drops=0, squeeze=0, tbf_dropped=0, utcp_drop=0):
-    def link(name, rxd=0, txd=0):
+def record(label, extra_drops=0, squeeze=0, tbf_dropped=0, utcp_drop=0, link_drops=None, utcp_qdrop=0,
+           softnet_drop=None, cgroup=None, stat=None, ack_qdrop=0):
+    """record.sh output of slot "s". link_drops {(container, dev): (rx, tx)};
+    softnet_drop {cpu: n}; cgroup {container: usage_usec}; stat {cpu: (user,
+    system, idle, irq, softirq)} (default 100, 50, 1000, 5, 20); ack_qdrop:
+    drops of r2's eth0 (the ACK path) qdisc."""
+    link_drops = link_drops or {}
+    softnet_drop = softnet_drop or {}
+    stat = stat or {}
+
+    def link(c, name, rxd=0, txd=0):
+        rx, tx = link_drops.get((c, name), (0, 0))
         return [f"2: {name}@if1: <BROADCAST,UP> mtu 1500 qdisc noqueue state UP",
                 "    veth gso_max_size 65536 gso_ipv4_max_size 65536",
                 "    RX:  bytes packets errors dropped  missed   mcast",
-                f"        1000      10      0       {rxd}       0       0",
+                f"        1000      10      0       {rxd + rx}       0       0",
                 "    TX:  bytes packets errors dropped carrier collsns",
-                f"        1000      10      0       {txd}       0       0"]
+                f"        1000      10      0       {txd + tx}       0       0"]
     lines = [f"# {label} slot 0 now"]
-    lines += ["== s-snd ip -s -d link"] + link("eth0", txd=extra_drops) + [
+    lines += ["== s-snd ip -s -d link"] + link("s-snd", "eth0", txd=extra_drops) + [
         "3: utcp0: <POINTOPOINT,UP> mtu 1500 qdisc pfifo state UP",
         "    tun gso_ipv4_max_size 65536",
         "    RX:  bytes packets errors dropped  missed   mcast",
@@ -130,16 +140,19 @@ def record(label, extra_drops=0, squeeze=0, tbf_dropped=0, utcp_drop=0):
               " Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) ",
               " backlog 0b 0p requeues 0",
               "qdisc pfifo 1: dev utcp0 root refcnt 2 limit 10000p",
-              " Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) ",
+              f" Sent 0 bytes 0 pkt (dropped {utcp_qdrop}, overlimits 0 requeues 0) ",
               " backlog 0b 0p requeues 0"]
     for c, devs in (("s-r1", ("eth0", "eth1")), ("s-r2", ("eth0", "eth1")), ("s-rcv", ("eth0",))):
         lines.append(f"== {c} ip -s -d link")
         for d in devs:
-            lines += link(d)
+            lines += link(c, d)
         lines.append(f"== {c} tc -s -raw qdisc")
         for d in devs:
             kind = "noqueue"
             sent = "Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0)"
+            if c == "s-r2" and d == "eth0" and ack_qdrop:
+                kind = "pfifo"
+                sent = f"Sent 100 bytes 1 pkt (dropped {ack_qdrop}, overlimits 0 requeues 0)"
             if c == "s-r1" and d == "eth1":
                 kind = "netem"
                 sent = "Sent 5000 bytes 50 pkt (dropped 3, overlimits 0 requeues 0)"
@@ -148,12 +161,16 @@ def record(label, extra_drops=0, squeeze=0, tbf_dropped=0, utcp_drop=0):
                 sent = f"Sent 4000 bytes 40 pkt (dropped {tbf_dropped}, overlimits 7 requeues 0)"
             lines += [f"qdisc {kind} 8001: dev {d} root refcnt 2 ", f" {sent} ", " backlog 0b 0p requeues 0"]
     lines.append("== host softnet_stat")
-    for cpu in range(16):
+    for cpu in range(32):
         sq = squeeze if cpu == 8 else 0
-        lines.append(f"{cpu} 00001000 00000000 {sq:08x} 0 0 0 0 0 0 0 0 0 {cpu:08x} 0 0")
+        lines.append(f"{cpu} 00001000 {softnet_drop.get(cpu, 0):08x} {sq:08x} 0 0 0 0 0 0 0 0 0 {cpu:08x} 0 0")
     lines.append("== host /proc/stat")
-    for cpu in range(16):
-        lines.append(f"cpu{cpu} 100 0 50 1000 0 5 20 0 0 0")
+    for cpu in range(32):
+        user, system, idle, irq, softirq = stat.get(cpu, (100, 50, 1000, 5, 20))
+        lines.append(f"cpu{cpu} {user} 0 {system} {idle} 0 {irq} {softirq} 0 0 0")
+    if cgroup is not None:
+        lines += ["== host clk_tck", "100", "== host cgroup cpu.stat"]
+        lines += [f"{c} usage_usec {v}" for c, v in cgroup.items()]
     return "\n".join(lines) + "\n"
 
 
@@ -241,7 +258,10 @@ class Window(unittest.TestCase):
             d = make_run(tmp, "r0")
             s = A.summarize_run(d)
             self.assertTrue(s["valid"], s["invalid"])
-            self.assertEqual(s["window_s"], 25.0)
+            # The sender started 20 ms before t0 (one RTT) and writes for S:
+            # the window ends at its start + S, 20 ms before t0 + S.
+            self.assertEqual(s["window_s"], 24.98)
+            self.assertEqual(s["window_end_ns"], T0 - 20_000_000 + S * NS)
             # Samples are at t0 + 3 ms + k*10 ms, so both bounds are interpolated.
             self.assertAlmostEqual(s["goodput_bps"], RATE * 8, delta=1.0)
 
@@ -250,10 +270,10 @@ class Window(unittest.TestCase):
             s = A.summarize_run(make_run(tmp, "r0"))
             # 1000 data segments/s and 10 retransmissions/s in the window; the
             # drain's 100/s and slow start's are outside it.
-            self.assertAlmostEqual(s["data_segs_out"], 25_000, delta=1)
-            self.assertAlmostEqual(s["retrans_segs"], 250, delta=1)
-            self.assertAlmostEqual(s["retrans_pct"], 1.0, delta=0.01)
-            self.assertAlmostEqual(s["spurious_retrans"], 25, delta=1)
+            self.assertAlmostEqual(s["data_segs_out"], 24_980, delta=0.01)
+            self.assertAlmostEqual(s["retrans_segs"], 249.8, delta=0.01)
+            self.assertAlmostEqual(s["retrans_pct"], 1.0, delta=0.0001)
+            self.assertAlmostEqual(s["spurious_retrans"], 24.98, delta=0.01)
 
     def test_limited_time_fractions_and_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -262,7 +282,7 @@ class Window(unittest.TestCase):
             for x in lines:
                 if x.get("ev") == "sample":
                     # sndbuf-limited 20 ms per second in the window (2 %), 1 ms/s rwnd (0.1 %).
-                    sec = min(max((x["t"] - T0) / NS - 5, 0), S - 5)
+                    sec = min(max((x["t"] - T0) / NS - 5, 0), S - 5 - 0.02)
                     x["sndbuf_limited_us"] = int(20_000 * sec)
                     x["rwnd_limited_us"] = int(1_000 * sec)
             (d / "snd.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
@@ -486,30 +506,61 @@ class GapRule(unittest.TestCase):
             A.gap_verdict("retrans_pct", stat(1, 1, 1), stat(1, 1, 1), 0.5)
 
 
-def run_rec(impl, order, valid, name=None):
-    return {"impl": impl, "order": order, "valid": valid, "run": name or f"{impl}-{order}"}
+def run_rec(impl, order, valid, name=None, group=None, rerun=0):
+    """A run of plan group `group` (default: its order); real names, which do
+    not sort like the order: "...-r1-utcp-rerun1" sorts before "...-r2-utcp"."""
+    g = order if group is None else group
+    name = name or f"10-20-0-2-cubic-r{g}-{impl}" + (f"-rerun{rerun}" if rerun else "")
+    return {"impl": impl, "order": order, "valid": valid, "run": name, "group": (g, rerun)}
+
+
+def pair(g, order, utcp_ok=True, linux_ok=True, rerun=0):
+    return [run_rec("utcp", order, utcp_ok, group=g, rerun=rerun),
+            run_rec("linux", order + 1, linux_ok, group=g, rerun=rerun)]
 
 
 class RunCounting(unittest.TestCase):
-    def test_first_five_valid_runs_per_side(self):
-        runs = [run_rec("utcp", i, i != 2) for i in range(7)] + [run_rec("linux", i, True) for i in range(6)]
+    def test_first_five_valid_groups_count_both_sides(self):
+        # Group 1's stack run is invalid; the group is rerun as a whole right
+        # after it (same order, rerun 1). The counted runs are the same five
+        # pairs on both sides; group 5 is not counted.
+        runs = pair(0, 0) + pair(1, 2, utcp_ok=False) + pair(1, 2, rerun=1)
+        for g in range(2, 6):
+            runs += pair(g, 2 * g)
         counted, status = A.select_runs(runs)
-        self.assertEqual([r["order"] for r in counted["utcp"]], [0, 1, 3, 4, 5])
-        self.assertEqual([r["order"] for r in counted["linux"]], [0, 1, 2, 3, 4])
         self.assertEqual(status, "ok")
+        for impl in ("utcp", "linux"):
+            self.assertEqual([r["group"] for r in counted[impl]], [(0, 0), (1, 1), (2, 0), (3, 0), (4, 0)])
 
-    def test_rerun_cap(self):
-        # Three reruns (invalid runs) in the cell are allowed ...
-        runs = [run_rec("utcp", i, i not in (0, 1)) for i in range(7)] + \
-               [run_rec("linux", i, i != 3) for i in range(6)]
+    def test_counting_follows_the_run_order_not_the_names(self):
+        # Group 12 ran first (order 0) but its name sorts after group 3's; a
+        # rerun's name sorts before the next group's.
+        runs = pair(12, 0) + pair(3, 2, linux_ok=False) + pair(3, 2, rerun=1) + pair(4, 4) + pair(5, 6) + \
+            pair(6, 8) + pair(2, 10)
+        counted, _ = A.select_runs(runs)
+        self.assertEqual([r["group"] for r in counted["utcp"]], [(12, 0), (3, 1), (4, 0), (5, 0), (6, 0)])
+
+    def test_rerun_cap_counts_invalid_groups(self):
+        # Three invalid groups (each rerun) are allowed ...
+        runs = []
+        for g in range(5):
+            runs += pair(g, 10 * g)
+        for g in range(5, 8):
+            runs += pair(g, 10 * g, utcp_ok=False) + pair(g, 10 * g, rerun=1)
         self.assertEqual(A.select_runs(runs)[1], "ok")
-        # ... a fourth makes the cell invalid, even with 5 valid runs per side.
-        runs.append(run_rec("linux", 6, False))
-        runs.append(run_rec("linux", 7, True))
+        # ... a fourth makes the cell invalid, even with 5 valid groups.
+        runs += pair(8, 80, linux_ok=False)
         self.assertEqual(A.select_runs(runs)[1], "invalid (rerun cap)")
 
+    def test_a_group_without_its_partner_does_not_count(self):
+        runs = [r for g in range(5) for r in pair(g, 2 * g)]
+        runs = [r for r in runs if not (r["group"] == (4, 0) and r["impl"] == "linux")]
+        counted, status = A.select_runs(runs)
+        self.assertEqual(status, "incomplete")
+        self.assertEqual(len(counted["utcp"]), 4)
+
     def test_incomplete(self):
-        runs = [run_rec("utcp", i, True) for i in range(4)] + [run_rec("linux", i, True) for i in range(5)]
+        runs = [r for g in range(4) for r in pair(g, 2 * g)]
         self.assertEqual(A.select_runs(runs)[1], "incomplete")
 
 
@@ -758,6 +809,477 @@ class Plot(unittest.TestCase):
         self.assertEqual(sel["utcp"][0]["run"], "u2")  # 1, 3, 4, 5: the lower middle
         self.assertEqual(sel["linux"][0]["run"], "l2")
 
+
+
+# --------------------------------------------------------------------------
+# Tests of the review fixes (2026-11-16)
+
+
+def ip_packet(src, dst, proto, payload):
+    return struct.pack(">BBHHHBBH4s4s", 0x45, 0, 20 + len(payload), 0, 0, 64, proto, 0,
+                       bytes(map(int, src.split("."))), bytes(map(int, dst.split(".")))) + payload
+
+
+def pcap_records(recs):
+    """A nanosecond pcap (Ethernet) of [(ts_ns, ip_bytes)]."""
+    out = struct.pack("<IHHiIII", 0xA1B23C4D, 2, 4, 0, 0, 128, 1)
+    for ts, ip in recs:
+        frame = (b"\0" * 12 + b"\x08\x00" + ip)[:128]
+        out += struct.pack("<IIII", ts // NS, ts % NS, len(frame), len(frame)) + frame
+    return out
+
+
+def echo(src, dst, typ, ident, seq):
+    return ip_packet(src, dst, 1, struct.pack(">BBHHH", typ, 0, 0, ident, seq) + b"\0" * 56)
+
+
+def tcp_data(src, dst, seq, plen):
+    return ip_packet(src, dst, 6, struct.pack(">HHIIBBHHH", 40000, 5201, seq, 0, 0x50, 0x10, 1000, 0, 0)
+                     + b"\0" * plen)
+
+
+SND, RCV = "198.19.10.2", "198.19.12.5"
+
+
+class PingFromCapture(unittest.TestCase):
+    def test_echoes_pair_by_id_and_seq_with_ns_rtts(self):
+        t = 5 * NS
+        recs = [(t, echo(SND, RCV, 8, 7, 1)), (t + 50_000_000, echo(SND, RCV, 8, 7, 2)),
+                (t + 100_123_456, echo(RCV, SND, 0, 7, 1)),        # reply to 1: 100.123456 ms
+                (t + 100_000_000, echo(SND, RCV, 8, 7, 3)),        # never answered
+                (t + 150_456_789, echo(RCV, SND, 0, 9, 2)),        # other id: not seq 2's reply
+                (t + 150_500_000, echo(RCV, SND, 0, 7, 2)),
+                (t + 160_000_000, echo("198.19.12.4", RCV, 8, 7, 4))]  # other source
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "p.pcap"
+            p.write_bytes(pcap_records(recs))
+            pings = A.icmp_echoes(p, SND, RCV)
+        self.assertEqual([(x.seq, x.send_rt_ns) for x in pings], [(1, t), (2, t + 50_000_000), (3, t + 100_000_000)])
+        self.assertAlmostEqual(pings[0].rtt_ms, 100.123456, places=9)
+        self.assertAlmostEqual(pings[1].rtt_ms, 100.5, places=9)
+        self.assertIsNone(pings[2].rtt_ms)
+        st = A.ping_stats(pings, 3)
+        self.assertEqual((st["n"], st["lost"]), (2, 1))
+
+    def test_run_uses_the_capture_pings_with_sub_ms_resolution_at_100_ms(self):
+        # ping.txt says 100 ms (iputils' whole milliseconds); the capture has
+        # 100.3 ms idle and 100.3 + d in the window.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_run(tmp, "r0")
+            pings = [[i, rt(T0 - 3 * NS + i * 100_000_000), 100_300_000] for i in range(20)]
+            pings += [[100 + i, rt(T0 + 6 * NS + i * 100_000_000), 100_300_000 + 250_000 * (i + 1)] for i in range(4)]
+            (d / "capture.json").write_text(json.dumps({"r1-in": {"data_segs": 1, "retrans_segs": 0,
+                                                                  "pings": pings}}))
+            s = A.summarize_run(d)
+            self.assertEqual(s["ping_source"], "capture r1-in")
+            self.assertAlmostEqual(s["ping_base_ms"], 100.3, places=9)
+            self.assertEqual(s["ping_n"], 4)
+            self.assertAlmostEqual(s["qdelay_p50_ms"], 0.625, places=9)   # 0.25, 0.5, 0.75, 1.0
+            (d / "capture.json").unlink()
+            self.assertEqual(A.summarize_run(d)["ping_source"], "ping.txt")
+
+
+class WindowEdges(unittest.TestCase):
+    def test_window_bounds_from_the_receivers_accept_and_the_senders_write_stop(self):
+        # A rate change at t0 + 5.05 s: a window that started at the sender's
+        # start (t0 - 20 ms) or ended at t0 + S would give another goodput.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_run(tmp, "r0")
+            lines = A.read_jsonl(d / "rcv.jsonl")
+            for x in lines:
+                if x.get("ev") == "sample":
+                    sec = (x["t"] - T0) / NS
+                    x["bytes_received"] = 400_000 * min(sec, 5.05) + 1_000_000 * max(0.0, sec - 5.05)
+            (d / "rcv.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+            s = A.summarize_run(d)
+            hi = S - 0.02
+            want = (0.05 * 400_000 + (hi - 5.05) * 1_000_000) * 8 / (hi - 5.0)
+            self.assertAlmostEqual(s["goodput_bps"], want, delta=0.01)
+            self.assertLessEqual(s["window_end_ns"], s["sender_start_ns"] + S * NS)
+            self.assertEqual(s["t0_ns"], T0)
+
+    def test_pings_are_windowed_by_send_time(self):
+        lo, hi = T0 + 5 * NS, T0 + 25 * NS
+        pings = [A.Ping(1, rt(T0 - 2 * NS), 20.0),
+                 A.Ping(2, rt(lo - 50_000_000), 100.0),   # sent before lo, answered after: out
+                 A.Ping(3, rt(lo + NS), 30.0),
+                 A.Ping(4, rt(hi - 50_000_000), 60.0)]    # sent before hi, answered after: in
+        m = A.ping_metrics(pings, CLOCK, T0, lo, hi)
+        self.assertEqual(m["ping_n"], 2)
+        self.assertAlmostEqual(m["qdelay_p50_ms"], 25.0)   # 10 and 40
+
+    def test_a_lost_pings_send_time_is_one_interval_before_its_no_answer_line(self):
+        lo, hi = T0 + 5 * NS, T0 + 25 * NS
+        text = (f"[{rt_str(rt(T0 - NS))}] 64 bytes from {RCV}: icmp_seq=1 ttl=62 time=20.0 ms\n"
+                f"[{rt_str(rt(hi + 30_000_000))}] no answer yet for icmp_seq=2\n"   # sent hi - 20 ms
+                f"[{rt_str(rt(hi + 80_000_000))}] no answer yet for icmp_seq=3\n")  # sent hi + 30 ms
+        m = A.ping_metrics(A.parse_ping(text), CLOCK, T0, lo, hi)
+        self.assertEqual(m["ping_lost"], 1)
+
+    def test_missing_jsonl_or_sender_samples_make_the_run_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "partial"
+            d.mkdir()
+            (d / "meta.json").write_text(json.dumps({"run": "partial", "duration_s": S, "impl": "linux",
+                                                     "cell": "10-20-0-2", "cc": "cubic", "loss_pct": 0}))
+            s = A.summarize_run(d)
+            self.assertFalse(s["valid"])
+            self.assertEqual(s["invalid"], ["no receiver JSONL", "no sender JSONL"])
+            A.make_tables(tmp, Path(tmp) / "out")  # no exception
+            d2 = make_run(tmp, "r1")
+            lines = [x for x in A.read_jsonl(d2 / "snd.jsonl") if x.get("ev") != "sample"]
+            (d2 / "snd.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+            s2 = A.summarize_run(d2)
+            self.assertIn("sender samples do not cover the window", s2["invalid"])
+
+
+class Validity(unittest.TestCase):
+    def summ(self, tmp, name, meta_over=None, **rec):
+        d = make_run(tmp, name, meta_over)
+        (d / "post" / "record.txt").write_text(record("post", **rec))
+        return A.summarize_run(d)
+
+    def test_every_interface_drop_and_the_utcp_qdisc_invalidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, (c, dev, rx, tx) in enumerate((("s-r1", "eth0", 1, 0), ("s-r1", "eth1", 0, 1),
+                                                  ("s-r2", "eth0", 1, 0), ("s-r2", "eth1", 2, 0),
+                                                  ("s-rcv", "eth0", 3, 0))):
+                s = self.summ(tmp, f"l{i}", link_drops={(c, dev): (rx, tx)})
+                self.assertFalse(s["valid"], (c, dev))
+                self.assertEqual(s["local_drops"], {f"{c}/{dev}/{'rx' if rx else 'tx'}_dropped": rx or tx})
+            s = self.summ(tmp, "q", utcp_qdrop=4)
+            self.assertEqual(s["local_drops"], {"s-snd/utcp0/qdisc_dropped": 4})
+
+    def test_softnet_drops_count_on_the_slot_cpus_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self.summ(tmp, "a", softnet_drop={9: 2})
+            self.assertFalse(s["valid"])
+            self.assertEqual(s["local_drops"], {"softnet/cpu9/dropped": 2})
+            s = self.summ(tmp, "b", softnet_drop={20: 2})
+            self.assertTrue(s["valid"], s["invalid"])
+
+    def test_ack_path_qdisc_drops_invalidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self.summ(tmp, "a", ack_qdrop=1)
+            self.assertIn("ACK-path qdisc drops", s["invalid"])
+
+    def test_stack_local_drops_invalidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_run(tmp, "u", {"impl": "utcp"})
+            (d / "stats.json").write_text(json.dumps({"ev": "stack_stats", "IpOutDiscards": 3,
+                                                      "loop_pending_calls": 0}) + "\n")
+            s = A.summarize_run(d)
+            self.assertIn("stack local drops", s["invalid"])
+            self.assertEqual(s["stack_local_drops"], {"IpOutDiscards": 3})
+
+    def test_foreign_cpu_time_from_the_cgroups(self):
+        # Slot CPUs 8-11: +2000 jiffies each (20 s), 750 busy of them, 50 irq
+        # and softirq: 80 s total, 30 s busy, 2 s irq. The containers used
+        # 26 s: lower bound (30 - 2 - 26) / 80 = 2.5 % (flagged), upper
+        # (30 - 26) / 80 = 5 %.
+        post_stat = {c: (700, 150, 2250, 15, 60) for c in range(8, 12)}
+        pre_cg = {c: 1_000_000 for c in ("s-snd", "s-r1", "s-r2", "s-rcv")}
+        with tempfile.TemporaryDirectory() as tmp:
+            for ours, flagged, lower in ((26_000_000, True, 0.025), (27_600_000, False, 0.005)):
+                d = make_run(tmp, f"f{ours}")
+                (d / "pre" / "record.txt").write_text(record("pre", cgroup=pre_cg))
+                post_cg = dict(pre_cg, **{"s-snd": 1_000_000 + ours})
+                (d / "post" / "record.txt").write_text(record("post", cgroup=post_cg, stat=post_stat))
+                s = A.summarize_run(d)
+                self.assertAlmostEqual(s["foreign_cpu"]["lower_frac"], lower)
+                self.assertAlmostEqual(s["foreign_cpu"]["upper_frac"], lower + 0.025)
+                self.assertEqual("foreign_cpu" in s["flags"], flagged)
+                self.assertTrue(s["valid"])
+            # Without the cgroup section: not measured, no flag.
+            self.assertIsNone(A.summarize_run(make_run(tmp, "none"))["foreign_cpu"])
+
+
+class CaptureCrossCheck(unittest.TestCase):
+    def test_bins_and_the_window_count(self):
+        recs = [(10 * NS + i * 5_000_000, tcp_data(SND, RCV, 1 + 1448 * i, 1448)) for i in range(10)]
+        recs.append((10 * NS + 52_000_000, tcp_data(SND, RCV, 1, 1448)))  # a retransmission
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "c.pcap"
+            p.write_bytes(pcap_records(recs))
+            c = A.capture_summary(p, RCV, bin_ns=A.CAPTURE_BIN_NS)
+        self.assertEqual((c["data_segs"], c["retrans_segs"]), (11, 1))
+        self.assertEqual(c["bins"]["data"], [2, 2, 2, 2, 2, 1])
+        self.assertEqual(c["bins"]["retrans"], [0, 0, 0, 0, 0, 1])
+        ser = A.counts_series(c["bins"], "data")
+        self.assertEqual(A.delta(ser, 10 * NS + 10_000_000, 10 * NS + 30_000_000), 4)
+
+    def make(self, tmp, name, extra_data=0):
+        d = make_run(tmp, name)
+        nb = 3100   # 31 s of 10 ms bins from t0
+        data = [3 if i < 450 else 10 if i < 3050 else 0 for i in range(nb)]
+        rexmit = [1 if 450 <= i < 3050 and i % 10 == 0 else 0 for i in range(nb)]
+        data[1000] += extra_data
+        bins = {"t0_rt_ns": rt(T0), "bin_ns": A.CAPTURE_BIN_NS, "data": data, "retrans": rexmit}
+        (d / "capture.json").write_text(json.dumps({"r1-in": {"data_segs": sum(data), "retrans_segs": sum(rexmit),
+                                                              "bins": bins}}))
+        return A.summarize_run(d)
+
+    def test_capture_and_sender_counters_over_the_same_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self.make(tmp, "ok")
+            self.assertAlmostEqual(s["capture_window"]["r1in_data_segs"], 24_980)
+            self.assertAlmostEqual(s["retrans_pct_capture"], 1.0, delta=0.01)
+            self.assertFalse([f for f in s["flags"] if f.startswith("capture_mismatch")])
+            s = self.make(tmp, "extra", extra_data=100)   # 100 segments the sender did not count
+            self.assertIn("capture_mismatch:data_segs_out", s["flags"])
+            self.assertTrue(s["valid"])
+
+    def test_sequence_wrap(self):
+        segs = [("198.19.10.2", RCV, 0xFFFFFA00, 1448),
+                ("198.19.10.2", RCV, (0xFFFFFA00 + 1448) & 0xFFFFFFFF, 1448),   # crosses 2^32
+                ("198.19.10.2", RCV, (0xFFFFFA00 + 2896) & 0xFFFFFFFF, 1448),   # 0x00000550: new data
+                ("198.19.10.2", RCV, 0xFFFFFA00, 1448)]                         # retransmission
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "w.pcap"
+            p.write_bytes(pcap_bytes(segs))
+            self.assertEqual(A.capture_summary(p, RCV), {"data_segs": 4, "retrans_segs": 1})
+            p.write_bytes(pcap_bytes(segs[:3]))
+            self.assertEqual(A.capture_summary(p, RCV), {"data_segs": 3, "retrans_segs": 0})
+
+
+class GapRuleEdges(unittest.TestCase):
+    def test_below_resolution_is_strictly_below_1_ms(self):
+        # 5 ms vs 4 ms p50 (25 %, disjoint): exactly 1.0 ms is a plain gap.
+        self.assertEqual(A.gap_verdict("qdelay_p50_ms", stat(5.0, 4.9, 5.1), stat(4.0, 3.9, 4.1), 0), "gap")
+        self.assertEqual(A.gap_verdict("qdelay_p50_ms", stat(4.99, 4.9, 5.1), stat(4.0, 3.9, 4.1), 0),
+                         "gap (below resolution)")
+
+    def test_fewer_than_five_values_give_no_verdict(self):
+        short = dict(stat(80, 78, 82), n=4)
+        self.assertEqual(A.gap_verdict("goodput_bps", short, stat(100, 95, 105), 0), "n/a")
+        self.assertEqual(A.gap_verdict("goodput_bps", stat(80, 78, 82), short, 0), "n/a")
+
+
+class QueueEdges(unittest.TestCase):
+    def test_drop_intervals_the_10_ms_sampler_cannot_test(self):
+        # 0.5xBDP at 10 Mbit/s, 20 ms: Q 12 500 B, B 3028 B; 10 ms drain
+        # 12 500 B: the tail-drop level is negative, any backlog meets it.
+        s = [(100 * NS + i * 10_000_000, b, d) for i, (b, d) in enumerate(((0, 0), (1514, 1), (0, 2)))]
+        r = A.queue_check(s, 12_500, 10e6, 3028)
+        self.assertEqual((r["drop_intervals"], r["drop_intervals_untestable"], r["drop_intervals_low"]), (2, 2, 0))
+        self.assertEqual(r["drop_check"], "not testable at 10 ms sampling")
+        r = A.queue_check(s, 250_000, 10e6, 3028)
+        self.assertEqual((r["drop_intervals_untestable"], r["drop_intervals_low"], r["drop_check"]), (0, 2, "tested"))
+        self.assertFalse(M.gate_item4(r, 250_000, 10, 0.2, 0.0)["ok"])
+
+
+class GateItems(unittest.TestCase):
+    def test_item1_bounds(self):
+        ok = {"n": 200, "median_ms": 21.0, "p99_ms": 22.0}
+        self.assertTrue(M.gate_item1(ok, 20))
+        self.assertFalse(M.gate_item1(dict(ok, median_ms=21.01), 20))
+        self.assertFalse(M.gate_item1(dict(ok, median_ms=19.99), 20))
+        self.assertFalse(M.gate_item1(dict(ok, p99_ms=22.01), 20))
+        self.assertFalse(M.gate_item1(dict(ok, n=189), 20))
+
+    def test_item2_threshold_and_the_ungated_half_bdp_queue(self):
+        thr = 0.98 * 100e6 * 1448 / 1514
+        self.assertTrue(M.gate_item2(thr, 100, 2)["ok"])
+        self.assertFalse(M.gate_item2(thr - 1, 100, 2)["ok"])
+        self.assertTrue(M.gate_item2(0, 100, 0.5)["ok"])
+        self.assertFalse(M.gate_item2(0, 100, 0.5)["gated"])
+
+    def test_item3_alpha_interval_and_complete_captures(self):
+        self.assertEqual(M.loss_alpha(16), 0.01 / 16)
+        alpha = M.loss_alpha(16)
+        lo, hi = A.binom_interval(100_000, 0.01, alpha)
+        full = {"kernel_dropped": 0, "captured": 5, "received_by_filter": 5}
+
+        def cap(lost, r1out=full):
+            return {"r1-in": dict(full, data_segs=100_000), "r1-out": dict(r1out, data_segs=100_000 - lost),
+                    "r2-out": dict(full, data_segs=100_000 - lost - 7)}
+        self.assertTrue(M.gate_item3(cap(lo), 7, 1.0, alpha, {}, {})["ok"])
+        self.assertTrue(M.gate_item3(cap(hi), 7, 1.0, alpha, {}, {})["ok"])
+        self.assertFalse(M.gate_item3(cap(hi + 1), 7, 1.0, alpha, {}, {})["ok"])
+        self.assertFalse(M.gate_item3(cap(lo - 1), 7, 1.0, alpha, {}, {})["ok"])
+        self.assertFalse(M.gate_item3(cap(lo, dict(full, received_by_filter=6)), 7, 1.0, alpha, {}, {})["ok"])
+        self.assertFalse(M.gate_item3(cap(lo, dict(full, kernel_dropped=1)), 7, 1.0, alpha, {}, {})["ok"])
+        self.assertFalse(M.gate_item3(cap(lo), 7, 1.0, alpha, {"r2_b": {"dropped": 1}}, {})["ok"])
+        self.assertFalse(M.gate_item3({}, 7, 1.0, alpha, {}, {})["ok"])
+
+    def test_item4_ping_target_within_10_percent(self):
+        qc = {"reaches": True, "drop_intervals_low": 0}
+        target = M.ping_target_ms(50_000, 10)   # 32 whole frames + 98 B: 38.8368 ms
+        self.assertAlmostEqual(target, (32 * 1514 + 98) * 8 / 10e6 * 1e3)
+        self.assertTrue(M.gate_item4(qc, 50_000, 10, 20.0 + 1.0999 * target, 20.0)["ok"])
+        self.assertTrue(M.gate_item4(qc, 50_000, 10, 20.0 + 0.9001 * target, 20.0)["ok"])
+        self.assertFalse(M.gate_item4(qc, 50_000, 10, 20.0 + 1.1001 * target, 20.0)["ok"])
+        self.assertFalse(M.gate_item4(qc, 50_000, 10, 20.0 + 0.8999 * target, 20.0)["ok"])
+        self.assertFalse(M.gate_item4(dict(qc, drop_intervals_low=1), 50_000, 10, 20 + target, 20.0)["ok"])
+        self.assertFalse(M.gate_item4(dict(qc, reaches=False), 50_000, 10, 20 + target, 20.0)["ok"])
+
+    def test_item5_counts_time_squeeze_and_capture_drops(self):
+        good = {"local_drops": {}, "time_squeeze": 0, "invalid": [],
+                "capture": {"r1-in": {"kernel_dropped": 0}, "r2-out": {"kernel_dropped": 0}}}
+        self.assertTrue(M.gate_item5(good)["ok"])
+        self.assertFalse(M.gate_item5(dict(good, time_squeeze=1))["ok"])
+        self.assertFalse(M.gate_item5(dict(good, capture={"r1-in": {"kernel_dropped": 2}}))["ok"])
+        self.assertFalse(M.gate_item5(dict(good, local_drops={"x": 1}))["ok"])
+
+    def test_item6(self):
+        self.assertTrue(M.gate_item6_ping({"median_ms": 20.3}, {"median_ms": 20.1})["ok"])
+        self.assertFalse(M.gate_item6_ping({"median_ms": 20.31}, {"median_ms": 20.1})["ok"])
+        thr = 0.98 * 100e6 * 1448 / 1514
+        self.assertTrue(M.gate_item6_run({"goodput_bps": thr, "valid": True})["ok"])
+        self.assertFalse(M.gate_item6_run({"goodput_bps": thr, "valid": True, "stack_device": {"x": 1}})["ok"])
+
+
+def proof_files(par_ping=20.2, par_goodput=101.0, par_backlog=102.0, ser_p99_bucket=16, par_p99_bucket=17,
+                ser_max=1_000_000, par_max=2_000_000):
+    """Synthetic proof campaign files, 5 repetitions, pair (100, 20)."""
+    f = {}
+    for sub in ("serial-s0", "parallel-s0", "parallel-s1"):
+        par = sub != "serial-s0"
+        for r in range(5):
+            f[f"{sub}/ping-100-20-2-r{r}/ping.json"] = {
+                "median_ms": par_ping if par else (19.9, 20.0, 20.0, 20.1, 20.3)[r]}
+            f[f"{sub}/rate-100-20-2-r{r}/summary.json"] = {
+                "valid": True, "goodput_bps": par_goodput if par else (99, 100, 100, 100, 102)[r],
+                "queue": {"backlog_max": par_backlog if par else (98, 100, 100, 100, 103)[r]}}
+            b = par_p99_bucket if par else ser_p99_bucket
+            for name in ("stack-trace",) + (() if par else ("stack-notrace",)):
+                f[f"{sub}/{name}-r{r}/summary.json"] = {
+                    "valid": True, "goodput_bps": 100.0, "stack_lateness_hist": {"3": 98, str(b): 2},
+                    "sender_lateness_max_ns": par_max if par else ser_max}
+    return f
+
+
+class ProofDecisions(unittest.TestCase):
+    def items(self, **kw):
+        r = M.proof_evaluate(proof_files(**kw), "t", 5, [(100, 20)])
+        return {(i["item"], i["metric"], i["parallel_slot"]): i["ok"] for i in r["items"]}, r
+
+    def test_limits_at_their_bounds(self):
+        it, r = self.items()
+        self.assertTrue(r["passed"], [k for k, v in it.items() if not v])
+        self.assertFalse(self.items(par_ping=20.21)[0][(1, "median_ms", 0)])
+        self.assertFalse(self.items(par_goodput=101.01)[0][(2, "goodput_bps", 1)])
+        self.assertFalse(self.items(par_backlog=102.01)[0][(4, "backlog_max", 0)])
+
+    def test_lateness(self):
+        # p99: one log2 bucket higher passes (the histogram's resolution), two fail.
+        self.assertTrue(self.items(par_p99_bucket=17)[0][("stack", "lateness_p99_ns", 1)])
+        self.assertFalse(self.items(par_p99_bucket=18)[0][("stack", "lateness_p99_ns", 1)])
+        # max: exact, <= 2x.
+        self.assertTrue(self.items(par_max=2_000_000)[0][("stack", "lateness_max_ns", 0)])
+        self.assertFalse(self.items(par_max=2_000_001)[0][("stack", "lateness_max_ns", 0)])
+
+    def test_bucket_comparison(self):
+        self.assertTrue(M.lateness_p99_ok(65535, 131071))
+        self.assertFalse(M.lateness_p99_ok(65535, 131072))
+        self.assertEqual(M.lateness_bucket(0), 0)
+        self.assertEqual(M.lateness_bucket(65535), 16)
+        self.assertEqual(M.lateness_bucket(65536), 17)
+
+    def test_histogram_percentile_rank_correction_and_clamp(self):
+        # 0.07 * 100 is 7.000000000000001 in binary floating point: rank 7.
+        self.assertEqual(M.hist_percentile({0: 7, 5: 93}, 0.07), 0)
+        self.assertEqual(M.hist_percentile({0: 7, 5: 93}, 0.08), 31)
+        self.assertEqual(M.hist_percentile({3: 1}, 0.99), 7)
+        self.assertEqual(M.hist_percentile({3: 1}, 0.99, max_ns=5), 5)
+
+
+class PlanLabels(unittest.TestCase):
+    PLAN = PLAN + """
+[[algo]]
+cc = "cubic"
+profile = "rfc"
+impls = ["utcp"]
+[[algo]]
+cc = "cubic"
+profile = "rfc"
+stack_set = ["recovery_reduction=prr"]
+impls = ["utcp"]
+"""
+
+    def plan(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "plan.toml"
+            p.write_text(text)
+            return M.load_plan(p)
+
+    def test_two_stack_variants_of_one_cc_are_two_algorithms(self):
+        runs = M.expand_plan(self.plan(self.PLAN))
+        self.assertEqual(len({r["run"] for r in runs}), len(runs))
+        labels = sorted({r["algo"] for r in runs if r["cc"] == "cubic"})
+        self.assertEqual(labels[:2], ["cubic", "cubic-rfc"])
+        self.assertRegex(labels[2], r"^cubic-rfc-[0-9a-f]{8}$")
+        prr = [r for r in runs if r["algo"] == labels[2]]
+        self.assertTrue(all(r["stack_set"] == ["recovery_reduction=prr"] for r in prr))
+        self.assertTrue(all(r["run"].startswith(f"{r['cell']}-{labels[2]}-r") for r in prr))
+
+    def test_a_label_may_not_repeat_for_one_implementation(self):
+        with self.assertRaises(ValueError):
+            self.plan(PLAN + '[[algo]]\ncc = "cubic"\nimpls = ["linux"]\n')
+        # cubic for the stack only next to cubic for Linux only is one pair.
+        self.plan(PLAN.replace('impls = ["linux"]', 'impls = ["linux"]\n[[algo]]\ncc = "cubic"\nimpls = ["utcp"]'))
+        with self.assertRaises(ValueError):
+            self.plan(PLAN + '[[algo]]\ncc = "cubic"\nname = "a b"\n')
+
+    def test_cells_and_plots_group_by_the_label(self):
+        def pairs(algo, scale):
+            return [({"impl": "utcp", "cell": "c", "algo": algo, "cc": "cubic", "run": f"{algo}-{r}", "order": r,
+                      "group": r, "loss_pct": 0, "reuse_key": "k"},
+                     {"valid": True, "goodput_bps": scale + r, "retrans_pct": 0.0}) for r in range(5)]
+        rows = A.cell_rows(pairs("cubic-rfc", 10) + pairs("cubic-rfc-abcd1234", 20))
+        self.assertEqual([(r["algo"], r["goodput_bps_median"]) for r in rows],
+                         [("cubic-rfc", 12), ("cubic-rfc-abcd1234", 22)])
+
+
+class ResumeKeys(unittest.TestCase):
+    def test_stale_groups_and_their_reruns(self):
+        groups = {0: [{"run": "c-cubic-r0-utcp"}, {"run": "c-cubic-r0-linux"}],
+                  1: [{"run": "c-cubic-r1-utcp"}, {"run": "c-cubic-r1-linux"}]}
+        existing = {"c-cubic-r0-utcp": "new", "c-cubic-r0-linux": "new", "c-cubic-r1-utcp": "new",
+                    "c-cubic-r1-linux": "new", "c-cubic-r1-linux-rerun1": "old", "c-cubic-r10-utcp": "old",
+                    "c-cubic-r0-utcp-x": None}
+        self.assertEqual(M.stale_groups(groups, existing, lambda g: "new"),
+                         {1: ["c-cubic-r1-utcp", "c-cubic-r1-linux", "c-cubic-r1-linux-rerun1"]})
+        self.assertEqual(set(M.stale_groups(groups, existing, lambda g: "old")), {0, 1})
+
+    def test_cells_with_two_reuse_keys_are_marked(self):
+        pairs = []
+        for r in range(5):
+            for impl in ("utcp", "linux"):
+                pairs.append(({"impl": impl, "cell": "c", "cc": "cubic", "run": f"{impl}{r}", "order": 2 * r,
+                               "group": r, "loss_pct": 0, "reuse_key": "a" if r < 4 else "b"},
+                              {"valid": True, "goodput_bps": 1.0}))
+        rows = A.cell_rows(pairs)
+        self.assertEqual({r["status"] for r in rows}, {"mixed reuse keys"})
+        self.assertEqual(rows[0]["gap_goodput_bps"], "n/a")
+
+    def test_gate_acceptance(self):
+        g = {"slot": 0, "passed": True, "reuse_keys": ["k1"]}
+        self.assertIsNone(M.gate_rejects(g, 0, "k1"))
+        self.assertIsNotNone(M.gate_rejects(g, 1, "k1"))
+        self.assertIsNotNone(M.gate_rejects(g, 0, "k2"))
+        self.assertIsNotNone(M.gate_rejects(dict(g, passed=False), 0, "k1"))
+        self.assertIsNotNone(M.gate_rejects(dict(g, reuse_keys=["k1", "k2"]), 0, "k1"))
+        self.assertIsNotNone(M.gate_rejects(None, 0, "k1"))
+
+
+class FakeSlot:
+    def __init__(self, n, timing):
+        self.n, self.timing = n, timing
+
+    def slot_cpus(self):
+        return "8-11" if self.timing else "16-31"
+
+
+class RunnerRefusals(unittest.TestCase):
+    def test_two_slots_and_non_timing_slots_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "plan.toml"
+            p.write_text(PLAN)
+            with self.assertRaisesRegex(RuntimeError, "serial"):
+                M.run_plan(p, [FakeSlot(0, True), FakeSlot(1, True)], no_gate=True)
+            with self.assertRaisesRegex(RuntimeError, "not a timing slot"):
+                M.run_plan(p, [FakeSlot(2, False)], no_gate=True)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

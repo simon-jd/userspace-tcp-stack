@@ -36,6 +36,21 @@ done
 source "$tbdir/common.sh"
 set +e
 m2_slot "$slot" "${#nontiming[@]}"
+# The expected names, subnets, addresses and cpusets, written out from M2
+# design §5.1 and §6 and DESIGN §14.1 instead of taken from common.sh, so that
+# a wrong constant there fails here.
+if ((slot < 2)); then x=$((10 + 4 * slot)); else x=$((40 + 4 * (slot - 2))); fi
+if ((slot == 0 && ${#nontiming[@]} == 0)); then w_cpus_snd=8,9 w_cpus_rcv=10 w_cpus_rt=11
+elif ((slot == 1 && ${#nontiming[@]} == 0)); then w_cpus_snd=12,13 w_cpus_rcv=14 w_cpus_rt=15
+else w_cpus_snd=16-31 w_cpus_rcv=16-31 w_cpus_rt=16-31; fi
+w_base=${UTCP_M2_PREFIX:-utcp-m2}-s$slot
+w_containers="$w_base-r1 $w_base-r2 $w_base-rcv $w_base-snd "
+w_networks=("$w_base-a" "$w_base-b" "$w_base-c")
+w_subnets=("198.19.$x.0/24" "198.19.$((x + 1)).0/24" "198.19.$((x + 2)).0/24")
+w_snd_ip=198.19.$x.2 w_r1_a=198.19.$x.3 w_r1_b=198.19.$((x + 1)).3
+w_r2_b=198.19.$((x + 1)).4 w_r2_c=198.19.$((x + 2)).4 w_rcv_ip=198.19.$((x + 2)).5
+w_stack_ip() { echo "198.18.$((8 * slot + $1)).2"; }
+w_kernel_ip() { echo "198.18.$((8 * slot + $1)).1"; }
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
@@ -50,41 +65,40 @@ nets_before=$(docker network ls --format '{{.Name}}' | grep "^$m2_prefix-s[0-9]-
 # --- up
 "$tbdir/up.sh" --slot "$slot" "${nontiming[@]}" >/tmp/m2_testbed_up.$$ 2>&1 || { cat /tmp/m2_testbed_up.$$; bad "up.sh failed"; exit 1; }
 rm -f /tmp/m2_testbed_up.$$
-expect "containers" "$(docker ps --format '{{.Names}}' | grep "^$m2_base-" | sort | tr '\n' ' ')" \
-  "$(printf '%s\n' "${m2_containers[@]}" | sort | tr '\n' ' ')"
+expect "containers" "$(docker ps --format '{{.Names}}' | grep "^$w_base-" | sort | tr '\n' ' ')" "$w_containers"
 for i in 0 1 2; do
-  n=${m2_networks[$i]}
-  want=$([[ $i == 0 ]] && echo "$m2_subnet_a" || ([[ $i == 1 ]] && echo "$m2_subnet_b" || echo "$m2_subnet_c"))
-  expect "network $n" "$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$n" 2>/dev/null)" "$want"
+  n=${w_networks[$i]}
+  expect "network $n" "$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$n" 2>/dev/null)" \
+    "${w_subnets[$i]}"
 done
-expect "slot networks" "$(docker network ls --format '{{.Name}}' | grep "^$m2_base-" | sort | tr '\n' ' ')" \
-  "$(printf '%s\n' "${m2_networks[@]}" | sort | tr '\n' ' ')"
+expect "slot networks" "$(docker network ls --format '{{.Name}}' | grep "^$w_base-" | sort | tr '\n' ' ')" \
+  "$(printf '%s ' "${w_networks[@]}")"
 addrs() { docker exec "$1" ip -o -4 addr show | awk '$2 != "lo" {print $4}' | sort | tr '\n' ' '; }
-expect "snd addresses" "$(addrs "$m2_snd" | tr ' ' '\n' | grep -v '^198\.18\.' | tr '\n' ' ')" "$m2_snd_ip/24 "
+expect "snd addresses" "$(addrs "$m2_snd" | tr ' ' '\n' | grep -v '^198\.18\.' | tr '\n' ' ')" "$w_snd_ip/24 "
 expect "snd TUN addresses" "$(addrs "$m2_snd" | tr ' ' '\n' | grep -c '^198\.18\.')" 8
-expect "r1 addresses" "$(addrs "$m2_r1")" "$(printf '%s\n' "$m2_r1_ip_a/24" "$m2_r1_ip_b/24" | sort | tr '\n' ' ')"
-expect "r2 addresses" "$(addrs "$m2_r2")" "$(printf '%s\n' "$m2_r2_ip_b/24" "$m2_r2_ip_c/24" | sort | tr '\n' ' ')"
-expect "rcv addresses" "$(addrs "$m2_rcv")" "$m2_rcv_ip/24 "
+expect "r1 addresses" "$(addrs "$m2_r1")" "$(printf '%s\n' "$w_r1_a/24" "$w_r1_b/24" | sort | tr '\n' ' ')"
+expect "r2 addresses" "$(addrs "$m2_r2")" "$(printf '%s\n' "$w_r2_b/24" "$w_r2_c/24" | sort | tr '\n' ' ')"
+expect "rcv addresses" "$(addrs "$m2_rcv")" "$w_rcv_ip/24 "
 for k in 0 7; do
   expect "utcp$k address" "$(docker exec "$m2_snd" ip -o -4 addr show dev "utcp$k" | awk '{print $4}')" \
-    "$(m2_tun_kernel_ip $k)/24"
+    "$(w_kernel_ip $k)/24"
 done
 for c in "${m2_containers[@]}"; do
   expect "$c no default route" "$(docker exec "$c" ip route show default | wc -l)" 0
 done
 via() { docker exec "$1" ip -o route get "$2" | sed -n 's/.* via \([0-9.]*\) .*/\1/p'; }
-expect "snd -> rcv via r1" "$(via "$m2_snd" "$m2_rcv_ip")" "$m2_r1_ip_a"
-expect "r1 -> rcv via r2" "$(via "$m2_r1" "$m2_rcv_ip")" "$m2_r2_ip_b"
-expect "r1 -> stack via snd" "$(via "$m2_r1" "$(m2_tun_stack_ip 3)")" "$m2_snd_ip"
-expect "r2 -> stack via r1" "$(via "$m2_r2" "$(m2_tun_stack_ip 0)")" "$m2_r1_ip_b"
-expect "r2 -> snd via r1" "$(via "$m2_r2" "$m2_snd_ip")" "$m2_r1_ip_b"
-expect "rcv -> stack via r2" "$(via "$m2_rcv" "$(m2_tun_stack_ip 7)")" "$m2_r2_ip_c"
-expect "rcv -> snd via r2" "$(via "$m2_rcv" "$m2_snd_ip")" "$m2_r2_ip_c"
+expect "snd -> rcv via r1" "$(via "$m2_snd" "$w_rcv_ip")" "$w_r1_a"
+expect "r1 -> rcv via r2" "$(via "$m2_r1" "$w_rcv_ip")" "$w_r2_b"
+expect "r1 -> stack via snd" "$(via "$m2_r1" "$(w_stack_ip 3)")" "$w_snd_ip"
+expect "r2 -> stack via r1" "$(via "$m2_r2" "$(w_stack_ip 0)")" "$w_r1_b"
+expect "r2 -> snd via r1" "$(via "$m2_r2" "$w_snd_ip")" "$w_r1_b"
+expect "rcv -> stack via r2" "$(via "$m2_rcv" "$(w_stack_ip 7)")" "$w_r2_c"
+expect "rcv -> snd via r2" "$(via "$m2_rcv" "$w_snd_ip")" "$w_r2_c"
 cpus() { docker container inspect -f '{{.HostConfig.CpusetCpus}}' "$1"; }
-expect "snd cpuset" "$(cpus "$m2_snd")" "$m2_cpus_snd"
-expect "rcv cpuset" "$(cpus "$m2_rcv")" "$m2_cpus_rcv"
-expect "r1 cpuset" "$(cpus "$m2_r1")" "$m2_cpus_router"
-expect "r2 cpuset" "$(cpus "$m2_r2")" "$m2_cpus_router"
+expect "snd cpuset" "$(cpus "$m2_snd")" "$w_cpus_snd"
+expect "rcv cpuset" "$(cpus "$m2_rcv")" "$w_cpus_rcv"
+expect "r1 cpuset" "$(cpus "$m2_r1")" "$w_cpus_rt"
+expect "r2 cpuset" "$(cpus "$m2_r2")" "$w_cpus_rt"
 expect "snd tcp_wmem" "$(docker exec "$m2_snd" sysctl -n net.ipv4.tcp_wmem | tr -s '\t ' ' ')" "4096 16384 67108864"
 expect "snd no_metrics_save" "$(docker exec "$m2_snd" sysctl -n net.ipv4.tcp_no_metrics_save)" 1
 expect "rcv no_metrics_save" "$(docker exec "$m2_rcv" sysctl -n net.ipv4.tcp_no_metrics_save)" 1
@@ -140,11 +154,16 @@ for bw in 10 100; do
         r2c=$(awk -v h="== $m2_r2 $(m2_if_r2_c) tc -s -raw qdisc" '$0 == h {getline; print}' <<<"$out")
         r1a=$(awk -v h="== $m2_r1 $(m2_if_r1_a) tc -s -raw qdisc" '$0 == h {getline; print}' <<<"$out")
         r2b=$(awk -v h="== $m2_r2 $(m2_if_r2_b) tc -s -raw qdisc" '$0 == h {getline; print}' <<<"$out")
-        want_netem="limit 20000 delay ${rtt}ms"
-        [[ $loss != 0 ]] && want_netem+=" loss ${loss}% seed $seed"
+        # netem's options after "refcnt N" exactly: the kernel reports a
+        # (random) seed also without loss, and nothing else may be there.
+        if [[ $loss != 0 ]]; then want_netem="limit 20000 delay ${rtt}ms loss ${loss}% seed $seed"
+        else want_netem="limit 20000 delay ${rtt}ms seed [0-9]+"; fi
         name="shape $bw Mbit/s $rtt ms ${qx}xBDP loss $loss"
-        if [[ $r1b == "qdisc netem "*" root "*"$want_netem"* && $r2c == "qdisc tbf "*"rate ${bw}Mbit burst ${b}b "*"limit ${q}b"* \
-              && $r1a == "qdisc noqueue "* && $r2b == "qdisc noqueue "* ]]; then
+        want_netem=${want_netem//./\\.}
+        if [[ $r1b =~ ^qdisc\ netem\ [^\ ]+\ root\ refcnt\ [0-9]+\ (.*[^\ ])\ *$ ]] \
+              && [[ ${BASH_REMATCH[1]} =~ ^${want_netem}$ ]] \
+              && [[ $r2c == "qdisc tbf "*"rate ${bw}Mbit burst ${b}b "*"limit ${q}b"* \
+                    && $r1a == "qdisc noqueue "* && $r2b == "qdisc noqueue "* ]]; then
           ok "$name (Q $q B, B $b B)"
         else
           bad "$name: r1b '$r1b' r2c '$r2c' r1a '$r1a' r2b '$r2b'"

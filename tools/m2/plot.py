@@ -3,7 +3,8 @@
 
   plot.py CAMPAIGN_DIR OUT_DIR
 
-Per (cell, algorithm) one PNG, OUT_DIR/<cell>-<cc>.png, from the
+Per (cell, algorithm) one PNG, OUT_DIR/<cell>-<algo>.png (algo = the plan's
+algorithm label, analyze.algo_of), from the
 median-goodput repetition of each implementation among the valid runs
 (selection_of): three panels on one time axis (seconds since the receiver's
 accept, t0; the §5.6 window starts at 5 s):
@@ -64,7 +65,7 @@ def trace_marks(trace_path, t0):
     return rexmit, rto
 
 
-def plot_cell(cell, cc, sel, campdir, out):
+def plot_cell(cell, algo, sel, campdir, out):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -105,9 +106,9 @@ def plot_cell(cell, cc, sel, campdir, out):
         a.axvline(A.WARMUP_S, color="grey", lw=0.5, ls="--")
         a.legend(fontsize=7, loc="best")
         a.grid(alpha=0.3)
-    fig.suptitle(f"cell {cell} (Mbit/s-ms-loss %-queue xBDP), {cc}")
+    fig.suptitle(f"cell {cell} (Mbit/s-ms-loss %-queue xBDP), {algo}")
     fig.tight_layout()
-    path = Path(out) / f"{cell}-{cc}.png"
+    path = Path(out) / f"{cell}-{algo}.png"
     fig.savefig(path, dpi=110)
     plt.close(fig)
     return path
@@ -122,13 +123,13 @@ def main(argv):
     groups = {}
     for meta, summ in A.campaign_runs(campdir):
         if meta.get("impl") in ("utcp", "linux") and meta.get("cell"):
-            groups.setdefault((meta["cell"], meta.get("cc")), []).append((meta, summ))
-    for (cell, cc), runs in sorted(groups.items()):
+            groups.setdefault((meta["cell"], A.algo_of(meta)), []).append((meta, summ))
+    for (cell, algo), runs in sorted(groups.items()):
         sel = selection_of(runs)
         if not sel:
-            print(f"{cell} {cc}: no valid run")
+            print(f"{cell} {algo}: no valid run")
             continue
-        p = plot_cell(cell, cc, sel, campdir, out)
+        p = plot_cell(cell, algo, sel, campdir, out)
         print(f"{p}: " + ", ".join(f"{impl} {m['run']}" for impl, (m, _) in sorted(sel.items())))
     return 0
 

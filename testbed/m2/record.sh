@@ -12,13 +12,17 @@
 #     number in front), the cpu lines of /proc/stat, /proc/softirqs,
 #     /proc/sys/net/bridge/bridge-nf-call-{iptables,ip6tables,arptables}
 #     ("absent" without br_netfilter), tcp_cubic and tcp_bbr module
-#     parameters, uptime, the top CPU users, the threads seen on CPUs 8-15.
+#     parameters, uptime, the top CPU users, the threads seen on CPUs 8-15,
+#     the clock tick (getconf CLK_TCK) and each container's cgroup CPU usage
+#     (cpu.stat usage_usec; the cgroup from /proc/<pid>/cgroup of its init),
+#     from which analyze.py separates the CPU time of other processes on the
+#     slot's CPUs.
 # Each section starts with "== <where> <what>"; the first line has the label
 # and the UTC time. tools/m2/analyze.py parses this format.
 #
 # Usage: testbed/m2/record.sh --slot N [--brief] [LABEL] > FILE
-#   --brief   without the sysctls, nstat, /proc/softirqs, /proc/stat and the
-#             process list (what up.sh prints)
+#   --brief   without the sysctls, nstat, /proc/softirqs, /proc/stat, the
+#             cgroup usage and the process list (what up.sh prints)
 # Environment: UTCP_M2_PREFIX (default utcp-m2).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
@@ -98,6 +102,18 @@ if ((!brief)); then
   grep '^cpu' /proc/stat
   echo "== host /proc/softirqs"
   cat /proc/softirqs
+  echo "== host clk_tck"
+  getconf CLK_TCK
+  echo "== host cgroup cpu.stat"
+  for c in "${m2_containers[@]}"; do
+    pid=$(docker container inspect -f '{{.State.Pid}}' "$c")
+    cg=$(sed -n 's/^0:://p' "/proc/$pid/cgroup" 2>/dev/null)
+    if [[ -n $cg && -r /sys/fs/cgroup$cg/cpu.stat ]]; then
+      echo "$c $(grep -m1 '^usage_usec ' "/sys/fs/cgroup$cg/cpu.stat")"
+    else
+      echo "$c usage_usec unknown"
+    fi
+  done
   echo "== host uptime"
   uptime
   echo "== host top"
