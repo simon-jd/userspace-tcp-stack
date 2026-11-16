@@ -1548,12 +1548,13 @@ copies 1 and 2, and a `ct` drop.
   `rexmit` keeps only tx events of retransmissions (fast_rexmit, rexmit, rto_rexmit, pmtu_rexmit, tlp).
   Default `cwnd,recovery,rto,rexmit` (M2 design §5.6). The core does not emit `cwnd` or `recovery`
   events yet, so a trace holds the retransmissions and RTOs only.
-- `--stats FILE` (one line, written at exit or on SIGINT/SIGTERM): every StackStats counter, the
-  DeviceStats counters (`dev_*`; `dev_tx_batch_max` is the most datagrams one drain of the stack wrote),
-  the EventLoop's counters (`loop_*`; `loop_pending_calls` counts the iterations in which connections
-  blocked on transmit-queue or pool space resumed, §3.4), the lateness histogram (`loop_lateness_count`,
-  `loop_lateness_max_ns`, `loop_lateness_bucket_I` for each non-empty log2 bucket I) and, with a trace,
-  `trace_events`. Device errors invalidate a run; a non-zero `loop_pending_calls` flags it
+- `--stats FILE` (one line, written at exit or on SIGINT/SIGTERM), in this order: every StackStats
+  counter, the EventLoop's counters (`loop_*`; `loop_pending_calls` counts the iterations in which
+  connections blocked on transmit-queue or pool space resumed, §3.4), the lateness histogram
+  (`loop_lateness_count`, `loop_lateness_max_ns`, `loop_lateness_bucket_I` for each non-empty log2
+  bucket I), with a trace `trace_events` and `trace_blocks`, and the DeviceStats counters (`dev_*`;
+  `dev_tx_batch_max` is the most datagrams one drain of the stack wrote) ending with
+  `dev_device_failed`, which the M1 backend check reads at the line's end. Device errors invalidate a run; a non-zero `loop_pending_calls` flags it
   (`stack_blocked`): the stack waited for the TUN, it lost nothing.
 - Both senders write the same sample keys (`add_fields` of `TcpInfo`), among them
   `sndbuf_limited_us`, `rwnd_limited_us`, `total_retrans`, `data_segs_out`, `dsack_dups`.

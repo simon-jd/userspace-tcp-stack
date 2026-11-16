@@ -308,20 +308,8 @@ std::string UtcpTransport::stats_json() const {
   JsonLine line;
   line.add("ev", "stack_stats");
   for_each_stat(stack_.stats(), [&](std::string_view name, std::uint64_t v) { line.add(name, v); });
-  line.add("dev_rx_datagrams", dev_.rx_datagrams)
-      .add("dev_rx_bytes", dev_.rx_bytes)
-      .add("dev_rx_errors", dev_.rx_errors)
-      .add("dev_tx_datagrams", dev_.tx_datagrams)
-      .add("dev_tx_bytes", dev_.tx_bytes)
-      .add("dev_tx_eagain", dev_.tx_eagain)
-      .add("dev_tx_errors", dev_.tx_errors)
-      .add("dev_last_tx_errno", dev_.last_tx_errno)
-      .add("dev_rx_batches", dev_.rx_batches)
-      .add("dev_rx_batch_limit", dev_.rx_batch_limit)
-      .add("dev_pcap_records", dev_.pcap_records)
-      .add("dev_pcap_failed", dev_.pcap_failed)
-      .add("dev_device_failed", dev_.device_failed)
-      .add("dev_tx_batch_max", dev_.tx_batch_max);
+  // The device counters come last, dev_device_failed at the end (the M1
+  // backend check reads the line's end).
   const LoopStats& ls = loop_.stats();
   line.add("loop_iterations", ls.iterations)
       .add("loop_deadline_calls", ls.deadline_calls)
@@ -336,6 +324,20 @@ std::string UtcpTransport::stats_json() const {
   if (trace_) {
     line.add("trace_events", trace_->events()).add("trace_blocks", trace_->blocks());
   }
+  line.add("dev_rx_datagrams", dev_.rx_datagrams)
+      .add("dev_rx_bytes", dev_.rx_bytes)
+      .add("dev_rx_errors", dev_.rx_errors)
+      .add("dev_tx_datagrams", dev_.tx_datagrams)
+      .add("dev_tx_bytes", dev_.tx_bytes)
+      .add("dev_tx_eagain", dev_.tx_eagain)
+      .add("dev_tx_errors", dev_.tx_errors)
+      .add("dev_last_tx_errno", dev_.last_tx_errno)
+      .add("dev_rx_batches", dev_.rx_batches)
+      .add("dev_rx_batch_limit", dev_.rx_batch_limit)
+      .add("dev_pcap_records", dev_.pcap_records)
+      .add("dev_pcap_failed", dev_.pcap_failed)
+      .add("dev_tx_batch_max", dev_.tx_batch_max)
+      .add("dev_device_failed", dev_.device_failed);
   return line.str();
 }
 
