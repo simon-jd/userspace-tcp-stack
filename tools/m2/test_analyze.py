@@ -1266,6 +1266,7 @@ class ResumeKeys(unittest.TestCase):
 class FakeSlot:
     def __init__(self, n, timing):
         self.n, self.timing = n, timing
+        self.snd = f"s{n}-snd"
 
     def slot_cpus(self):
         return "8-11" if self.timing else "16-31"
@@ -1280,6 +1281,73 @@ class RunnerRefusals(unittest.TestCase):
                 M.run_plan(p, [FakeSlot(0, True), FakeSlot(1, True)], no_gate=True)
             with self.assertRaisesRegex(RuntimeError, "not a timing slot"):
                 M.run_plan(p, [FakeSlot(2, False)], no_gate=True)
+
+
+class RunPlanGroups(unittest.TestCase):
+    """run_plan with the docker calls replaced: group reruns, resume, the rerun
+    cap and the reuse-key refusal."""
+    PLAN = 'campaign = "t/p"\nseed = 3\nreps = 2\n[[cell]]\nbw = 10\nrtt = 20\nqueue_bdp = 2\n[[algo]]\ncc = "newreno"\n'
+
+    def run_plan(self, invalid, existing=None, rekey=False):
+        from unittest import mock
+        done, calls, cmds = self.done, [], []
+
+        def one_run(slot, campaign, name, spec, smeta):
+            calls.append((name, spec["rerun"], spec["order"], spec["group"]))
+            s = {"valid": not invalid(name)}
+            done[name] = s
+            return {}, s
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "plan.toml"
+            p.write_text(self.PLAN)
+            with mock.patch.multiple(M, static_meta=lambda: {}, current_key=lambda s, m: "k", log=lambda *a: None,
+                                     read_volume=lambda s, path: None, vol_write=lambda *a: None,
+                                     dexec=lambda c, cmd, **kw: cmds.append(cmd) or "",
+                                     campaign_keys=lambda s, c: dict(existing or {}),
+                                     run_done=lambda s, c, name: done.get(name), one_run=one_run):
+                errors = M.run_plan(p, [FakeSlot(0, True)], no_gate=True, rekey=rekey)
+        self.assertEqual(errors, [])
+        return calls, cmds
+
+    def setUp(self):
+        self.done = {}
+        self.runs = M.expand_plan(M.load_plan(self._plan_path()))
+
+    def _plan_path(self):
+        d = tempfile.mkdtemp()
+        p = Path(d) / "plan.toml"
+        p.write_text(self.PLAN)
+        return p
+
+    def test_an_invalid_group_is_rerun_whole_and_back_to_back(self):
+        first = self.runs[0]["run"]
+        calls, _ = self.run_plan(lambda name: name == first)
+        names = [c[0] for c in calls]
+        g0 = [r["run"] for r in self.runs if r["group"] == 0]
+        g1 = [r["run"] for r in self.runs if r["group"] == 1]
+        self.assertEqual(names, g0 + [n + "-rerun1" for n in g0] + g1)
+        self.assertEqual([c[1] for c in calls], [0, 0, 1, 1, 0, 0])
+        self.assertEqual(calls[2][2], self.runs[0]["order"])   # a rerun keeps its run's order
+        # Resuming runs nothing.
+        calls, _ = self.run_plan(lambda name: name == first)
+        self.assertEqual(calls, [])
+
+    def test_the_rerun_cap_per_cell_and_algorithm(self):
+        calls, _ = self.run_plan(lambda name: True)
+        # Group 0: the run and 3 reruns (4 invalid groups > 3); group 1: no rerun left.
+        self.assertEqual([c[1] for c in calls], [0, 0, 1, 1, 2, 2, 3, 3, 0, 0])
+
+    def test_runs_with_another_reuse_key_are_refused_or_moved_aside(self):
+        old = {self.runs[0]["run"]: "old", self.runs[1]["run"]: "k"}
+        self.done[self.runs[0]["run"]] = {"valid": True}
+        self.done[self.runs[1]["run"]] = {"valid": True}
+        with self.assertRaisesRegex(RuntimeError, "another reuse key"):
+            self.run_plan(lambda name: False, existing=old)
+        self.done.clear()
+        calls, cmds = self.run_plan(lambda name: False, existing=old, rekey=True)
+        self.assertTrue(any(f"mv {self.runs[0]['run']} aside/" in c and f"mv {self.runs[1]['run']} aside/" in c
+                            for c in cmds), cmds)
+        self.assertEqual(len(calls), 4)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

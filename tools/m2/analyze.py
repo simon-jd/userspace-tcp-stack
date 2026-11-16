@@ -895,9 +895,12 @@ STACK_LOCAL_DROPS = ("IpOutDiscards", "TcpExtTCPRcvQDrop", "TcpExtTCPOFODrop")
 # Capture cross-check (§5.9): a sender's (receiver's) window count against the
 # capture next to it, flagged when they differ by more than
 # max(absolute, relative * count). Both sides are 10 ms series interpolated at
-# the window bounds.
-CAPTURE_SEGS_TOL = (20, 0.002)
-CAPTURE_RETRANS_TOL = (5, 0.10)
+# the window bounds. Set from the 112 stored runs of m2d-testbed (mini-final,
+# proof, calib-s0) on 2026-11-16: data segments within 9 for Linux and 95 of
+# 206 639 for the stack (its count leads the r1-in capture by its TUN queue),
+# r2-out against the receiver within 6, retransmissions within 1.
+CAPTURE_SEGS_TOL = (20, 0.001)
+CAPTURE_RETRANS_TOL = (3, 0.05)
 
 
 def counts_agree(a, b, tol):

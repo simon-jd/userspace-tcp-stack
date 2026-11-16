@@ -295,6 +295,7 @@ def one_run(slot, campaign, run, spec, smeta=None):
     for c in (slot.snd, slot.rcv):
         dexec(c, "ip tcp_metrics flush")
     meta = dict(spec)
+    meta.setdefault("timing", slot.timing)
     meta.update(smeta)
     meta.update({
         "campaign": campaign, "run": run, "slot": slot.n, "duration_s": S,
