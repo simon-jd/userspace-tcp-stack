@@ -154,10 +154,18 @@ struct Rig {
     for (const auto& [first, last] : sacked) {
       blocks.push_back(Range{off_of(first), off_of(last + 1)});
     }
+    return ack_bytes(off_of(cum), std::move(blocks), dsack, tsecr);
+  }
+
+  // The same with byte offsets: SND.UNA becomes `una` (if higher) and the
+  // SACK blocks are the byte ranges given.
+  AckOutcome ack_bytes(std::uint64_t una, std::vector<Range> blocks,
+                       std::optional<Range> dsack = std::nullopt,
+                       std::optional<std::uint32_t> tsecr = {}) {
     AckInput in;
     in.now = now;
     in.prior_una = q.una();
-    in.new_una = std::max(off_of(cum), q.una());
+    in.new_una = std::max(una, q.una());
     in.sack = blocks;
     in.dsack = dsack;
     in.tsecr = tsecr;

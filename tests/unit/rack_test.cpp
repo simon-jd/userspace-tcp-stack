@@ -172,6 +172,35 @@ TEST(RackFifo, PropertyRandomSequences) {
   }
 }
 
+// The bound of M2-DESIGN §1.5 where the random sequences above never get
+// near it: 100 segments sent, 99 cumulatively acknowledged (their 99 entries
+// are dead), then the last one resent 200 times as a loss probe (each resend
+// kills the previous entry). packets_out stays 1, so after every append the
+// FIFO may hold at most 2 * 1 + 64 = 66 entries; without the filter it would
+// reach 300.
+TEST(RackFifo, BoundHoldsWithManyDeadEntries) {
+  utcp::ChunkPool pool{64};
+  SendQueue q{pool, 1 << 20};
+  utcp::RateState rate;
+  SentFifo f;
+  Time now{1'000'000'000};
+  const std::vector<std::byte> data(100'000);
+  ASSERT_EQ(q.write(data), data.size());
+  for (int i = 0; i < 100; ++i) {
+    f.on_transmit(q, q.on_transmit(q.nxt(), 1000, false, now, rate));
+  }
+  ASSERT_EQ(f.size(), 100u);
+  now += 10ms;
+  q.on_cumulative_ack(99'000, now, [](const TxSeg&, bool) {});
+  ASSERT_EQ(q.counters().packets_out, 1u);
+  for (int i = 0; i < 200; ++i) {
+    now += 1ms;
+    f.on_transmit(q, q.on_transmit(99'000, 1000, false, now, rate, true));
+    ASSERT_LE(f.size(), 2 * std::size_t{q.counters().packets_out} + 64) << "resend " << i;
+  }
+  EXPECT_EQ(f.live_offsets(q), std::vector<std::uint64_t>{99'000});
+}
+
 // A retransmission split (retransmit_seg, tcp_fragment, which puts the tail
 // right after the head in Linux's list): the tail keeps the original's place,
 // the resent head goes to the end. A lost tail waits (not live) until resent.
@@ -247,7 +276,8 @@ TEST(RackPipeline, SpuriousRetransmissionSkip) {
 }
 
 // tcp_timeout_mark_lost with RACK: the head always, another segment only if
-// it was sent at least RACK.rtt (100 ms) ago.
+// it was sent at least RACK.rtt (100 ms) ago (tcp_rack_skb_timeout(skb, 0)
+// <= 0: exactly RACK.rtt ago is marked, 1 ms less is not).
 TEST(RackPipeline, RtoMarksHeadAndOldSegmentsOnly) {
   Rig r(utcp::test::rig::linux_cfg());
   const Time t0 = r.now;
@@ -255,8 +285,12 @@ TEST(RackPipeline, RtoMarksHeadAndOldSegmentsOnly) {
   r.now = t0 + 100ms;
   r.ack(1, {{2, 2}});
   ASSERT_EQ(r.rec.rack().rtt, 100ms);
+  r.now = t0 + 300ms;
+  r.send_new(1);                        // 6, exactly 100 ms before the RTO
+  r.now = t0 + 301ms;
+  r.send_new(1);                        // 7, 99 ms before
   r.now = t0 + 350ms;
-  r.send_new(3);                        // 6-8, 50 ms before the RTO
+  r.send_new(2);                        // 8-9, 50 ms before
   r.now = t0 + 360ms;
   r.send_at(0, TxKind::rexmit);         // the head, resent 40 ms before
   r.now = t0 + 400ms;
@@ -268,8 +302,9 @@ TEST(RackPipeline, RtoMarksHeadAndOldSegmentsOnly) {
   for (std::uint32_t k = 3; k <= 5; ++k) {
     EXPECT_TRUE(r.pkt(k).lost) << k;    // 400 ms old
   }
-  for (std::uint32_t k = 6; k <= 8; ++k) {
-    EXPECT_FALSE(r.pkt(k).lost) << k;   // 50 ms old < 100 ms
+  EXPECT_TRUE(r.pkt(6).lost);           // 100 ms: 100 - 100 = 0 <= 0
+  for (std::uint32_t k = 7; k <= 9; ++k) {
+    EXPECT_FALSE(r.pkt(k).lost) << k;   // 99 and 50 ms old < 100 ms
   }
   EXPECT_EQ(r.rec.state(), CaState::loss);
   // rfc (no RACK): every non-SACKed segment.
@@ -320,6 +355,42 @@ TEST(RackPipeline, ReoTimerSurvivesNewDataAndEntersRecovery) {
   EXPECT_EQ(r.rec.state(), CaState::recovery);
   EXPECT_EQ(r.stats.TcpExtTCPTimeouts, 0u);
   EXPECT_EQ(r.timer().first, XmitTimer::rto);
+}
+
+// M2-DESIGN §1.7: a head retransmission re-arms a full RTO only when the
+// pending timer is not REO (tcp_xmit_retransmit_queue, tcp_output.c:3790-
+// 3797). Packets 1, 2, 3 at t0, t0 + 15 ms, t0 + 20 ms; at t0 + 120 ms 3 is
+// SACKed: RACK.rtt 100 ms, reo_wnd min_rtt / 4 = 10 ms (no reordering seen,
+// 1 SACKed < 3). Packet 1 has 100 + 10 - 120 = -10 ms left: lost; packet 2
+// has 100 + 10 - 105 = 5 ms: REO at t0 + 120 + 5 + 2 = t0 + 127 ms. Recovery;
+// PRR: in_flight 1, sndcnt 1, cwnd 2. R1 goes out and the REO timer stays.
+// At t0 + 127 ms the REO expiry marks 2 lost (reo_wnd 0 in Recovery without
+// reordering seen) and re-arms the RTO at the head's time left (R1 at
+// t0 + 120 ms); with 2 lost and 3 SACKed only R1 is in flight, so PRR's
+// cwnd 2 lets R2 go out (not the head: the timer stays). No RTO.
+TEST(RackPipeline, HeadRetransmissionKeepsReo) {
+  Rig r(utcp::test::rig::linux_cfg());
+  const Time t0 = r.now;
+  r.send_new(1);
+  r.now = t0 + 15ms;
+  r.send_new(1);
+  r.now = t0 + 20ms;
+  r.send_new(1);
+  r.now = t0 + 120ms;
+  r.ack(1, {{3, 3}});
+  ASSERT_EQ(r.rec.rack().rtt, 100ms);
+  ASSERT_EQ(r.rec.state(), CaState::recovery);
+  EXPECT_TRUE(r.pkt(1).lost);
+  EXPECT_FALSE(r.pkt(2).lost);
+  ASSERT_EQ(r.timer(), std::make_pair(XmitTimer::reo, t0 + 127ms));
+  EXPECT_EQ(r.cc.cwnd, 2u);
+  EXPECT_EQ(r.transmit(), Sent{"R1"});
+  EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::reo, t0 + 127ms));
+  r.now = t0 + 127ms;
+  EXPECT_EQ(r.fire_reo(), Sent{"R2"});
+  EXPECT_EQ(r.stats.rack_reo_timeouts, 1u);
+  EXPECT_EQ(r.stats.TcpExtTCPTimeouts, 0u);
+  EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 120ms + r.rtt.rto_backed_off(0)));
 }
 
 // A retransmission lost again in Loss (Linux FLAG_LOST_RETRANS) leaves Loss

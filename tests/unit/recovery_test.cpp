@@ -481,6 +481,16 @@ TEST(RecoveryTlpSchedule, ProbeTimeouts) {
     r.transmit();
     EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, r.now + 1s));
   }
+  {
+    SCOPED_TRACE("no RTT sample, RTO backed off to 2 s: 1 s, below the cap");
+    rg::Rig r(rg::linux_cfg());
+    r.rtt = utcp::RttEstimator(r.cfg);
+    r.backoff = 1;
+    ASSERT_EQ(r.rtt.rto_backed_off(1), 2s);
+    r.write(3);
+    r.transmit();
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::pto, r.now + 1s));
+  }
 }
 
 // No PTO without SACK, in Recovery or in Loss, or in the rfc profile.
@@ -575,6 +585,34 @@ TEST(RecoveryTlpProbe, NewDataOrLastSegmentAndOneOutstanding) {
     r.now += 42ms;
     r.wnd = 1500;  // packet 3 starts at 2000
     EXPECT_EQ(r.fire_pto(), Sent{});
+    EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
+  }
+}
+
+// A PTO left pending into Recovery or Loss sends nothing (on_pto's own
+// Open/CWR guard; RFC 8985 §7.2 and the simulator's TLP rule): no probe, no
+// TcpExtTCPLossProbes, no tlp_high_seq.
+TEST(RecoveryTlpProbe, NoProbeInRecoveryOrLoss) {
+  {
+    SCOPED_TRACE("Recovery");
+    rg::Rig r(rg::linux_cfg());
+    r.send_new(10);
+    r.now += 100ms;
+    r.ack(1, {{2, 4}});
+    ASSERT_EQ(r.rec.state(), CaState::recovery);
+    EXPECT_EQ(r.fire_pto(), Sent{});
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbes, 0u);
+    EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
+  }
+  {
+    SCOPED_TRACE("Loss");
+    rg::Rig r(rg::linux_cfg());
+    r.send_new(2);
+    r.now += 400ms;
+    r.fire_rto();
+    ASSERT_EQ(r.rec.state(), CaState::loss);
+    EXPECT_EQ(r.fire_pto(), Sent{});
+    EXPECT_EQ(r.stats.TcpExtTCPLossProbes, 0u);
     EXPECT_EQ(r.rec.tlp_high_seq(), std::nullopt);
   }
 }
@@ -734,6 +772,28 @@ TEST(RecoveryTlpTimers, PacingDelay) {
     r.ack(1, {{2, 2}});
     EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::reo, t0 + 112ms));
   }
+  {
+    SCOPED_TRACE("head retransmission: + 3 ms; the RTO timer's own re-arm: none");
+    // At t0 + 100 ms 2-4 are SACKed (reo_wnd 0 at 3 SACKed): 1 is lost and
+    // no REO timer is armed. The head's retransmission 1 ms later re-arms a
+    // full RTO plus the delay (tcp_xmit_retransmit_queue); the RTO expiry's
+    // re-arm (tcp_retransmit_timer) gets the backed-off RTO without it.
+    rg::Rig r(rg::linux_cfg());
+    r.pacing_delay = 3500us;
+    const Time t0 = r.now;
+    r.send_new(10);
+    r.now = t0 + 100ms;
+    r.ack(1, {{2, 4}});
+    ASSERT_EQ(r.rec.state(), CaState::recovery);
+    ASSERT_EQ(r.timer().first, XmitTimer::rto);
+    r.now = t0 + 101ms;
+    EXPECT_EQ(r.transmit(), Sent{"R1"});
+    const utcp::Duration rto = r.rtt.rto_backed_off(0);
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, t0 + 101ms + rto + 3ms));
+    r.now = r.timer().second;
+    ASSERT_EQ(r.fire_rto().front(), "R1");
+    EXPECT_EQ(r.timer(), std::make_pair(XmitTimer::rto, r.now + r.rtt.rto_backed_off(1)));
+  }
 }
 
 // TestFault::double_tlp: on_pto ignores tlp_high_seq.
@@ -815,6 +875,27 @@ TEST(RecoveryAdaptiveReordering, HoleFilledFivePacketsBelowFack) {
     EXPECT_EQ(r.rec.reord_seen(), 1u);
     EXPECT_EQ(r.stats.TcpExtTCPSACKReorder, 1u);
   }
+}
+
+// The degree is rounded up to whole packets (tcp_check_sack_reordering:
+// DIV_ROUND_UP(fack - low, mss)). Packets 1-10 at t0, packet 7 cut into
+// [6000, 6500) and [6500, 7000); at +100 1-2 are ACKed and [6000, 6500)
+// SACKed (fack 6500); at +101 the hole 3-6 is filled: fack - low = 6500 -
+// 2000 = 4500 > 3 * 1000, so reordering = ceil(4.5) = 5, not 4.
+TEST(RecoveryAdaptiveReordering, DegreeRoundsUpToWholePackets) {
+  rg::Rig r(rg::linux_cfg());
+  const Time t0 = r.now;
+  r.send_new(10);
+  r.q.split(rg::off_of(7), 500);
+  r.now = t0 + 100ms;
+  r.ack_bytes(rg::off_of(3), {Range{6000, 6500}});
+  ASSERT_TRUE(r.q.find(6000)->sacked);
+  ASSERT_FALSE(r.q.find(6500)->sacked);
+  EXPECT_EQ(r.rec.reord_seen(), 0u);
+  r.now = t0 + 101ms;
+  r.ack(7);
+  EXPECT_EQ(r.rec.reordering(r.cfg), 5u);
+  EXPECT_EQ(r.rec.reord_seen(), 1u);
 }
 
 // tcp_may_raise_cwnd: with reordering above DupThresh any forward progress
