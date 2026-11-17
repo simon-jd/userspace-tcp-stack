@@ -2,7 +2,8 @@
 """Unit tests of tools/m2/analyze.py on synthetic inputs with known answers
 (M2-TASKS m2d-testbed test 6), and of the pure parts of matrix.py (run
 plans, the reuse key, the parallel-mode comparison) and plot.py (the run
-selection). Run: python3 -I tools/m2/test_analyze.py"""
+selection) and dropcheck.py (the segments a scripted drop latches). Run:
+python3 -I tools/m2/test_analyze.py"""
 
 import json
 import math
@@ -14,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze as A  # noqa: E402
+import dropcheck as D  # noqa: E402
 import matrix as M  # noqa: E402
 import plot as P  # noqa: E402
 
@@ -451,6 +453,20 @@ class Convergence(unittest.TestCase):
         f2 = rates_series(lambda t: 10e6 if t < T0 + 57 * NS else 50e6, join, T0 + 60 * NS)
         self.assertIsNone(A.convergence_time([f1, f2], join, T0 + 60 * NS, self.C))
 
+    def test_the_hold_is_5_s(self):
+        # Equal shares from end - 5.5 s: the 1 s means enter the band at
+        # end - 4.7 s (x >= 0.78 as above), 4.7 s before the end, which is
+        # not a 5 s hold. From end - 6 s they enter at end - 5.2 s: held.
+        join, end = T0 + 20 * NS, T0 + 60 * NS
+        for switch, want in ((end - 5.5 * NS, None), (end - 6 * NS, (end - 5.2 * NS - join) / NS)):
+            f1 = rates_series(lambda t: 95e6 if t < switch else 50e6, T0, end)
+            f2 = rates_series(lambda t: 10e6 if t < switch else 50e6, join, end)
+            c = A.convergence_time([f1, f2], join, end, self.C)
+            if want is None:
+                self.assertIsNone(c)
+            else:
+                self.assertAlmostEqual(c, want, places=6)
+
     def test_a_dip_restarts_the_hold(self):
         join = T0 + 20 * NS
         def r1(t):
@@ -479,6 +495,10 @@ class GapRule(unittest.TestCase):
         self.assertEqual(A.gap_verdict("goodput_bps", stat(80, 70, 96), stat(100, 95, 105), 0), "no gap")
         # Disjoint but only 5 % apart.
         self.assertEqual(A.gap_verdict("goodput_bps", stat(95, 94, 95.5), stat(100, 99, 101), 0), "no gap")
+        # The 10 % bound itself: 11 % apart with disjoint ranges is a gap,
+        # 9 % apart is not.
+        self.assertEqual(A.gap_verdict("goodput_bps", stat(89, 88.5, 89.5), stat(100, 99, 101), 0), "gap")
+        self.assertEqual(A.gap_verdict("goodput_bps", stat(91, 90.5, 91.5), stat(100, 99, 101), 0), "no gap")
         # Better than Linux by more than 10 % is a gap too (the medians differ).
         self.assertEqual(A.gap_verdict("goodput_bps", stat(120, 118, 122), stat(100, 95, 105), 0), "gap")
 
@@ -907,6 +927,17 @@ class WindowEdges(unittest.TestCase):
         m = A.ping_metrics(pings, CLOCK, T0, lo, hi)
         self.assertEqual(m["ping_n"], 2)
         self.assertAlmostEqual(m["qdelay_p50_ms"], 25.0)   # 10 and 40
+
+    def test_the_base_is_the_median_of_the_idle_pings(self):
+        # Idle RTTs 20.0, 20.1, 20.2, 20.3 and 25.0: median 20.2, mean 21.12.
+        lo, hi = T0 + 5 * NS, T0 + 25 * NS
+        pings = [A.Ping(i + 1, rt(T0 - 3 * NS + i * 500_000_000), r)
+                 for i, r in enumerate([20.0, 20.1, 20.2, 20.3, 25.0])]
+        pings += [A.Ping(10 + i, rt(lo + i * NS), 20.2 + d) for i, d in enumerate([1.0, 2.0, 3.0])]
+        m = A.ping_metrics(pings, CLOCK, T0, lo, hi)
+        self.assertEqual(m["ping_idle_n"], 5)
+        self.assertAlmostEqual(m["ping_base_ms"], 20.2, places=9)
+        self.assertAlmostEqual(m["qdelay_p50_ms"], 2.0, places=9)
 
     def test_a_lost_pings_send_time_is_one_interval_before_its_no_answer_line(self):
         lo, hi = T0 + 5 * NS, T0 + 25 * NS
@@ -1348,6 +1379,44 @@ class RunPlanGroups(unittest.TestCase):
         self.assertTrue(any(f"mv {self.runs[0]['run']} aside/" in c and f"mv {self.runs[1]['run']} aside/" in c
                             for c in cmds), cmds)
         self.assertEqual(len(calls), 4)
+
+class DropTargets(unittest.TestCase):
+    ISN = 0xFFFFF000  # stream offsets wrap the sequence space
+
+    def pkts(self, offs_lens):
+        return [{"seq": (self.ISN + 1 + o) % 2**32, "len": n} for o, n in offs_lens]
+
+    def test_ranges_are_cut_at_the_next_offset(self):
+        self.assertEqual(D.target_ranges("1448000"), [(1448000, 1449448, 1)])
+        self.assertEqual(D.target_ranges("5000:5,1000,2000:2", 1460),
+                         [(1000, 2000, 1), (2000, 4920, 2), (5000, 12300, 5)])
+        with self.assertRaises(ValueError):
+            D.target_ranges("1000,1000")
+
+    def test_a_short_segment_moves_the_boundary_and_the_next_start_is_latched(self):
+        # 1448-byte segments, then 512 bytes at 2896: later starts are 3408 +
+        # 1448k, so offset 4344 is no boundary; the rule latches 4856.
+        segs = [(0, 1448), (1448, 1448), (2896, 512), (3408, 1448), (4856, 1448), (6304, 1448)]
+        self.assertEqual(D.latched(self.pkts(segs), self.ISN, D.target_ranges("4344")), [[4856]])
+        # On a boundary the boundary itself.
+        self.assertEqual(D.latched(self.pkts(segs), self.ISN, D.target_ranges("3408")), [[3408]])
+
+    def test_only_the_first_start_and_its_copies_count_and_pure_acks_never(self):
+        # Two starts in one range (a short segment): only the first is latched;
+        # its retransmission is a copy, not a new start; a pure ACK at an
+        # offset in the range is ignored.
+        segs = [(0, 0), (0, 1000), (1000, 1448), (0, 1000)]
+        self.assertEqual(D.latched(self.pkts(segs), self.ISN, D.target_ranges("0")), [[0]])
+
+    def test_a_burst_latches_n_consecutive_starts(self):
+        segs = [(0, 1448), (1448, 512), (1960, 1448), (3408, 1448), (4856, 1448), (6304, 1448), (7752, 1448)]
+        self.assertEqual(D.latched(self.pkts(segs), self.ISN, D.target_ranges("1000:5")),
+                         [[1448, 1960, 3408, 4856, 6304]])
+        # A retransmission before the 5th start is not a new start.
+        segs2 = segs[:3] + [(1448, 512)] + segs[3:]
+        self.assertEqual(D.latched(self.pkts(segs2), self.ISN, D.target_ranges("1000:5")),
+                         [[1448, 1960, 3408, 4856, 6304]])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

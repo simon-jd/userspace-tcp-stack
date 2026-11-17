@@ -1546,19 +1546,28 @@ Found while running the gate; each follows the measured behaviour of tbf, netem 
 
 ### 14.5 Scripted drops
 
-`drop.sh --slot N arm --offsets OFF,... --copies K,...` installs table `ip utcp_drop` on a router: a set
-`targets` of sequence numbers and sets `seen1..seenK`; the forward-hook rule sends packets to the receiver
-whose sequence is a target to a chain that adds a first copy to `seen1`, a copy already in `seen(j)` but
-not `seen(j+1)` to `seen(j+1)`, and drops the copies listed. A watcher (`tcpdump --immediate-mode -c 1`
-for the SYN) adds ISN + 1 + OFF to `targets` within about 10 ms of the SYN, before the first data segment
-(one RTT later). `drop.sh ... ct --packet N` drops `ct original packets N`. A retransmission that starts
-at another sequence number is not counted as a copy. An offset must be a segment's start: a shorter
-segment earlier in the stream moves every later boundary and nothing is dropped (seen once on
-2026-11-16: the Linux sender sent 1360 bytes at offset 192 584 and the copy-1 case found no drop;
-`dropcheck.py` shows such a run as no packet missing). `tools/m2/dropcheck.py` lists what a router dropped
-by comparing the captures before and after it (transmissions told apart by IP ID and TSval);
-`tests/interop/m2_testbed_drops.sh` verifies copy 1, copy 2 (r2 drops copy 1 so that a copy 2 exists),
-copies 1 and 2, and a `ct` drop.
+`drop.sh --slot N arm --offsets OFF[:N],... --copies K,... [--span B]` installs table `ip utcp_drop` on a
+router. A target (stream offset OFF, count N, default 1) selects the first N segments whose first byte lies
+in [OFF, OFF + N·B), in the order they reach the router; B defaults to 1448, the sender's MSS with
+timestamps, and the range ends early at the next target's offset. A segment is at most one MSS long, so the
+range always holds N segment starts whatever sizes the sender chose: an offset need not be a segment
+boundary, and a short segment earlier in the stream (the Linux sender sent 512 B at offset 195 480 in one
+verification run, 840 B at 440 192 in another, which moved every later boundary) only moves the selection
+to the next start. Exact matching on ISN + 1 + OFF, the first version, found nothing in those runs.
+
+A watcher (`tcpdump --immediate-mode -c 1` for the SYN) adds the ranges ISN + 1 + [OFF, OFF + len) to an
+interval verdict map `targets` within about 10 ms of the SYN, before the first data segment (one RTT later);
+a range across 2^32 is two elements. The forward-hook rules, one per TCP data offset so that only packets
+with payload match (IP length above 20 + 4 · doff), send a packet whose sequence is in a range to its
+target's chain. The chain counts the starts latched in sets `n1..nN` (keyed by the receiver address, used as
+flags; a start after the N-th passes) and puts each latched sequence in `c1`; sets `c1..cK` count copies of
+a latched sequence (a packet in `c(j)` but not `c(j+1)` is copy j+1) and the copies listed in `--copies`
+are dropped. A retransmission that starts at another sequence number (repacketised) is not counted as a
+copy. `drop.sh ... ct --packet N` drops `ct original packets N`. `tools/m2/dropcheck.py` lists what a
+router dropped by comparing the captures before and after it (transmissions told apart by IP ID and TSval)
+and, with `--targets`, which segments the rule must latch, computed from the capture before the router;
+`tests/interop/m2_testbed_drops.sh` checks the drops against that: copy 1, copy 2 (r2 drops copy 1 so that
+a copy 2 exists), copies 1 and 2, an offset inside a segment, a burst of 5, and a `ct` drop.
 
 ### 14.6 The stack sender's options and counters
 

@@ -224,7 +224,7 @@ analysis window, so `summary.json` marks them invalid for the statistics; they a
 ## Gap rule and thresholds
 
 Fixed before the first matrix run, in commit d713941 (branch `m2d-testbed`), which added this section;
-amended on 2026-11-16, still before any matrix run, by the review-fix commit on that branch that adds
+amended on 2026-11-16, still before any matrix run, in commit 80ee74e (same branch), which added
 this sentence (a metric needs 5 values per side for a verdict); not changed afterwards (PLAN 2d; M2
 design §5.10). Implemented in `tools/m2/analyze.py` (`gap_verdict`, constants at the top).
 
@@ -259,8 +259,8 @@ stay as PLAN fixes them; these cells are marked in every table.
 ## Which runs count
 
 Fixed before the first matrix run, in commit d713941 (branch `m2d-testbed`), which added this section
-(M2 design §5.3, §5.6); amended on 2026-11-16, still before any matrix run, by the review-fix commit on
-that branch that adds this sentence: groups instead of single runs are counted and rerun, the stack's
+(M2 design §5.3, §5.6); amended on 2026-11-16, still before any matrix run, in commit 80ee74e (same
+branch), which added this sentence: groups instead of single runs are counted and rerun, the stack's
 own drops and missing sender data invalidate, foreign CPU time and capture mismatches are flagged.
 Implemented in `tools/m2/analyze.py` (`summarize_run`, `select_runs`) and `tools/m2/matrix.py`
 (`run_plan`).
