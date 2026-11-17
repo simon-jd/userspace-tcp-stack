@@ -12,8 +12,8 @@
 # short segment earlier in the stream moves every later boundary; an offset
 # need not be a boundary). Only packets with payload count (one rule per TCP
 # data offset compares the IP length with the headers).
-# A watcher in the router waits for the connection's SYN on the interface
-# from the sender, reads its ISN and adds the target ranges ISN + 1 + [lo, hi)
+# A watcher in the router (Python on an AF_PACKET socket) waits for the
+# connection's SYN on the interface from the sender, reads its ISN and adds the target ranges ISN + 1 + [lo, hi)
 # to an interval verdict map that jumps to the target's chain. The chain
 # latches a segment start: n1..nN count the starts latched (a start in the
 # range after the N-th passes untouched); the latched sequence numbers go in
@@ -21,9 +21,9 @@
 # c(j) but not c(j+1) is copy j+1. Copy K is dropped when K is listed in
 # --copies (1 = the original, 2 = the first retransmission); copies above the
 # highest listed one pass. A retransmission that starts at another sequence
-# number (repacketised) is not counted. The watcher arms within a few
-# milliseconds of the SYN, before the first data segment can arrive (one RTT
-# later); it logs the times and ranges. tools/m2/dropcheck.py --targets
+# number (repacketised) is not counted. The watcher arms a few milliseconds
+# after the SYN, before the first data segment can arrive (one RTT later);
+# its log gives the SYN's receive time and the delay. tools/m2/dropcheck.py --targets
 # computes from a capture before the router which segments the rule latches.
 #
 # By packet count (ct): `ct original packets N drop`: the N-th packet of the
@@ -71,9 +71,8 @@ dst=$m2_rcv_ip
 clear_table() {
   tb_sh "$c" "
     nft delete table ip utcp_drop 2>/dev/null || true
-    for f in /run/utcp-drop-tcpdump.pid /run/utcp-drop-watcher.pid; do
-      if [ -f \$f ]; then kill \$(cat \$f) 2>/dev/null || true; fi; rm -f \$f
-    done
+    if [ -f /run/utcp-drop-watcher.pid ]; then kill \$(cat /run/utcp-drop-watcher.pid) 2>/dev/null || true; fi
+    rm -f /run/utcp-drop-watcher.pid /run/utcp-drop-ready
     true"
 }
 
@@ -151,36 +150,51 @@ $(printf "%b" "$hook")
 $(printf "%b" "$chains")
 }
 EOF"
-    # The watcher: first SYN to dst:dport on the interface from the sender.
+    # The watcher: first SYN to dst:dport on the interface from the sender,
+    # read from an AF_PACKET socket (tcpdump -c 1 took 21-64 ms from the SYN
+    # to its exit, longer than one RTT). It logs the SYN's kernel receive
+    # time and how long after it the ranges were read and armed.
     # shellcheck disable=SC2016
     watcher='
-      echo $$ > /run/utcp-drop-watcher.pid
-      exec >> "$1" 2>&1
-      in_if=$2 dst=$3 dport=$4 ranges=$5 copies=$6
-      rm -f /run/utcp-drop-tcpdump.err
-      tcpdump -i "$in_if" -n -l -S -c 1 --immediate-mode \
-        "dst host $dst and tcp dst port $dport and tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn" \
-        > /run/utcp-drop-syn.txt 2> /run/utcp-drop-tcpdump.err &
-      echo $! > /run/utcp-drop-tcpdump.pid
-      echo "$EPOCHREALTIME waiting ranges (offset:length:target) $ranges copies $copies"
-      wait $!
-      line=$(cat /run/utcp-drop-syn.txt)
-      isn=$(sed -n "s/.* seq \([0-9]*\).*/\1/p" <<<"$line")
-      echo "$EPOCHREALTIME syn isn $isn: $line"
-      [ -n "$isn" ] || exit 1
-      els=""
-      for r in $ranges; do
-        IFS=: read -r off len i <<<"$r"
-        lo=$(( (isn + 1 + off) % 4294967296 )) hi=$(( (isn + off + len) % 4294967296 ))
-        if ((hi >= lo)); then els+="${els:+, }$lo-$hi : jump t$i"
-        else els+="${els:+, }$lo-4294967295 : jump t$i, 0-$hi : jump t$i"; fi  # wraps
-      done
-      nft add element ip utcp_drop targets "{ $els }"
-      echo "$EPOCHREALTIME armed sequences $els"
-    '
-    docker exec -d "$c" bash -c "$watcher" bash "$logf" "$in_if" "$dst" "$dport" "$ranges" "$copies"
+import os, socket, struct, subprocess, sys, time
+logf, ifname, dst, dport, ranges, copies = sys.argv[1:7]
+log = open(logf, "a", buffering=1)
+with open("/run/utcp-drop-watcher.pid", "w") as f:
+    f.write(str(os.getpid()))
+s = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800))
+s.setsockopt(socket.SOL_SOCKET, 35, 1)  # SO_TIMESTAMPNS
+s.bind((ifname, 0))
+dst_b, dport = socket.inet_aton(dst), int(dport)
+open("/run/utcp-drop-ready", "w").close()
+log.write("%.6f waiting ranges (offset:length:target) %s copies %s\n" % (time.time(), ranges, copies))
+while True:
+    ip, anc, _, _ = s.recvmsg(128, 64)
+    if len(ip) < 40 or ip[0] >> 4 != 4 or ip[9] != 6 or ip[16:20] != dst_b:
+        continue
+    t = ip[(ip[0] & 15) * 4:]
+    if len(t) >= 14 and struct.unpack(">H", t[2:4])[0] == dport and t[13] & 0x12 == 0x02:
+        break
+t_read = time.time()
+sec, nsec = struct.unpack("qq", anc[0][2][:16]) if anc else (int(t_read), 0)
+t_syn = sec + nsec / 1e9
+isn = struct.unpack(">I", t[4:8])[0]
+els = []
+for r in ranges.split():
+    off, ln, i = map(int, r.split(":"))
+    lo, hi = (isn + 1 + off) % 2**32, (isn + off + ln) % 2**32
+    els += ["%d-%d : jump t%d" % (lo, hi, i)] if hi >= lo else \
+           ["%d-4294967295 : jump t%d" % (lo, i), "0-%d : jump t%d" % (hi, i)]  # wraps
+rc = subprocess.run(["nft", "add", "element", "ip", "utcp_drop", "targets", "{ %s }" % ", ".join(els)]).returncode
+t_arm = time.time()
+log.write("%.6f syn isn %d from %s at %.6f; read %.1f ms, armed %.1f ms after it (nft rc %d)\n"
+          % (t_read, isn, socket.inet_ntoa(ip[12:16]), t_syn, (t_read - t_syn) * 1e3, (t_arm - t_syn) * 1e3, rc))
+log.write("%.6f armed sequences %s\n" % (t_arm, ", ".join(els)))
+sys.exit(rc)
+'
+    tb_sh "$c" "rm -f /run/utcp-drop-ready"
+    docker exec -d "$c" python3 -I -c "$watcher" "$logf" "$in_if" "$dst" "$dport" "$ranges" "$copies"
     wait_s=0
-    until tb_sh "$c" "grep -q 'listening on' /run/utcp-drop-tcpdump.err 2>/dev/null"; do
+    until tb_sh "$c" "test -f /run/utcp-drop-ready"; do
       sleep 0.05
       wait_s=$((wait_s + 1))
       ((wait_s < 100)) || tb_die "the watcher in $c did not start"

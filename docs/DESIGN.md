@@ -1555,9 +1555,12 @@ boundary, and a short segment earlier in the stream (the Linux sender sent 512 B
 verification run, 840 B at 440 192 in another, which moved every later boundary) only moves the selection
 to the next start. Exact matching on ISN + 1 + OFF, the first version, found nothing in those runs.
 
-A watcher (`tcpdump --immediate-mode -c 1` for the SYN) adds the ranges ISN + 1 + [OFF, OFF + len) to an
-interval verdict map `targets` within about 10 ms of the SYN, before the first data segment (one RTT later);
-a range across 2^32 is two elements. The forward-hook rules, one per TCP data offset so that only packets
+A watcher in the router, Python on an AF_PACKET socket bound to the interface from the sender, reads the
+SYN's ISN and adds the ranges ISN + 1 + [OFF, OFF + len) to an interval verdict map `targets`; a range
+across 2^32 is two elements. Its log gives the SYN's kernel receive time and the delay to arming, which
+must stay below one RTT (the first data segment). The first version waited on `tcpdump --immediate-mode
+-c 1`, whose exit came 21-64 ms after the SYN in 54 logged runs: more than the 20 ms RTT, so a
+target in the first window could have been missed. The forward-hook rules, one per TCP data offset so that only packets
 with payload match (IP length above 20 + 4 · doff), send a packet whose sequence is in a range to its
 target's chain. The chain counts the starts latched in sets `n1..nN` (keyed by the receiver address, used as
 flags; a start after the N-th passes) and puts each latched sequence in `c1`; sets `c1..cK` count copies of

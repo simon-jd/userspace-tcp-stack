@@ -207,19 +207,34 @@ netem hop by the pings it dropped. Item 4's ping maxima are within 0.8 ms of the
 
 **Scripted drops** (§4.2, `testbed/m2/drop.sh`, `tests/interop/m2_testbed_drops.sh`, M2 tasks test 10), on
 the non-timing slot 2 with the Linux sender, 100 Mbit/s, 20 ms, a 40×BDP queue, 5 MB per run; what r1
-(and r2) dropped is read from the captures before and after the router with `tools/m2/dropcheck.py`:
+(and r2) dropped is read from the captures before and after the router with `tools/m2/dropcheck.py`, which
+also computes from the capture before the router which segments the rule must latch (DESIGN §14.5).
 
-| Case | Armed | Dropped by r1 (index in r1-in, offset, copy) | Dropped by r2 | Result |
+The first version (up to commit 80ee74e) matched the exact sequence ISN + 1 + OFF. It dropped nothing in
+3 runs (one copy-1 run of the fix pass, two copy-12 runs of the three verification passes): the Linux
+sender sent a short segment earlier in the stream (1360 B at offset 192 584, 512 B at 195 480, 840 B at
+440 192), so offset 1 448 000 was no segment start. Replayed on the two verification captures, the current
+rule latches 1 448 512 and 1 448 840, the first starts at or after the offset. Its watcher, `tcpdump -c 1`,
+armed 21-64 ms after the SYN (54 logs, including 5 passes of the range rule with that watcher, all PASS),
+more than the 20 ms RTT.
+
+Current version (a target latches the first segment start in [OFF, OFF + N·1448); AF_PACKET watcher):
+`tests/interop/m2_testbed_drops.sh --slot 2 --campaign m2d-testbed/refix-drops11` .. `refix-drops15`, five
+passes in a row on 2026-11-17, all PASS (6 cases each). Each capture complete (90 captures, received by
+filter = captured, 0 dropped by kernel). The watchers armed 2.2-2.7 ms after the SYN. Per pass:
+
+| Case | Armed | Dropped by r1 (offset, copy) | Dropped by r2 | Result |
 |---|---|---|---|---|
-| copy1 | r1: offset 1 448 000, copy 1 | #1003, 1 448 000, copy 1 | none | pass |
-| copy2 | r1: offset 1 448 000, copy 2; r2: copy 1 | #1326, 1 448 000, copy 2 | #1003 (of r1-out), 1 448 000, copy 1 | pass |
-| copy12 | r1: offset 1 448 000, copies 1 and 2 | #1003 copy 1 and #1293 copy 2, offset 1 448 000 | none | pass |
-| ct | r1: `ct original packets 500` | #500, offset 719 656, copy 1 (a first transmission) | none | pass |
+| copy1 | r1: offset 1 448 000, copy 1 | 1 448 000, copy 1 (#1003-#1004 in r1-in) | none | 5/5 pass |
+| copy2 | r1: offset 1 448 000, copy 2; r2: copy 1 | 1 448 000, copy 2 (#1290-#1329) | 1 448 000, copy 1 (#1003 of r1-out) | 5/5 pass |
+| copy12 | r1: offset 1 448 000, copies 1 and 2 | 1 448 000, copies 1 and 2 | none | 5/5 pass |
+| mid | r1: offset 1 448 700, copy 1 | 1 449 448, copy 1 (the next segment start) | none | 5/5 pass |
+| burst | r1: offset 2 896 000, 5 segments, copy 1 | 2 896 000 + 1448·k, k = 0..4, copy 1 | none | 5/5 pass |
+| ct | r1: `ct original packets 500` | #500, offset 716 760-719 656, copy 1 (a first transmission) | none | 5/5 pass |
 
-`tests/interop/m2_testbed_drops.sh --slot 2 --campaign m2d-testbed/drops-final` at commit 6b44b70; each
-capture complete (received by filter = captured, 0 dropped by kernel); 3458-3459 packets of the
-connection in r1-in, one fewer per dropped packet after the router. These 5 MB runs are shorter than the
-analysis window, so `summary.json` marks them invalid for the statistics; they are mechanism checks only.
+No pass had a short segment before its target, so the shifted-boundary case was exercised live only by
+`mid` (an offset that is no segment start) and offline by the replay above. These 5 MB runs are shorter than
+the analysis window, so `summary.json` marks them invalid for the statistics; they are mechanism checks only.
 
 ## Gap rule and thresholds
 

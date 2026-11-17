@@ -19,7 +19,8 @@
 # before each router which segments the rule must latch (--targets): the
 # first segment starts at or after the offset, wherever the Linux sender put
 # its boundaries. The script checks that each target latched its N segments
-# and that the dropped packets are exactly the intended copies of them.
+# and that the dropped packets are exactly the intended copies of them, and
+# that each watcher armed less than one RTT after the SYN (its log).
 # Prints PASS/FAIL per case; exit 1 if any failed. Outputs under
 # /data/m2/<campaign>/ in the utcp-data volume.
 #
@@ -40,14 +41,14 @@ done
 image=${UTCP_IMAGE:-utcp-testbed:dev}
 volume=${UTCP_DATA_VOLUME:-utcp-data}
 job=${UTCP_M2_JOB:-utcp-m2-runner}
-off=1448000
+off=1448000 rtt=20
 fail=0
 
 # check RUN WANT DROP-ARGS...: WANT is JSON {"r1": [OFFSETS, [COPIES]] or
 # null, "r2": likewise, "ct": N}; OFFSETS as drop.sh's --offsets.
 check() {
   python3 "$repo/tools/m2/matrix.py" one --slot "$slot" --campaign "$campaign" --run "$1" \
-    --bw 100 --rtt 20 --queue-bdp 40 --duration 30 --bytes 5000000 --extra-capture "${@:3}" >/dev/null
+    --bw 100 --rtt "$rtt" --queue-bdp 40 --duration 30 --bytes 5000000 --extra-capture "${@:3}" >/dev/null
   local rd=/data/m2/$campaign/$1
   local rcv_ip
   rcv_ip=$(docker run --rm --name "$job-drops-$$" -v "$volume:/data:ro" "$image" \
@@ -59,17 +60,22 @@ check() {
     bash -c "python3 -I /utcp/tools/m2/dropcheck.py $rd/r1-in.pcap $rd/r1-out.pcap $rcv_ip 5201 ${t1:+--targets $t1} > $rd/drop-r1.json
              python3 -I /utcp/tools/m2/dropcheck.py $rd/r1-out.pcap $rd/r2-out.pcap $rcv_ip 5201 ${t2:+--targets $t2} > $rd/drop-r2.json
              python3 -I -c '
-import json, sys
+import json, re, sys
 sys.path.insert(0, \"/utcp/tools/m2\")
 from dropcheck import target_ranges
 d = {r: json.load(open(\"$rd/drop-%s.json\" % r)) for r in (\"r1\", \"r2\")}
 want = json.loads(sys.argv[1])
-ok, exp, got, lat = True, {}, {}, {}
+ok, exp, got, lat, armed = True, {}, {}, {}, {}
 for r in (\"r1\", \"r2\"):
     got[r] = sorted((m[\"offset\"], m[\"copy\"]) for m in d[r][\"missing\"])
     if want.get(r):
         spec, copies = want[r]
         lat[r] = d[r][\"latched\"]
+        # The watcher armed within one RTT (20 ms) of the SYN, before the
+        # first data segment can reach the router.
+        m = re.search(r\"armed ([0-9.]+) ms after it [(]nft rc 0[)]\", open(\"$rd/drop-%s.log\" % r).read())
+        armed[r] = float(m.group(1)) if m else None
+        ok = ok and armed[r] is not None and armed[r] < $rtt
         # Every target latched its N segments (a target that never came
         # would otherwise pass with nothing dropped).
         ok = ok and [len(x) for x in lat[r]] == [n for _, _, n in target_ranges(spec)]
@@ -86,9 +92,9 @@ for r in (\"r1\", \"r2\"):
 if want.get(\"r1\") and want.get(\"r2\") and want[\"r1\"][0] == want[\"r2\"][0]:
     ok = ok and lat[\"r1\"] == lat[\"r2\"]
 print(json.dumps({\"isn\": d[\"r1\"][\"isn\"], \"r1_in\": d[\"r1\"][\"before\"], \"r1_out\": d[\"r1\"][\"after\"],
-                  \"r2_out\": d[\"r2\"][\"after\"], \"latched\": lat, \"r1_dropped\": d[\"r1\"][\"missing\"],
+                  \"r2_out\": d[\"r2\"][\"after\"], \"latched\": lat, \"armed_ms\": armed, \"r1_dropped\": d[\"r1\"][\"missing\"],
                   \"r2_dropped\": d[\"r2\"][\"missing\"]}))
-print(\"PASS\" if ok else \"FAIL expected %s got %s latched %s\" % (exp, got, lat))
+print(\"PASS\" if ok else \"FAIL expected %s got %s latched %s armed %s ms\" % (exp, got, lat, armed))
 ' '$2'")
   echo "== $1: $(tail -1 <<<"$out")"
   head -1 <<<"$out"
