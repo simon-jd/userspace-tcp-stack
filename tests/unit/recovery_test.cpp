@@ -35,6 +35,7 @@ constexpr std::uint32_t seg_len = 1000;
 struct Rig {
   explicit Rig(bool sack_ok) : sack(sack_ok) {
     q.set_sack_ok(sack_ok);
+    cc.flavor = cfg.cc_flavor;
     cc.cwnd = 10;
     cc.ssthresh = utcp::cwnd_infinite;
     cc.mss = seg_len;
