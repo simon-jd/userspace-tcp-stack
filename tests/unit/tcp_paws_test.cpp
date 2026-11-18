@@ -299,6 +299,9 @@ TEST(TcpPaws, TsecrZeroOrAheadGivesNoRttSample) {
       // rejects it.
       StackConfig cfg = config(Side::b, profile);
       cfg.tcp.ts_offset_random = false;
+      // The RTO's backoff is the subject: no tail loss probe before it
+      // (M2-DESIGN §1.7; at this RTT linux_compat's PTO equals the RTO).
+      cfg.tcp.rack_tlp = false;
       Scripted c(cfg);
       c.po.ts = true;
       ASSERT_TRUE(c.accept());

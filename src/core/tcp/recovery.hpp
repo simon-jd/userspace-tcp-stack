@@ -6,8 +6,7 @@
 // tcp_enter_loss/tcp_timeout_mark_lost with the reneging check, and the
 // choice of the connection's one `xmit` timer. M2a replaces the internals
 // (RFC 6675 scoreboard, RACK-TLP, PRR) without changing TxSeg or SendQueue;
-// the engine calls the M2 hooks below, whose m2-found stubs keep M1
-// behaviour.
+// the engine calls the M2 hooks below (implemented by m2a-recovery).
 #pragma once
 
 #include <cstdint>
@@ -15,7 +14,10 @@
 #include <utility>
 
 #include "core/tcp/cc.hpp"
+#include "core/tcp/prr.hpp"
+#include "core/tcp/rack.hpp"
 #include "core/tcp/rtt.hpp"
+#include "core/tcp/sack_scoreboard.hpp"
 #include "core/tcp/send_queue.hpp"
 #include "utcp/config.hpp"
 #include "utcp/stats.hpp"
@@ -139,7 +141,7 @@ public:
   void on_transmit(RecoveryCtx& c, const TxSeg& seg, TxKind kind);
   // End of the engine's transmit(): schedules the PTO (M2a) when
   // `new_data_sent` (new data went out in this call, Linux tcp_write_xmit's
-  // sent_pkts > 0 and push_one != 2); M1 and the stub ignore the flag.
+  // sent_pkts > 0 and push_one != 2).
   void on_burst_end(RecoveryCtx& c, bool new_data_sent = false);
   // RTO expiry (§5.3): reneging check (a SACKed head clears every SACK mark,
   // counts TcpExtTCPSACKReneging, and makes rate samples invalid until
@@ -179,48 +181,50 @@ public:
   // next arming event.
   void on_xmit_timer(RecoveryCtx& c, XmitTimer kind);
 
-  // ---- M2 hooks (M2-DESIGN §1.11); the m2-found stubs keep M1 behaviour.
+  // ---- M2 hooks (M2-DESIGN §1.11).
 
   // tcp_cwnd_reduction (PRR, §1.8): process_ack's CC step calls it in CWR and
   // Recovery when the CC has no cong_control, with newly_acked_sacked =
   // AckOutcome::delivered, newly_lost = RateSample::losses and the AckFlag
   // bits; the REO timer with (1, newly_lost, 0). Writes cc.cwnd. Does nothing
-  // with recovery_reduction = rfc6675. Stub: nothing (M1 sets cwnd = ssthresh
-  // on entry).
+  // with recovery_reduction = rfc6675 (cwnd = ssthresh at entry).
   void cwnd_reduction(RecoveryCtx& c, std::uint32_t newly_acked_sacked, std::uint32_t newly_lost,
                       std::uint32_t flags);
   // tcp_may_raise_cwnd (§1.9): whether cong_avoid runs outside CWR and
   // Recovery. Linux: forward progress (SND.UNA advanced or new SACK) when
-  // reordering > dupthresh, else data cumulatively acked. Stub: acked_pkts > 0.
+  // reordering > dupthresh, else data cumulatively acked.
   [[nodiscard]] bool may_raise_cwnd(const RecoveryCtx& c, const AckOutcome& out) const;
   // RFC 6675 NextSeg rules 3 and 4 (§1.4): after the engine's new-data loop
   // stopped with no data or no window left and cwnd - pipe >= 1, the offset of
   // one more segment to send as TxKind::rexmit through the cwnd gate, or
-  // nothing. Stub: nothing.
+  // nothing. Only in Recovery with SACK and without RACK (the RFC 6675
+  // scoreboard's NextSeg).
   [[nodiscard]] std::optional<std::uint64_t> next_seg_extra(RecoveryCtx& c);
   // PTO expiry (§1.7): what to send as the probe. new_data only when the
   // receive window takes one more segment (tcp_snd_wnd_test); the engine
-  // still applies the pacing gate to it. Stub: none (M1 never arms a PTO).
+  // still applies the pacing gate to it. none while a probe is outstanding
+  // (TestFault::double_tlp ignores that) or outside Open and CWR.
   TlpAction on_pto(RecoveryCtx& c);
   // After on_pto: `action` as returned, `sent` whether the engine sent it
   // (the engine counts TcpExtTCPLossProbes for a sent probe). Arms the RTO as
   // tcp_rearm_rto after tcp_send_loss_probe: a full RTO from now after a sent
   // probe, the head's remaining time (rounded up to whole ms, at least 1 ms)
   // otherwise, plus the pacing delay truncated to whole ms; with nothing in
-  // flight, as after an ACK. The stub does this arming and nothing else.
+  // flight, as after an ACK. A sent probe sets tlp_high_seq.
   void on_tlp_sent(RecoveryCtx& c, TlpAction action, bool sent);
   // The lost segment `seg` may be resent past the cwnd gate (RFC 6675 §5
   // (4.3): the fast retransmit with recovery_reduction = rfc6675); the engine
-  // sends it as TxKind::fast_rexmit. Stub: M1's rule, `seg` is the head and
-  // fast_rexmit_pending().
+  // sends it as TxKind::fast_rexmit: `seg` is the head and
+  // fast_rexmit_pending(). TestFault::prr_skip_force also exempts the first
+  // retransmission of a PRR recovery.
   [[nodiscard]] bool exempt_from_cwnd(const RecoveryCtx& c, const TxSeg& seg) const;
   // The reordering degree in packets (tcpi_reordering, §1.9): starts at
-  // cfg.dupthresh. Stub: cfg.dupthresh.
+  // cfg.dupthresh.
   [[nodiscard]] std::uint32_t reordering(const TcpConfig& cfg) const;
-  // Reordering events detected (tcpi_reord_seen). Stub: 0.
+  // Reordering events detected (tcpi_reord_seen).
   [[nodiscard]] std::uint32_t reord_seen() const;
   // tlp_high_seq: SND.NXT (offset) when the outstanding probe was sent, or
-  // nothing (process_ack's ack_dsack_tlp test). Stub: nothing.
+  // nothing (process_ack's ack_dsack_tlp test).
   [[nodiscard]] std::optional<std::uint64_t> tlp_high_seq() const;
   // The test seam (RecoveryScript above); nullptr to remove.
   void set_script(RecoveryScript* script) noexcept { script_ = script; }
@@ -241,25 +245,91 @@ public:
   // Rate samples are invalid (reneging seen at RTO, until recovery ends).
   [[nodiscard]] bool sack_reneg() const;
 
+  // m2a internals, read by the unit tests (M2-DESIGN §1.3).
+  [[nodiscard]] const PrrState& prr() const { return prr_; }
+  [[nodiscard]] const RackState& rack() const { return rack_; }
+  [[nodiscard]] const SentFifo& sent_fifo() const { return fifo_; }
+  [[nodiscard]] const Rfc6675Scoreboard& scoreboard() const { return sb_; }
+
 private:
   void refresh(RecoveryCtx& c) const;  // the CcConn views recovery owns
   void set_state(RecoveryCtx& c, CaState s);
   void fastretrans_alert(RecoveryCtx& c, bool dupack, bool advanced, AckOutcome& out);
   void enter_recovery(RecoveryCtx& c);
+  void init_cwnd_reduction(RecoveryCtx& c);
+  void end_cwnd_reduction(RecoveryCtx& c);
+  [[nodiscard]] bool time_to_recover(const RecoveryCtx& c) const;
+  // tcp_identify_packet_loss: true if a retransmission was marked lost
+  // (FLAG_LOST_RETRANS).
+  bool identify_packet_loss(RecoveryCtx& c, bool advanced);
+  void newreno_mark_lost(RecoveryCtx& c, bool advanced);
+  // tcp_rack_mark_lost: true if it armed the REO timer.
+  bool rack_mark_lost(RecoveryCtx& c);
+  [[nodiscard]] Duration rack_reo_wnd_now(const RecoveryCtx& c) const;
   void try_to_open(RecoveryCtx& c);
+  void keep_open(RecoveryCtx& c);
   void mark_head_lost(RecoveryCtx& c);
   void reno_dupack(RecoveryCtx& c, AckOutcome& out);
-  void timer_after_ack(RecoveryCtx& c);
+  // Adaptive reordering (§1.9): tcp_check_sack_reordering with the lowest
+  // reordered offset `low` and the highest SACK `fack`; tcp_check_reno_reordering.
+  void check_sack_reordering(RecoveryCtx& c, std::uint64_t low, std::uint64_t fack);
+  void check_reno_reordering(RecoveryCtx& c, std::uint32_t addend);
+  // The per-ACK reordering checks of tcp_sacktag_write_queue and
+  // tcp_clean_rtx_queue, from what on_delivered collected.
+  void ack_reordering(RecoveryCtx& c, const AckInput& in, const AckOutcome& out);
+  // tcp_rack_update_reo_wnd (§1.6).
+  void update_reo_wnd(const RecoveryCtx& c);
+  // tcp_process_tlp_ack (§1.7).
+  void process_tlp_ack(RecoveryCtx& c, const AckInput& in, const AckOutcome& out);
+  // tcp_schedule_loss_probe (§1.7): arms the PTO and returns true, or false.
+  bool schedule_loss_probe(RecoveryCtx& c, bool advancing_rto);
+  // tcp_rearm_rto: the RTO from now, or the time left to the head's RTO while
+  // a REO or PTO timer is pending, plus the pacing delay; persist or none
+  // with nothing in flight (M1).
+  void rearm_rto(RecoveryCtx& c);
   [[nodiscard]] bool persist_wanted(const RecoveryCtx& c) const;
   void arm(XmitTimer kind, Time deadline);
+  // The RFC 6675 scoreboard rules apply (SACK on, rack_tlp off, §1.2).
+  [[nodiscard]] static bool uses_6675(const RecoveryCtx& c) { return c.sack_ok && !c.cfg.rack_tlp; }
+  [[nodiscard]] static bool uses_rack(const RecoveryCtx& c) { return c.sack_ok && c.cfg.rack_tlp; }
 
   CaState state_ = CaState::open;
   std::uint64_t recover_ = 0;  // Linux high_seq, as SendQueue::nxt_with_fin
   bool fast_rexmit_pending_ = false;
   bool sack_reneg_ = false;  // Linux is_sack_reneg
+  bool reo_armed_ = false;   // RACK armed the REO timer in this ACK (FLAG_SET_XMIT_TIMER cleared)
   XmitTimer timer_ = XmitTimer::none;
   Time deadline_ = Time::never();
   RecoveryScript* script_ = nullptr;  // test seam; null in production
+
+  PrrState prr_;           // §1.8
+  Rfc6675Scoreboard sb_;   // §1.4 (rfc)
+  RackState rack_;         // §1.6 (linux_compat)
+  SentFifo fifo_;          // §1.5 (linux_compat)
+
+  // Tail loss probe (§1.7): tlp_high_seq (SND.NXT with our FIN when the
+  // outstanding probe was sent) and tlp_retrans.
+  struct TlpState {
+    std::uint64_t high_seq = 0;
+    bool active = false;   // tlp_high_seq != 0
+    bool retrans = false;  // the probe resent the last segment
+  };
+  TlpState tlp_;
+  bool undo_marker_ = false;  // Linux undo_marker != 0 (only its tests, §1.10)
+
+  // Adaptive reordering (§1.9).
+  std::optional<std::uint32_t> reordering_;  // tp->reordering; nothing: cfg.dupthresh
+  std::uint32_t reord_seen_ = 0;             // tcpi_reord_seen
+  // tcp_highest_sack_seq: the highest end of a TxSeg SACKed (at most SND.UNA
+  // once nothing is SACKed); its value when the current ACK began (prior_fack).
+  std::uint64_t fack_ = 0, prior_fack_ = 0;
+  // Collected by on_delivered during one ACK: the lowest offset of a
+  // never-retransmitted TxSeg SACKed below fack (state->reord) and of one
+  // cumulatively acknowledged without a SACK (tcp_clean_rtx_queue's reord);
+  // without SACK, sacked_out before tcp_remove_reno_sacks.
+  static constexpr std::uint64_t no_reord = ~std::uint64_t{0};
+  std::uint64_t reord_sack_ = no_reord, reord_cum_ = no_reord;
+  std::optional<std::uint32_t> reno_sacked_prior_;
 };
 
 }  // namespace utcp

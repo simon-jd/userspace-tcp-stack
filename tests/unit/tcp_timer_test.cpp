@@ -40,6 +40,15 @@ using namespace utcp::test::tcpt;
 
 std::string name(ProfileId p) { return p == ProfileId::rfc ? "rfc" : "linux_compat"; }
 
+// The tests of the RTO itself turn the tail loss probe off: with rack_tlp a
+// probe (M2-DESIGN §1.7) goes out before the first RTO of a tail loss, and
+// the RTO is then timed from it. The probe's own timing is tested in
+// recovery_test.cpp and tests/sim/tcp_recovery_test.cpp.
+StackConfig no_tlp(StackConfig cfg) {
+  cfg.tcp.rack_tlp = false;
+  return cfg;
+}
+
 // Times of the log entries from `from` matching `pred`, relative to `t0`.
 template <class Pred>
 std::vector<Duration> times(const t::TcpHarness& h, Side from, Time t0, Pred pred) {
@@ -161,7 +170,7 @@ TEST(TcpTimer, NagleOnAndOff) {
 TEST(TcpTimer, RtoBackoffAndKarn) {
   for (const ProfileId profile : {ProfileId::rfc, ProfileId::linux_compat}) {
     SCOPED_TRACE(name(profile));
-    StackConfig ca = config(Side::a, profile), cb = config(Side::b, profile);
+    StackConfig ca = no_tlp(config(Side::a, profile)), cb = no_tlp(config(Side::b, profile));
     ca.tcp.timestamps = cb.tcp.timestamps = false;
     t::TcpHarness h(ca, cb);
     h.set_delay(Side::a, 10ms);
@@ -217,10 +226,58 @@ TEST(TcpTimer, RtoBackoffAndKarn) {
   }
 }
 
+// The same tail loss in linux_compat with its loss probe (M2-DESIGN §1.7):
+// srtt 20 ms, RTO 220 ms; one segment out, so the PTO is min(2 * 20 +
+// 200, the head's 220 ms left) = 220 ms and the probe resends the segment
+// at 220 ms; a sent probe re-arms a full RTO from now: the first RTO at
+// 440 ms, then backoff: 440 + 440 = 880 ms, which is delivered. Three
+// retransmissions (the probe counts, as Linux's __tcp_retransmit_skb), two
+// timeouts, the RTO backed off twice.
+TEST(TcpTimer, RtoBackoffAfterTheLossProbe) {
+  StackConfig ca = config(Side::a, ProfileId::linux_compat);
+  StackConfig cb = config(Side::b, ProfileId::linux_compat);
+  ASSERT_TRUE(ca.tcp.rack_tlp);
+  ca.tcp.timestamps = cb.tcp.timestamps = false;
+  t::TcpHarness h(ca, cb);
+  h.set_delay(Side::a, 10ms);
+  h.set_delay(Side::b, 10ms);
+  const auto p = open(h);
+  ASSERT_TRUE(p);
+  const Duration rto0 = h.a().tcp_info(p->client)->rto;
+  ASSERT_EQ(rto0, Duration{220ms});
+  int drops = 3;
+  h.set_hook([&](Side from, t::Bytes& d) {
+    const auto q = parse(d);
+    if (from == Side::a && q && is_data(q->v) && drops > 0) {
+      --drops;
+      return t::Verdict::drop;
+    }
+    return t::Verdict::deliver;
+  });
+  h.clear_log();
+  const Time t0 = h.now();
+  ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(1000)));
+  h.run_for(20s);
+  const auto tx = times(h, Side::a, t0, is_data);
+  ASSERT_EQ(tx.size(), 4u);
+  EXPECT_EQ(tx[0], Duration::zero());
+  EXPECT_EQ(tx[1], rto0);          // the probe, at the PTO
+  EXPECT_EQ(tx[2], 2 * rto0);      // the first RTO, timed from the probe
+  EXPECT_EQ(tx[3], 4 * rto0);      // the second, backed off
+  const auto i = h.a().tcp_info(p->client);
+  EXPECT_EQ(i->unacked, 0u);
+  EXPECT_EQ(i->srtt, 20ms);
+  EXPECT_EQ(i->rto, 4 * rto0);
+  EXPECT_EQ(i->total_retrans, 3u);
+  EXPECT_EQ(h.a().stats().TcpExtTCPLossProbes, 1u);
+  EXPECT_EQ(h.a().stats().TcpExtTCPTimeouts, 2u);
+  EXPECT_EQ(drain(h.b(), p->server), t::pattern(1000));
+}
+
 // §4.4 step 6: SND.NXT never moves back, so the ACK of the original flight,
 // delayed past an RTO, is in range and acknowledges everything.
 TEST(TcpTimer, AckOfOriginalFlightAcceptedAfterRto) {
-  t::TcpHarness h;
+  t::TcpHarness h(no_tlp(config(Side::a)), no_tlp(config(Side::b)));
   h.set_delay(Side::a, 10ms);
   h.set_delay(Side::b, 10ms);
   const auto p = open(h);
@@ -242,6 +299,57 @@ TEST(TcpTimer, AckOfOriginalFlightAcceptedAfterRto) {
   ASSERT_EQ(rexmit.size(), segs + 1);
   EXPECT_EQ(parse(rexmit.back()->bytes)->v.h.seq, parse(rexmit.front()->bytes)->v.h.seq);
   EXPECT_EQ(h.a().tcp_info(p->client)->ca_state, utcp::CaState::loss);
+  ASSERT_GT(h.held_count(), 0u);
+  holding = false;
+  h.release_all_held();
+  h.run_for(2s);
+  const auto i = h.a().tcp_info(p->client);
+  EXPECT_EQ(i->unacked, 0u);
+  EXPECT_EQ(i->ca_state, utcp::CaState::open);
+  EXPECT_EQ(h.a().stats().TcpExtTCPChallengeACK, 0u);
+  EXPECT_EQ(drain(h.b(), p->server), data);
+  h.a().debug_check();
+  h.b().debug_check();
+}
+
+// The same in linux_compat with its loss probe: with 7 segments out the PTO
+// is 2 * 20 + 2 = 42 ms and the probe resends the last segment; the RTO, a
+// full 220 ms from the probe, resends the head at 262 ms; the next RTO
+// (backed off, 702 ms) is after the 400 ms. The held ACKs then acknowledge
+// everything.
+TEST(TcpTimer, AckOfOriginalFlightAcceptedAfterProbeAndRto) {
+  const StackConfig ca = config(Side::a, ProfileId::linux_compat);
+  ASSERT_TRUE(ca.tcp.rack_tlp);
+  t::TcpHarness h(ca, config(Side::b, ProfileId::linux_compat));
+  h.set_delay(Side::a, 10ms);
+  h.set_delay(Side::b, 10ms);
+  const auto p = open(h);
+  ASSERT_TRUE(p);
+  bool holding = true;
+  h.set_hook([&](Side from, t::Bytes& d) {
+    const auto q = parse(d);
+    if (from == Side::b && q && is_pure_ack(q->v) && holding) {
+      return t::Verdict::hold;
+    }
+    return t::Verdict::deliver;
+  });
+  h.clear_log();
+  const Time t0 = h.now();
+  const t::Bytes data = t::pattern(10'000, 3);
+  ASSERT_TRUE(h.a().tcp_send(p->client, data));
+  const std::uint32_t segs = h.a().tcp_info(p->client)->unacked;
+  ASSERT_EQ(segs, 7u);
+  h.run_for(400ms);
+  const auto sent = find(h, Side::a, is_data);
+  const auto tx = times(h, Side::a, t0, is_data);
+  ASSERT_EQ(sent.size(), segs + 2);
+  EXPECT_EQ(tx[segs], 42ms);
+  EXPECT_EQ(parse(sent[segs]->bytes)->v.h.seq, parse(sent[segs - 1]->bytes)->v.h.seq);
+  EXPECT_EQ(tx[segs + 1], 262ms);
+  EXPECT_EQ(parse(sent.back()->bytes)->v.h.seq, parse(sent.front()->bytes)->v.h.seq);
+  EXPECT_EQ(h.a().tcp_info(p->client)->ca_state, utcp::CaState::loss);
+  EXPECT_EQ(h.a().stats().TcpExtTCPLossProbes, 1u);
+  EXPECT_EQ(h.a().stats().TcpExtTCPTimeouts, 1u);
   ASSERT_GT(h.held_count(), 0u);
   holding = false;
   h.release_all_held();
@@ -455,8 +563,8 @@ TEST(TcpTimer, SynAckRetriesFreeTheChild) {
 TEST(TcpTimer, DataRetryExhaustionSendsRst) {
   for (const ProfileId profile : {ProfileId::rfc, ProfileId::linux_compat}) {
     SCOPED_TRACE(name(profile));
-    const StackConfig ca = config(Side::a, profile);
-    t::TcpHarness h(ca, config(Side::b, profile));
+    const StackConfig ca = no_tlp(config(Side::a, profile));
+    t::TcpHarness h(ca, no_tlp(config(Side::b, profile)));
     const auto p = open(h);
     ASSERT_TRUE(p);
     h.set_hook([](Side from, t::Bytes&) {
@@ -491,6 +599,45 @@ TEST(TcpTimer, DataRetryExhaustionSendsRst) {
     EXPECT_EQ(h.a().take_error(p->client), Error::timed_out);
     EXPECT_EQ(h.a().stats().TcpExtTCPAbortOnTimeout, 1u);
   }
+}
+
+// The same limit in linux_compat with its loss probe: the probe at the PTO
+// (220 ms, one segment out) is not a retransmission for the limit (Linux
+// tcp_send_loss_probe uses __tcp_retransmit_skb, which does not set
+// retrans_stamp); the first RTO, a full 220 ms after it, is, and the abort
+// (1044.4 s) is measured from it.
+TEST(TcpTimer, DataRetryExhaustionAfterTheLossProbe) {
+  const StackConfig ca = config(Side::a, ProfileId::linux_compat);
+  ASSERT_TRUE(ca.tcp.rack_tlp);
+  t::TcpHarness h(ca, config(Side::b, ProfileId::linux_compat));
+  const auto p = open(h);
+  ASSERT_TRUE(p);
+  const Duration rto0 = h.a().tcp_info(p->client)->rto;
+  h.set_hook([](Side from, t::Bytes&) {
+    return from == Side::a ? t::Verdict::drop : t::Verdict::deliver;
+  });
+  h.clear_log();
+  const Time t0 = h.now();
+  ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(1000)));
+  h.run_for(1200s);
+  const auto tx = times(h, Side::a, t0, is_data);
+  const auto rst = times(h, Side::a, t0, is_rst);
+  ASSERT_GE(tx.size(), 4u);
+  ASSERT_EQ(rst.size(), 1u);
+  EXPECT_EQ(tx[1], rto0);      // the probe
+  EXPECT_EQ(tx[2], 2 * rto0);  // the first RTO retransmission
+  EXPECT_EQ(tx[3], 4 * rto0);
+  const Duration bound = utcp::retry_abort_time(ca.tcp.data_retries, ca.tcp.rto_min,
+                                                ca.tcp.rto_max);
+  const Duration abort = rst[0] - tx[2];
+  EXPECT_GE(abort, bound);
+  EXPECT_LT(tx.back() - tx[2], bound);
+  EXPECT_GT(abort, 1044s);
+  EXPECT_LT(abort, 1045s);
+  EXPECT_EQ(state(h.a(), p->client), TcpState::closed);
+  EXPECT_EQ(h.a().take_error(p->client), Error::timed_out);
+  EXPECT_EQ(h.a().stats().TcpExtTCPLossProbes, 1u);
+  EXPECT_EQ(h.a().stats().TcpExtTCPAbortOnTimeout, 1u);
 }
 
 // Linux tcp_ack_probe / tcp_send_probe0: the backoff that zero-window
@@ -660,6 +807,21 @@ public:
 
 // The stack sends data to a scripted peer (Scripted) with 1460-byte segments,
 // SACK on and no timestamps; tx and timer events are traced.
+// M1's recovery: RFC 6675 marking (three SACKed segments above), cwnd =
+// ssthresh on entry and the fast retransmission exempt from the cwnd gate,
+// i.e. rack_tlp off and recovery_reduction rfc6675 (M2-DESIGN §1.2). The
+// tests below that check the engine's handling of an M1-style recovery use
+// it: the scripted handshake's RTT is 0, so min_rtt is 0 and linux_compat's
+// RACK has a zero reorder window (the first SACK above a segment sent at the
+// same time marks it lost, as Linux would). It also has no loss probe: at
+// that RTT the real PTO is 2 ms, and a scripted xmit timer that hides it
+// lets it expire unseen.
+StackConfig m1_recovery(StackConfig cfg) {
+  cfg.tcp.rack_tlp = false;
+  cfg.tcp.recovery_reduction = utcp::RecoveryReduction::rfc6675;
+  return cfg;
+}
+
 struct Sender {
   static constexpr std::uint32_t mss = 1460;
   t::ScriptedRecovery script;
@@ -716,7 +878,7 @@ struct Sender {
 // exemption of the fast retransmission from the cwnd gate (not from the
 // pacing gate: Linux checks tcp_pacing_check before any retransmission).
 TEST(TcpTimer, PacedFastRetransmitWaitsForTheGateAndAdvancesIt) {
-  StackConfig cfg = config(Side::b);
+  StackConfig cfg = m1_recovery(config(Side::b));
   cfg.tcp.test_fixed_pacing_rate = 1'000'000;  // bytes/s: 1.46 ms per segment
   Sender x(cfg, false);
   ASSERT_TRUE(x.open(100));
@@ -765,7 +927,7 @@ TEST(TcpTimer, PacedFastRetransmitWaitsForTheGateAndAdvancesIt) {
 // as rexmit, not fast_rexmit); next_seg_extra names one more segment, sent
 // after the new data; on_burst_end learns whether new data went out.
 TEST(TcpTimer, ScriptedRecoveryDrivesTheRetransmissionHooks) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   x.script.exempt = [](const RecoveryCtx&, const utcp::TxSeg&) -> std::optional<bool> {
     return false;
   };
@@ -815,7 +977,7 @@ TEST(TcpTimer, ScriptedRecoveryDrivesTheRetransmissionHooks) {
 // A REO expiry (M2-DESIGN §1.6): recovery marks a segment lost, the engine
 // retransmits it and the xmit timer goes back to the RTO recovery reports.
 TEST(TcpTimer, ScriptedReoExpiryTransmitsAndRearmsTheRto) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   std::optional<Time> reo_at;
   x.script.timer = [&](const RecoveryCtx&) -> std::optional<std::pair<XmitTimer, Time>> {
     if (reo_at) {
@@ -872,7 +1034,7 @@ TEST(TcpTimer, ScriptedReoExpiryTransmitsAndRearmsTheRto) {
 // then a full RTO from now. A PTO that sends nothing (a probe outstanding)
 // leaves the head's remaining time.
 TEST(TcpTimer, ScriptedPtoSendsOneProbeAndRearmsTheRto) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   std::optional<Time> pto_at;
   TlpAction answer = TlpAction::none;
   x.script.timer = [&](const RecoveryCtx&) -> std::optional<std::pair<XmitTimer, Time>> {
@@ -1021,7 +1183,7 @@ TEST(TcpTimer, LossProbeRetransmissionIsNotARetransmissionInFlight) {
 // retransmission lost too, so the lost loop resends it in Loss instead of
 // waiting for a second, backed-off RTO.
 TEST(TcpTimer, RtoResendsASegmentWhoseExtraRetransmissionWasInFlight) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   bool armed = false;
   x.script.extra = [&](RecoveryCtx&) -> std::optional<std::optional<std::uint64_t>> {
     if (!armed) {
@@ -1060,7 +1222,7 @@ TEST(TcpTimer, RtoResendsASegmentWhoseExtraRetransmissionWasInFlight) {
 // Linux tcp_send_loss_probe probes with the last skb whatever its SACK
 // state; a SACKed last segment is resent and stays SACKed (not in flight).
 TEST(TcpTimer, LossProbeResendsASackedLastSegment) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   PtoScript pto;
   pto.attach(x.script);
   pto.answer = TlpAction::retransmit_last;
@@ -1214,7 +1376,7 @@ TEST(TcpTimer, PacedProbesFollowThePacingGateAndDelayTheRto) {
 // pacing_next like every data transmission, so the next lost segment waits
 // for it.
 TEST(TcpTimer, PacedRtoRetransmissionAdvancesPacingNext) {
-  StackConfig cfg = config(Side::b);
+  StackConfig cfg = m1_recovery(config(Side::b));
   cfg.tcp.test_fixed_pacing_rate = 1'000'000;  // bytes/s: 1.46 ms per segment
   Sender x(cfg, false);
   ASSERT_TRUE(x.open(30));
@@ -1241,7 +1403,7 @@ TEST(TcpTimer, PacedRtoRetransmissionAdvancesPacingNext) {
 // included; none for a retransmission with data in flight, none for a bare
 // FIN, and a bare FIN does not move lsndtime.
 TEST(TcpTimer, TxStartOnDataSentWithNothingInFlight) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   const std::string tx_start =
       "cc_event " + std::to_string(static_cast<int>(utcp::CaEvent::tx_start));
   ASSERT_TRUE(x.open(10));
@@ -1310,7 +1472,7 @@ struct ReoScript {
 // retransmits leaves cwnd_limited, max_packets_out and cwnd_usage_seq alone,
 // even with SND.UNA past cwnd_usage_seq.
 TEST(TcpTimer, RetransmissionOnlyPassDoesNotValidateCwnd) {
-  Sender x(config(Side::b));
+  Sender x(m1_recovery(config(Side::b)));
   ReoScript reo;
   reo.attach(x.script);
   std::vector<std::pair<bool, std::uint32_t>> seen;  // (cwnd_limited, max_packets_out)
@@ -1347,7 +1509,7 @@ TEST(TcpTimer, RetransmissionOnlyPassDoesNotValidateCwnd) {
 // size of new data (pacing_burst_segments: 10 MB/s gives 6 packets): five
 // adjacent lost segments go out together, one burst start.
 TEST(TcpTimer, PacedLostRunGoesOutAsOneBurst) {
-  StackConfig cfg = config(Side::b);
+  StackConfig cfg = m1_recovery(config(Side::b));
   cfg.tcp.test_fixed_pacing_rate = 10'000'000;
   Sender x(cfg);
   ReoScript reo;

@@ -52,6 +52,11 @@ TEST(TcpRenege, RtoFindsSackedHeadAndResends) {
     SCOPED_TRACE(name(profile));
     StackConfig cfg = config(Side::b, profile);
     cfg.trace_mask = utcp::trace_bit(utcp::TraceKind::tx);
+    // The scripted handshake's RTT is 0, so min_rtt is 0 and linux_compat's
+    // RACK has a zero reorder window: the first SACK would mark segment 1
+    // lost (as Linux would). RFC 6675 marking keeps the two SACKs below the
+    // loss threshold, which this test is about (M2-DESIGN §1.2).
+    cfg.tcp.rack_tlp = false;
     Scripted c(cfg);
     ASSERT_TRUE(c.accept());
     TxSink sink;

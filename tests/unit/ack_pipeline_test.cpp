@@ -218,13 +218,17 @@ TEST(AckPipeline, ScriptedSackSequence) {
   EXPECT_EQ(r.rec.state(), CaState::recovery);
   EXPECT_TRUE(r.q.find(2000)->lost);
   EXPECT_EQ(r.cc.ssthresh, 4u);  // FlightSize 8 / 2
-  EXPECT_EQ(r.cc.cwnd, 4u);
+  // PRR (M2-DESIGN §1.8): in_flight 8 - 3 - 1 = 4 = ssthresh, delta 0, and
+  // the forced sndcnt of 1 for the fast retransmission: cwnd 4 + 1.
+  EXPECT_EQ(r.cc.cwnd, 5u);
   EXPECT_EQ(r.algo.log,
             (std::vector<std::string>{"pkts_acked 0 disorder", "set_state recovery"}));
   r.algo.log.clear();
 
   // 4. The retransmitted segment is acknowledged: no seq_rtt (Karn), and no
-  // TSecr on this ACK. A partial ACK: the new head is lost.
+  // TSecr on this ACK. A partial ACK with SACK marks nothing by itself
+  // (M2-DESIGN §1.2), and RACK skips the retransmission acknowledged 80 ms
+  // after it was sent, below min_rtt 100 ms (ambiguous, tcp_rack_advance).
   r.send(2000, mss, TxKind::fast_rexmit);
   r.now = t0 + 200ms;
   r.backoff = 2;
@@ -235,7 +239,7 @@ TEST(AckPipeline, ScriptedSackSequence) {
   EXPECT_EQ(o.acked_pkts, 4u);
   EXPECT_EQ(o.delivered, 1u);  // 3000-6000 were delivered by SACK before
   EXPECT_EQ(r.backoff, 2u);
-  EXPECT_TRUE(r.q.find(6000)->lost);
+  EXPECT_FALSE(r.q.find(6000)->lost);
   EXPECT_EQ(r.algo.log, (std::vector<std::string>{"pkts_acked 4 recovery"}));  // no growth
   r.algo.log.clear();
 
@@ -437,9 +441,11 @@ TEST(AckPipeline, SackBlocksMustStartAboveTheNewSndUna) {
   EXPECT_FALSE(r.q.find(2000)->sacked);
   EXPECT_EQ(r.q.counters().sacked_out, 0u);
   EXPECT_EQ(r.rec.state(), CaState::open);
+  // tcp_set_xmit_timer: in Open with SACK the PTO (M2-DESIGN §1.7), 2 *
+  // srtt + 2 ms with two packets out; not the srtt/2 reneging timer.
   const auto timer = r.rec.xmit_timer(r.rctx());
-  EXPECT_EQ(timer.first, utcp::XmitTimer::rto);
-  EXPECT_EQ(timer.second, r.now + r.rtt.rto_backed_off(0));  // not the srtt/2 reneging timer
+  EXPECT_EQ(timer.first, utcp::XmitTimer::pto);
+  EXPECT_EQ(timer.second, r.now + 2 * r.rtt.srtt() + 2ms);
   // A block just above the new SND.UNA is valid.
   const std::vector<Range> ok{{3000, 4000}};
   EXPECT_EQ(r.ack(2000, ok, true).newly_sacked, 1u);

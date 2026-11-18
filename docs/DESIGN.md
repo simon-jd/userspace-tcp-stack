@@ -971,14 +971,80 @@ class LossRecovery {                                // M1: NewReno; M2a: RFC 667
 };
 ```
 
-M2a replaces the internals: an RFC 6675 scoreboard over `TxSeg.sacked/lost` (IsLost by DupThresh segments or
-(DupThresh−1)·SMSS bytes SACKed above, NextSeg rules 1-4 with rescue retransmission, pipe = `packets_in_flight`);
-RACK-TLP (RFC 8985) with the send-time FIFO, `reo_wnd = min(reo_wnd_mult · min_rtt/4, srtt)` where
-`reo_wnd_mult` grows on D-SACK and resets after 16 recoveries (RFC 8985 §6.2 step 4; Linux
-`tcp_rack_update_reo_wnd`), and reo_wnd = 0 while no reordering has been seen and the connection is in recovery or
-`sacked_out ≥ dupthresh` (`tcp_rack_reo_wnd`); TLP PTO per RFC 8985 §7.2; PRR (RFC 9937, SafeACK: +1 only when
-SND.UNA advanced and no new loss, as Linux `tcp_cwnd_reduction`) writes cwnd = in_flight + sndcnt, so the only
-send gate stays cwnd − in_flight. None of this changes `TxSeg`, `SendQueue` or the engine.
+M2a's internals (`src/core/tcp/recovery.cpp`, `sack_scoreboard.*`, `rack.*`, `prr.*`; M2-DESIGN §1.2-1.8). No rule
+keys on the profile name: SACK marking is RFC 6675 `IsLost` when `rack_tlp` is off and RACK when it is on;
+`recovery_reduction` picks the cwnd rule; without SACK both profiles run RFC 6582 (`tcp_newreno_mark_lost`: the
+head at `sacked_out ≥ reordering`, and on a partial ACK in Recovery). With SACK a partial ACK marks nothing by itself.
+
+- **RFC 6675 scoreboard** (`Rfc6675Scoreboard`). `TxSeg.sacked/lost` are the scoreboard and pipe is
+  `packets_in_flight`. After each ACK's tagging, `IsLost` (DupThresh SACKed segments, or more than
+  (DupThresh−1)·SMSS SACKed bytes, above a segment) marks the non-SACKed segments below the point where the count is
+  reached, walking down from the highest SACK to the prefix already marked. DupAcks: an ACK that SACKs new data
+  counts (after a cumulative ACK resets the count), outside recovery. Entry: DupAcks ≥ DupThresh or `IsLost(SND.UNA)`;
+  HighRxt = RescueRxt = the head's end; every retransmission in Recovery raises HighRxt, except the rescue, which
+  sets RescueRxt = `recover`. `next_seg_extra` gives NextSeg rule 3 (lowest unSACKed segment at or above HighRxt
+  below the highest SACK, no retransmission in flight) and rule 4 (the highest unSACKed segment, once per
+  recovery, while SND.UNA > RescueRxt). Rule 1 is the engine's lost loop, rule 2 its new-data loop. Lost
+  retransmissions are not detected; the RTO repairs them. An RTO in recovery leaves Loss only at `recover`.
+- **Send-time FIFO** (`SentFifo`). One entry per transmission (offset range, `tx_count`, time), appended by
+  `on_transmit`; a `TxSeg` belongs to the entry whose range holds its offset and whose `tx_count` matches, so split
+  tails and trimmed heads keep their place. Live: not SACKed and not lost-awaiting-retransmission. Entries of one
+  instant are sorted by offset and disjoint. Dead entries are popped at the front, filtered when an append leaves
+  more than 2·`packets_out` + 64, and the FIFO is rebuilt after a PMTU split.
+- **RACK** (`rack_advance`, `rack_detect_loss`). `on_delivered` advances RACK.xmit_ts/end/rtt for each newly SACKed
+  or cumulatively acknowledged segment, skipping a retransmission delivered within `min_rtt` of its last send and a
+  cumulatively acknowledged retransmission whose ACK echoes an older TSval. `reo_wnd` = 0 while no reordering was
+  seen and the state is Recovery/Loss or `sacked_out ≥ reordering`, else min(`min_rtt`/4 · steps, srtt). On a
+  dubious ACK with RACK advanced, the FIFO is walked while segments were sent before RACK.xmit_ts: remaining =
+  RACK.rtt + reo_wnd − (now − last_tx) ≤ 0 marks lost; otherwise the largest remaining arms the REO timer at now +
+  remaining + 2 ms, rounded up to whole ms, at most the RTO; that ACK then does not re-arm the RTO. Recovery entry is
+  `lost_out > 0`. A retransmission found lost in Loss enters Recovery (Linux `FLAG_LOST_RETRANS`). The REO expiry
+  re-runs detection and, if the flight changed outside Recovery, enters Recovery and runs `cwnd_reduction(1,
+  newly_lost, 0)`; then the RTO is re-armed for the head's remaining time and the engine retransmits. At RTO with
+  `rack_tlp` the head is always marked, another segment only if sent at least RACK.rtt ago.
+- **D-SACK reorder window** (Linux `tcp_rack_update_reo_wnd`). A valid D-SACK that is not a TLP's
+  (`ack_dsack_tlp`) sets `dsack_seen` once reordering has been seen. After the cumulative step of an ACK whose
+  delivered segments carried a rate snapshot: a `dsack_seen` whose snapshot is older than the last step's
+  `delivered` count is dropped (at most one step per delivered round); otherwise `reo_wnd_steps` + 1 (at most 255),
+  persist = 16; with no D-SACK pending and persist 0, steps return to 1. Every end of a Recovery or Loss counts
+  persist down by one (`tcp_try_undo_recovery` without undo).
+- **PRR** (`prr_cwnd`, Linux `tcp_cwnd_reduction`). Entry (`tcp_init_cwnd_reduction`) saves `prior_cwnd`, zeroes
+  `prr_delivered`/`prr_out` and takes ssthresh from the CC, cwnd untouched; the CC step of the same ACK (or the REO
+  timer) sets cwnd = in_flight + sndcnt (proportional part over `prior_cwnd` while in_flight > ssthresh, else
+  conservation with the SafeACK +1, capped at ssthresh − in_flight; at least 1 while `prr_out` is 0). `prr_out`
+  counts every data segment sent in CWR or Recovery. No retransmission is exempt from the cwnd gate. With
+  `recovery_reduction = rfc6675` cwnd = ssthresh at entry and the fast retransmission is exempt (RFC 6675 §5
+  (4.2), (4.3)). Exit sets cwnd = ssthresh (`tcp_end_cwnd_reduction`, skipped when the CC has `cong_control`).
+- **Tail loss probe** (Linux `tcp_schedule_loss_probe`, `tcp_send_loss_probe`, `tcp_process_tlp_ack`; with
+  `rack_tlp` and SACK). The PTO is scheduled in Open or CWR with packets out: at the end of a `transmit()` call
+  that sent new data, capped at the head's remaining RTO time, and by an ACK with `FLAG_SET_XMIT_TIMER`, capped at
+  a full RTO; PTO = 2·srtt + 2 ms (+ `rto_min` instead of 2 ms with one packet out), whole ms rounded up, 1 s
+  without an RTT sample, plus the pacing delay. On expiry: nothing while a probe is outstanding (`tlp_high_seq`)
+  or outside Open/CWR; new data if the receive window takes the next segment (sent past cwnd by one, pacing-gated);
+  else the last segment, unless it starts beyond a shrunk window (`__tcp_retransmit_skb`). A sent probe sets
+  `tlp_high_seq` = SND.NXT and the RTO to a full RTO from now; otherwise the RTO gets the head's remaining time.
+  Once SND.UNA reaches `tlp_high_seq`: a new-data probe, a D-SACK of the probe or a pure duplicate ACK clear it;
+  an ACK above it after a resent probe means the probe repaired a loss: CWR entered and left at once (cwnd =
+  ssthresh from the CC), `TCPLossProbeRecovery`. Recovery entry and the RTO clear it. Deviation: a PTO left
+  pending into Recovery or Loss sends nothing (Linux would probe).
+- **Adaptive reordering** (Linux `tcp_check_sack_reordering`, `tcp_check_reno_reordering`). Per ACK, the lowest
+  start of a never-retransmitted segment SACKed below the highest SACK (or a D-SACKed retransmission already
+  SACKed), and of one cumulatively acknowledged below the highest SACK before the ACK, is compared with the
+  highest SACK (`fack`, SND.UNA once nothing is SACKed): `reord_seen` + 1, `TCPSACKReorder`, and if `fack − low >
+  reordering · MSS`, reordering = min(⌈(fack − low) / MSS⌉, `max_reordering`). Without SACK, a duplicate ACK
+  beyond `packets_out` (`tcp_limit_reno_sacked`) sets reordering = `packets_out` + acked, `TCPRenoReorder`. With
+  `adaptive_reordering` off (rfc) events are counted and reordering stays DupThresh. Reordering feeds RACK's
+  `sacked_out ≥ reordering` test, `tcp_newreno_mark_lost` and `may_raise_cwnd` (any forward progress when
+  reordering > DupThresh, else cumulatively acked data); an RTO in Open or Disorder with `sacked_out ≥ DupThresh`
+  sets it back to min(reordering, DupThresh).
+- **Timers** (M2-DESIGN §1.7). `tcp_rearm_rto`: a full RTO, or the head's remaining time while REO or PTO is
+  pending, plus the pacing delay in whole ms. An ACK re-arms (PTO, else RTO) only with `FLAG_SET_XMIT_TIMER`: a
+  segment cumulatively acknowledged, or a SACK RTT sample older than the head's last transmission; not when RACK
+  armed the REO timer. New data re-arms only if nothing was out before or a PTO is pending; a head retransmission
+  re-arms a full RTO unless REO is pending; other retransmissions leave the timer.
+- **Test faults.** `prr_skip_force`: PRR counts the first retransmission of a recovery as sent and gives it no
+  forced slot, and it bypasses the cwnd gate (so it goes out past cwnd). `double_tlp`: the PTO expiry ignores
+  `tlp_high_seq`.
 
 ### 5.2 Congestion-control interface
 
@@ -1033,18 +1099,18 @@ Enough to move 1 GB under netem loss, with the interface above in place:
 - `NewReno` CC: RFC 5681 slow start (`cwnd += acked`, capped at ssthresh, Linux `tcp_slow_start`), congestion
   avoidance with `cwnd_cnt` (`tcp_cong_avoid_ai`), growth only when cwnd-limited, ssthresh = max(FlightSize/2, 2)
   (RFC 5681 eq. 4; Linux reno uses cwnd/2).
-- `LossRecovery` M1: RFC 6582 NewReno. Open → Disorder on the first dupack or SACK; Recovery when dupacks (or
-  SACKed segments above SND.UNA) reach `dupthresh`: `recover = SND.NXT`, ssthresh from the CC, cwnd = ssthresh,
-  the SND.UNA segment marked lost and retransmitted (`TxKind::fast_rexmit`). In-flight uses the Linux formula,
-  so transmission resumes once enough dupacks/SACKs have drained the pipe (RFC 6675-like pacing of the
-  recovery, no cwnd inflation). Each partial ACK marks the new SND.UNA segment lost (RFC 6582 §3.2 step 5).
-  A full ACK returns to Open. RTO (`on_rto`, Linux `tcp_enter_loss`/`tcp_timeout_mark_lost`): a SACKed head means
-  the receiver reneged, so all SACK marks are cleared, `TCPSACKReneging` counted and rate samples invalid until
-  recovery ends; then every non-SACKed segment is marked lost (M2a: RFC 8985 §6.3), so the head is always resent
-  (RFC 2018 §8). ssthresh comes from the CC (saving prior_ssthresh/prior_cwnd) only if ca_state ≤ disorder, SND.UNA
-  ≥ `recover`, or in Loss with no earlier RTO since SND.UNA advanced; a repeated RTO keeps it (RFC 5681 §3.1). cwnd
-  = 1, Loss, resend in order under slow start, exit when SND.UNA passes `recover`. An ACK that stops at a SACKed
-  segment re-arms the RTO at max(srtt/2, 10 ms) (`tcp_check_sack_reneging`).
+- `LossRecovery`: M1 shipped RFC 6582 NewReno (fixed dupthresh, cwnd = ssthresh on entry, a partial ACK marking
+  the new head lost); M2a replaces it with §5.1's internals. Unchanged from M1: Open → Disorder on the first dupack
+  or SACK; `recover = SND.NXT` on entry; the Linux in-flight formula;
+  a full ACK returns to Open. RTO (`on_rto`, Linux `tcp_enter_loss`/`tcp_timeout_mark_lost`): a SACKed head means
+  the receiver reneged, so all SACK marks are cleared, `TCPSACKReneging` counted, rate samples invalid until
+  recovery ends, and every segment is marked lost; otherwise every non-SACKed segment is marked lost without
+  `rack_tlp`, and with it the head plus the segments sent at least RACK.rtt ago (RFC 8985 §6.3 with Linux's reo_wnd
+  of 0), so the head is always resent (RFC 2018 §8). ssthresh comes from the CC (saving prior_ssthresh/prior_cwnd)
+  only if ca_state ≤ disorder, SND.UNA ≥ `recover`, or in Loss with no earlier RTO since SND.UNA advanced; a
+  repeated RTO keeps it (RFC 5681 §3.1). cwnd = in_flight + 1, Loss, resend in order, exit when SND.UNA reaches
+  `recover`. An ACK that stops at a SACKed segment re-arms the RTO at max(srtt/2, 10 ms)
+  (`tcp_check_sack_reneging`).
 - RFC 5681 §4.1 / Linux idle restart; IW after SYN loss per `iw_after_syn_loss`; RFC 3042 limited transmit falls
   out of the in-flight formula.
 - Rate-state snapshots in every `TxSeg`; `delivered` counted. Rate samples are computed from M2b.

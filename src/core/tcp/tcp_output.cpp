@@ -415,8 +415,7 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     // 1. Segments marked lost (RFC 6582, RFC 5681 §3.2; Linux
     // tcp_xmit_retransmit_queue): each burst through the pacing gate, each
     // segment through the cwnd gate unless recovery exempts it (RFC 6675 §5
-    // (4.3), the fast retransmit with recovery_reduction = rfc6675; M1's rule
-    // in the stub).
+    // (4.3), the fast retransmit with recovery_reduction = rfc6675).
     // The walk stops after the last lost segment (lost_out counts them), so
     // a long queue with nothing lost costs nothing per call.
     std::uint32_t lost_seen = 0;
@@ -552,7 +551,7 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     // 4. RFC 6675 NextSeg rules 3 and 4 (M2-DESIGN §1.4): new data stopped
     // because none is left or the window is closed, not for the cwnd, the
     // pacing gate or transmit space; recovery may name more segments to
-    // resend, each through the pacing and cwnd gates. The stub names none.
+    // resend, each through the pacing and cwnd gates (RFC 6675 loss detection only).
     if (!blocked && !paced_out && !cwnd_limited &&
         (rwnd_limited || (t.sndq.nxt() == t.sndq.end() && (!t.fin_queued || t.sndq.fin_sent())))) {
       for (std::size_t n = t.sndq.segs().size(); n > 0; --n) {
@@ -564,6 +563,14 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         const std::optional<std::uint64_t> off = t.recovery.next_seg_extra(rc);
         const TxSeg* s = off ? t.sndq.find(*off) : nullptr;
         if (s == nullptr || s->sacked) {
+          break;
+        }
+        // retransmit_seg cuts a segment longer than the current MSS; the tail
+        // of a segment not marked lost stays in flight, so the cut adds a
+        // packet to in_flight besides the retransmission.
+        const std::uint32_t need = s->len > mss && !s->lost ? 2u : 1u;
+        if (packets_in_flight(t.sndq.counters()) + need > cc.cwnd) {
+          cwnd_limited = true;
           break;
         }
         if (t.pacing_gated(pacing, now, cfg_.test_fault)) {
