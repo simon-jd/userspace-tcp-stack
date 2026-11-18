@@ -1062,11 +1062,25 @@ prior snapshot, while `is_sack_reneg`, or when interval < min_rtt. `RateState::a
 marker (`delivered + in_flight`, or 1), cleared once `delivered` passes it; `tcp_send` sets it
 (`tcp_rate_check_app_limited`) when less than one MSS is unsent, no packet of the connection waits in the stack
 transmit queue (`StackCore::queued_for(slot)`, counted from `send_ipv4`'s owner slot), in flight < cwnd and
-lost_out ≤ retrans_out.
+lost_out ≤ retrans_out. A new connection starts with the marker `rate_app_limited_initial` (Linux
+`tcp_init_sock`: `tp->app_limited = ~0U`, a bubble until the first ACK): the initial window's segments are
+app-limited and the first `tcp_rate_gen` clears the marker (Linux's `after(delivered, ~0U)` holds there).
+
+Each sample also carries `rs.rtt` = the ACK's ca_rtt (`tcp_ack_update_rtt`; −1 without one) and
+`rs.is_ack_delayed` (`FLAG_ACK_MAYBE_DELAYED`), valid or not. A valid sample updates the record kept for
+`tcpi_delivery_rate` (`tcp_rate_gen`, Linux 7.0 `tcp_input.c:1791-1797`) if it is not app-limited, or if its
+rate is at least the recorded one (`delivered · rate_interval_us ≥ rate_delivered · interval_us`, whole
+microseconds as Linux keeps them); invalid samples leave the record alone. `TcpInfo::delivery_rate` =
+`rate_delivered · mss_cache · 10^6 / rate_interval_us` (`tcp_compute_delivery_rate`, 0 without a record) and
+`TcpInfo::app_limited` is the record's flag (`tcpi_delivery_rate_app_limited`, true until the first sample as
+Linux sets it), not the marker above.
 
 ```cpp
 struct RateSample { std::uint64_t prior_delivered, delivered; Duration interval, rtt; bool valid;
                     std::uint32_t acked_sacked, losses, prior_in_flight; bool is_app_limited, is_retrans, is_ack_delayed; };
+struct RateState { /* ... */ std::uint64_t app_limited = rate_app_limited_initial;
+                   std::uint64_t rate_delivered = 0; Duration rate_interval{0}; bool rate_app_limited = true; };
+[[nodiscard]] std::uint64_t rate_delivery_rate(const RateState& rs, std::uint32_t mss);  // tcpi_delivery_rate
 ```
 
 ### 5.5 Pacing
@@ -1080,6 +1094,33 @@ burst of `len` payload bytes, with `len_ns = len·10^9/rate`: `pacing_next = max
 min(len_ns/2, max(0, now − pacing_next))` (Linux `tcp_update_skb_after_send`): lateness is credited up to half of
 this burst's own interval. The first 10 data segments are not paced (`data_segs_out ≥ 10`). A closed gate arms
 the `pace` timer at `pacing_next`, which reaches the host through `next_deadline()`.
+
+- **Quantum.** `rate >> 10` bytes is about 0.98 ms of data; the RTT term `gso_max_size >> (min_rtt_us >> 9)` is
+  zero from min_rtt 8.7 ms (65215 >> 17), under one packet above about 3 ms, and approaches `gso_max_size` as
+  min_rtt goes to 0. At 100 Mbit/s a burst is 12 207 bytes = 8 packets of 1448 (0.93 ms); at 10 Mbit/s 1220
+  bytes, so the floor of 2 packets (2.3 ms); at 50 Mbit/s and 20 ms 4 packets; on the M1 testbed without delay
+  (min_rtt about 0.1 ms) 45 packets.
+- **What is gated.** New data, each burst of the lost loop (a run of adjacent lost segments up to the burst size,
+  as Linux checks `tcp_pacing_check` once per retransmission-queue skb, `tcp_xmit_retransmit_queue`), RFC 6675
+  NextSeg rules 3-4 and a new-data TLP (which goes through `tcp_write_xmit`; a gated probe sends nothing and the
+  pace timer sends the data later as ordinary data, `tcp_send_loss_probe` → `rearm_timer`). Not gated, as Linux
+  sends them from the timer without the check: the RTO's head retransmission and a TLP that resends the last
+  segment. Every data transmission while pacing applies moves `pacing_next` by its bytes, gated or not (Linux
+  `__tcp_transmit_skb` → `tcp_update_skb_after_send`).
+- **Units.** `test_fixed_pacing_rate` and `pacing_rate` are payload bytes per second (Linux paces `skb->len`):
+  `--set test_fixed_pacing_rate=50Mbit` gives 6 250 000 and about 50 Mbit/s of goodput.
+- **`gso_max_size`.** Linux TCP always has GSO: `sk_setup_caps` adds `NETIF_F_GSO` for TCP sockets whatever the
+  device offers, so `sk_gso_max_size = gso_ipv4_max_size − (MAX_TCP_HEADER + 1)` (`sk_dst_gso_max_size`,
+  `net/core/sock.c`) even with tso and gso off on the sender's interface. With them off the skb is segmented in
+  software on transmit and its packets leave back to back, so a paced Linux sender's bursts are the same
+  `tcp_tso_autosize` sizes as the stack's. `MAX_TCP_HEADER = L1_CACHE_ALIGN(128 + MAX_HEADER)` = 320 on the
+  server: `CONFIG_HYPERV_NET=m` does not define `CONFIG_HYPERV_NET`, `CONFIG_WLAN` and `CONFIG_MAC80211_MESH` give
+  `LL_MAX_HEADER` 128, the IP tunnel modules add 48 (`include/linux/netdevice.h`), 304 rounded to 64-byte
+  lines. The testbeds' veths report `gso_ipv4_max_size` 65536, so 65215, the default.
+- **Tests.** `tx_policy_test` (quantum, the M2 design §4.1 example, credit cap, which transmissions the gate
+  holds), `tests/sim/tcp_pacing_test.cpp` (an EDT replay of every paced burst of a `Pacing::always` transfer and a
+  fixed 50 Mbit/s rate within 1 % over 10 s on a 100 Mbit/s, 20 ms path) and `tests/interop/m2_pacing.sh` (the
+  same rate for 20 s on the real backend to a Linux receiver, §8.3).
 
 ## 6. Timers
 
@@ -1239,6 +1280,15 @@ tens of microseconds, small against the 1 ms quantum. The loop records lateness 
 log2 histogram reported by `utcp-bulk`, so M2 can state pacing accuracy. An optional `--spin-us N` busy-polls the
 last N µs before a deadline; it is off by default and its CPU cost is reported when used. Lateness is absorbed by
 the credit rule of §5.5.
+
+Measured (m2b-rate-pacing at 76f4e3f, 2026-11-18, `tests/interop/m2_pacing.sh --cpus 12-15 --seconds 20 --runs 3`, M1
+testbed with netem delay 10 ms each way, `--set test_fixed_pacing_rate=50Mbit`, gcc-release, no `--spin-us`):
+the Linux receiver's goodput was 49.886, 49.883 and 49.876 Mbit/s (−0.23 to −0.25 %, the handshake and first
+RTTs inside the receiver's 20 s); bursts of 4 packets; loop lateness p50 4-8 µs, p99 16-131 µs, max 1.9-3.4 ms
+(log2 bucket bounds); the stack trace's EDT replay found no burst before its modelled departure, and the gate's
+burst starts came 2.4-4.9 µs (p50) and 9-113 µs (p99) after it, at most 0.86 ms. Other tenants' unpinned
+processes ran on CPUs 12-15 (2-12 % busy per CPU); the run with the highest p99 had the most of it. Without
+the delay (min_rtt ~0.1 ms, bursts of 45 packets) one run gave 50.008 Mbit/s.
 
 ### 8.4 Later backends
 
