@@ -1,15 +1,24 @@
 #include "core/tcp/rate.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include "core/tcp/send_queue.hpp"
 
 namespace utcp {
 namespace {
 
+__extension__ using U128 = unsigned __int128;
+
 // tcp_skb_sent_after: sent later, or at the same time with a higher end.
 constexpr bool sent_after(Time t1, Time t2, std::uint64_t end1, std::uint64_t end2) noexcept {
   return t1 > t2 || (t1 == t2 && end1 > end2);
+}
+
+// Linux keeps rate intervals in whole microseconds (tcp_stamp_us_delta,
+// tp->rate_interval_us); the record and tcpi_delivery_rate use them so.
+constexpr std::uint64_t whole_us(Duration d) noexcept {
+  return d.count() > 0 ? static_cast<std::uint64_t>(d.count()) / 1000 : 0;
 }
 
 }  // namespace
@@ -49,8 +58,11 @@ void rate_on_delivered(RateState& rs, RateAck& ack, const TxSeg& seg, Time now) 
 RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacked,
                     std::uint32_t lost, std::uint32_t prior_in_flight, bool is_sack_reneg,
                     Duration min_rtt, Duration ca_rtt, bool maybe_delayed, Time now) {
-  // Clear the app-limited marker once the bubble is delivered.
-  if (rs.app_limited != 0 && rs.delivered > rs.app_limited) {
+  // Clear the app-limited marker once the bubble is delivered. The initial
+  // marker clears here at once (Linux: after(delivered, ~0U) for any
+  // delivered below 2^31).
+  if (rs.app_limited != 0 &&
+      (rs.app_limited == rate_app_limited_initial || rs.delivered > rs.app_limited)) {
     rs.app_limited = 0;
   }
   if (acked_sacked != 0) {
@@ -82,14 +94,30 @@ RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacke
     return s;
   }
   s.valid = true;
+  // The record kept for tcpi_delivery_rate (tcp_rate_gen, Linux 7.0
+  // tcp_input.c:1791-1797): the last sample that is not app-limited, or an
+  // app-limited one whose rate is at least the recorded one, compared by
+  // cross-multiplication (delivered / interval >= rate_delivered /
+  // rate_interval) in whole microseconds as Linux does.
+  if (!s.is_app_limited ||
+      U128{s.delivered} * whole_us(rs.rate_interval) >= U128{rs.rate_delivered} * whole_us(s.interval)) {
+    rs.rate_delivered = s.delivered;
+    rs.rate_interval = s.interval;
+    rs.rate_app_limited = s.is_app_limited;
+  }
   return s;
 }
 
 std::uint64_t rate_delivery_rate(const RateState& rs, std::uint32_t mss) {
-  // m2b-rate-pacing: tcp_compute_delivery_rate from the record.
-  static_cast<void>(rs);
-  static_cast<void>(mss);
-  return 0;
+  // tcp_compute_delivery_rate (Linux 7.0 tcp.c:396): rate_delivered * mss *
+  // USEC_PER_SEC / rate_interval_us, 0 without a record.
+  const std::uint64_t us = whole_us(rs.rate_interval);
+  if (rs.rate_delivered == 0 || us == 0) {
+    return 0;
+  }
+  const U128 r = U128{rs.rate_delivered} * mss * 1'000'000 / us;
+  return r > std::numeric_limits<std::uint64_t>::max() ? std::numeric_limits<std::uint64_t>::max()
+                                                       : static_cast<std::uint64_t>(r);
 }
 
 void rate_check_app_limited(RateState& rs, std::uint64_t unsent_bytes, std::uint32_t mss,
