@@ -2,7 +2,8 @@
 //
 // Options are long only: `--name VALUE`, `--name=VALUE`, flags `--name`.
 // `--help` and `-h` are always accepted. `--` ends the options; later words
-// are positionals. A repeated option keeps its last value. Errors are
+// are positionals. A repeated option keeps its last value for get(); all()
+// returns every value in order (`--set A=1 --set B=2`). Errors are
 // messages for the user, e.g. "unknown option --foo".
 //
 // The value parsers below take the whole string (no leading or trailing
@@ -35,6 +36,8 @@ public:
   [[nodiscard]] bool flag(std::string_view name) const { return given(name); }
   // Option value (the last one given), else its default, else nullopt.
   [[nodiscard]] std::optional<std::string> get(std::string_view name) const;
+  // Every value given for the option, in command-line order (no default).
+  [[nodiscard]] std::vector<std::string> all(std::string_view name) const;
   // Positionals in order.
   [[nodiscard]] const std::vector<std::string>& positionals() const { return positionals_; }
 
@@ -43,6 +46,7 @@ private:
   bool help_ = false;
   std::map<std::string, std::string, std::less<>> values_;    // given options and flags ("")
   std::map<std::string, std::string, std::less<>> defaults_;  // option defaults
+  std::map<std::string, std::vector<std::string>, std::less<>> every_;  // every value given
   std::vector<std::string> positionals_;
 };
 

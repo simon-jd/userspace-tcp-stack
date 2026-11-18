@@ -35,3 +35,9 @@ add_test(NAME interop.m1_pcap_summary_check
 # total_retrans, a window probe does not (docs/INTEROP.md).
 add_test(NAME interop.m1_dsack_check
          COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/m1_dsack_check.py)
+
+# The M2 testbed's analysis, run plans, parallel-mode comparison and plot
+# selection (tools/m2/analyze.py, matrix.py, plot.py) on synthetic inputs
+# with known answers (DESIGN §14).
+add_test(NAME interop.m2_analyze_check
+         COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/m2/test_analyze.py)

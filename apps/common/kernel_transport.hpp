@@ -42,6 +42,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "common/cli.hpp"
 #include "common/transport.hpp"
@@ -169,14 +170,29 @@ private:
 //
 // Declares --backend kernel|utcp (default utcp), --profile rfc|linux
 // (default linux; utcp only) and the utcp backend's options: --tun IFNAME
-// (utcp0), --addr IP (198.18.0.2), --mtu N (1500), --pcap FILE, --spin-us N
-// (0), --seed N (default: getrandom).
+// (utcp0), --addr IP (198.18.0.2), --mtu N (1500), --pcap FILE, --stats
+// FILE, --spin-us N (0), --seed N (default: getrandom), and (DESIGN §14.6):
+//   --set FIELD=VALUE  repeatable: set_config_field on the profile's
+//                      TcpConfig, in command-line order (rates like 50Mbit,
+//                      sizes like 64Mi); check_tcp_config runs after the last
+//   --trace FILE       the stack's event trace in memory (TraceRecorder),
+//                      written to FILE as JSONL when the program ends
+//   --trace-kinds LIST comma-separated TraceKind names, plus "rexmit" = tx
+//                      events of retransmissions only (default
+//                      cwnd,recovery,rto,rexmit; "tx" keeps every tx event)
+// --set and --trace are errors with --backend kernel.
 void add_backend_options(CliParser& p);
 
 struct BackendSelection {
   bool kernel = false;
   UtcpTransportOptions utcp;  // filled for the utcp backend
+  // --set FIELD=VALUE in command-line order (applied to utcp.stack.tcp).
+  std::vector<std::pair<std::string, std::string>> sets;
+  std::string trace_file;               // --trace; empty: no trace
+  bool trace_rexmit_only = true;        // "rexmit" without "tx" in --trace-kinds
 };
+// The default of --trace-kinds (M2 design §5.6: no pace-timer events).
+inline constexpr std::string_view default_trace_kinds = "cwnd,recovery,rto,rexmit";
 [[nodiscard]] std::expected<BackendSelection, std::string> parse_backend_options(const CliArgs& a);
 
 // KernelTransport or make_utcp_transport(), as selected.

@@ -3,16 +3,27 @@
 
 #include <gtest/gtest.h>
 
+#include <linux/tcp.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+
 #include <cstdint>
 #include <expected>
+#include <array>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "common/fake_transport.hpp"
+#include "common/utcp_transport.hpp"
+#include "utcp/config.hpp"
 
 namespace utcp::app::bulk {
 namespace {
@@ -197,8 +208,11 @@ TEST(BulkJsonl, SamplesAndSummaryHaveTheFields) {
   for (std::string l; std::getline(in, l);) {
     lines.push_back(l);
   }
-  ASSERT_GE(lines.size(), 10u);
-  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+  ASSERT_GE(lines.size(), 11u);
+  // The start line first: the connection's establishment on the transport's
+  // clock (the fake starts at 0 and connects without delay).
+  EXPECT_EQ(lines[0], "{\"t\":0,\"ev\":\"start\",\"role\":\"sender\"}");
+  for (std::size_t i = 1; i + 1 < lines.size(); ++i) {
     for (const char* key : {"\"t\":", "\"ev\":\"sample\"", "\"cc_name\":", "\"srtt_us\":", "\"cwnd\":",
                             "\"bytes_acked\":", "\"busy_time_us\":", "\"rwnd_limited_us\":",
                             "\"sndbuf_limited_us\":", "\"notsent_bytes\":", "\"last_ack_recv_us\":",
@@ -338,6 +352,252 @@ TEST(BulkOptions, Parse) {
   EXPECT_FALSE(parse({"--connect", "1.2.3.4:5", "--send", "--bytes", "1", "--duration", "1"}));
   EXPECT_FALSE(parse({"--listen", "1", "--recv-pause", "200"}));
   EXPECT_FALSE(parse({"--listen", "1", "--cc", "vegas"}));
+}
+
+// main_ writes the clock line first (DESIGN §14: ping -D and tcpdump times
+// convert to the samples' clock with it), also when the connection fails.
+TEST(BulkMain, JsonlStartsWithTheClockPair) {
+  const std::string path = testing::TempDir() + "/bulk_test_clock.jsonl";
+  const TransportFactory make = [](const BackendSelection&)
+      -> std::expected<std::unique_ptr<Transport>, std::string> {
+    return std::make_unique<FakeTransport>();
+  };
+  timespec before{};
+  clock_gettime(CLOCK_REALTIME, &before);
+  const char* const argv[] = {"utcp-bulk", "--connect", "10.0.0.1:9", "--send", "--bytes", "10",
+                              "--jsonl", path.c_str()};
+  EXPECT_EQ(main_(static_cast<int>(std::size(argv)), argv, make), 1);
+  std::ifstream in(path);
+  std::string first;
+  ASSERT_TRUE(std::getline(in, first));
+  ASSERT_TRUE(first.starts_with("{\"ev\":\"clock\",\"monotonic_ns\":")) << first;
+  const auto rt_at = first.find("\"realtime_ns\":");
+  ASSERT_NE(rt_at, std::string::npos) << first;
+  const std::int64_t rt = std::stoll(first.substr(rt_at + 14));
+  const std::int64_t before_ns = std::int64_t{before.tv_sec} * 1'000'000'000 + before.tv_nsec;
+  EXPECT_GE(rt, before_ns);
+  EXPECT_LT(rt, before_ns + 60'000'000'000);
+  const std::int64_t mono = std::stoll(first.substr(first.find("\"monotonic_ns\":") + 15));
+  EXPECT_GT(mono, 0);
+}
+
+// --- The utcp backend's --set, --trace and --stats (DESIGN §14.6).
+
+std::expected<BackendSelection, std::string> parse_backend(std::vector<std::string_view> words) {
+  CliParser cli("utcp-bulk", "");
+  add_options(cli);
+  add_backend_options(cli);
+  auto a = cli.parse(words);
+  if (!a) return std::unexpected(a.error());
+  return parse_backend_options(*a);
+}
+
+std::vector<std::string> lines_of(const std::string& path) {
+  std::ifstream in(path);
+  std::vector<std::string> out;
+  for (std::string l; std::getline(in, l);) {
+    out.push_back(l);
+  }
+  return out;
+}
+
+TEST(BulkBackendOptions, SetAppliesFieldsInOrder) {
+  auto b = parse_backend({"--connect", "1.2.3.4:5", "--set", "snd_buf_max=64Mi", "--set=rcv_buf_max=32Mi",
+                          "--set", "test_fixed_pacing_rate=50Mbit", "--set", "initial_cwnd=4",
+                          "--set", "initial_cwnd=10"});
+  ASSERT_TRUE(b) << b.error();
+  const TcpConfig& c = b->utcp.stack.tcp;
+  EXPECT_EQ(c.snd_buf_max, 64u << 20);
+  EXPECT_EQ(c.rcv_buf_max, 32u << 20);
+  ASSERT_TRUE(c.test_fixed_pacing_rate.has_value());
+  EXPECT_EQ(*c.test_fixed_pacing_rate, 6'250'000u);  // 50 Mbit/s of payload in bytes/s
+  EXPECT_EQ(c.initial_cwnd, 10u);                    // the last --set of a field wins
+  ASSERT_EQ(b->sets.size(), 5u);
+  EXPECT_EQ(b->sets[1], (std::pair<std::string, std::string>{"rcv_buf_max", "32Mi"}));
+  // Fields not set keep the profile's values.
+  TcpConfig rfc = tcp_config(ProfileId::rfc);
+  b = parse_backend({"--connect", "1.2.3.4:5", "--profile", "rfc", "--set", "rto_min=200ms"});
+  ASSERT_TRUE(b) << b.error();
+  rfc.rto_min = std::chrono::milliseconds(200);
+  EXPECT_EQ(b->utcp.stack.tcp, rfc);
+
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--set", "no_such_field=1"}));
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--set", "snd_buf_max"}));
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--set", "=1"}));
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--set", "test_fixed_pacing_rate=50Mbitx"}));
+  // 3 bit/s is not a whole number of bytes.
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--set", "test_fixed_pacing_rate=3bit"}));
+  // RFC 8985 §9.2: RACK-TLP with RFC 6675 recovery is refused (check_tcp_config).
+  auto bad = parse_backend({"--connect", "1.2.3.4:5", "--set", "rack_tlp=true", "--set",
+                            "recovery_reduction=rfc6675"});
+  ASSERT_FALSE(bad);
+  EXPECT_NE(bad.error().find("--set"), std::string::npos) << bad.error();
+  auto kernel = parse_backend({"--connect", "1.2.3.4:5", "--backend", "kernel", "--set", "initial_cwnd=10"});
+  ASSERT_FALSE(kernel);
+  EXPECT_NE(kernel.error().find("utcp backend"), std::string::npos) << kernel.error();
+}
+
+TEST(BulkBackendOptions, TraceKinds) {
+  auto b = parse_backend({"--connect", "1.2.3.4:5"});
+  ASSERT_TRUE(b) << b.error();
+  EXPECT_TRUE(b->trace_file.empty());
+  EXPECT_EQ(b->utcp.stack.trace_mask, 0u);
+  b = parse_backend({"--connect", "1.2.3.4:5", "--trace", "/x/trace.jsonl"});
+  ASSERT_TRUE(b) << b.error();
+  EXPECT_EQ(b->trace_file, "/x/trace.jsonl");
+  // M2 design §5.6: cwnd, recovery, rto and the retransmissions; no timer events.
+  EXPECT_EQ(b->utcp.stack.trace_mask, trace_bit(TraceKind::cwnd) | trace_bit(TraceKind::recovery) |
+                                          trace_bit(TraceKind::rto) | trace_bit(TraceKind::tx));
+  EXPECT_TRUE(b->trace_rexmit_only);
+  b = parse_backend({"--connect", "1.2.3.4:5", "--trace", "t", "--trace-kinds", "tx,rexmit,state"});
+  ASSERT_TRUE(b) << b.error();
+  EXPECT_EQ(b->utcp.stack.trace_mask, trace_bit(TraceKind::tx) | trace_bit(TraceKind::state));
+  EXPECT_FALSE(b->trace_rexmit_only);  // "tx" keeps every transmission
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--trace", "t", "--trace-kinds", "cwnd,pace"}));
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--trace", "t", "--trace-kinds", ""}));
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--trace-kinds", "cwnd"}));
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--backend", "kernel", "--trace", "t"}));
+}
+
+TEST(BulkTrace, RecorderKeepsRetransmissionsAndWritesOnlyOnRequest) {
+  TraceRecorder r(true);
+  TraceEvent e;
+  e.t = Time{1'000'000};
+  e.kind = TraceKind::tx;
+  e.tx = TxKind::data;
+  r.on_event(e);  // not kept: a first transmission
+  e.tx = TxKind::rto_rexmit;
+  e.seq = 77;
+  r.on_event(e);
+  e.kind = TraceKind::cwnd;
+  e.cwnd = 12;
+  r.on_event(e);
+  EXPECT_EQ(r.events(), 2u);
+  EXPECT_EQ(r.blocks(), 1u);
+  const std::string path = testing::TempDir() + "/bulk_test_recorder.jsonl";
+  std::filesystem::remove(path);
+  ASSERT_TRUE(r.write(path));
+  const auto lines = lines_of(path);
+  ASSERT_EQ(lines.size(), 2u);
+  EXPECT_TRUE(lines[0].starts_with("{\"t\":1000000,")) << lines[0];
+  EXPECT_NE(lines[0].find("\"ev\":\"tx\""), std::string::npos) << lines[0];
+  EXPECT_NE(lines[0].find("\"tx\":\"rto_rexmit\""), std::string::npos) << lines[0];
+  EXPECT_NE(lines[0].find("\"seq\":77"), std::string::npos) << lines[0];
+  EXPECT_NE(lines[1].find("\"ev\":\"cwnd\""), std::string::npos) << lines[1];
+  EXPECT_NE(lines[1].find("\"cwnd\":12"), std::string::npos) << lines[1];
+  for (const TxKind k : {TxKind::fast_rexmit, TxKind::rexmit, TxKind::rto_rexmit, TxKind::pmtu_rexmit,
+                         TxKind::tlp}) {
+    EXPECT_TRUE(TraceRecorder::is_retransmission(k)) << to_string(k);
+  }
+  for (const TxKind k : {TxKind::syn, TxKind::data, TxKind::fin, TxKind::ack, TxKind::zwp}) {
+    EXPECT_FALSE(TraceRecorder::is_retransmission(k)) << to_string(k);
+  }
+  EXPECT_GE(TraceRecorder::block_bytes, std::size_t{64} << 20);  // §5.6: at least 64 MiB
+}
+
+// UtcpTransport over a socketpair: the trace stays in memory while the
+// program runs and is written, with the --stats line, when the transport
+// is destroyed.
+TEST(BulkTrace, TransportWritesTraceAndStatsAtTheEnd) {
+  int fds[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fds), 0);
+  const std::string trace = testing::TempDir() + "/bulk_test_trace.jsonl";
+  const std::string stats = testing::TempDir() + "/bulk_test_stats.json";
+  std::filesystem::remove(trace);
+  std::filesystem::remove(stats);
+  UtcpTransportOptions o;
+  o.stack.local_addr = Ipv4Addr::from_octets(198, 18, 0, 2);
+  o.stack.tcp = tcp_config(ProfileId::linux_compat);
+  o.stack.trace_mask = trace_bit(TraceKind::tx) | trace_bit(TraceKind::state);
+  o.seed_from_getrandom = false;
+  o.stats_file = stats;
+  {
+    auto t = UtcpTransport::attach(fds[0], o);
+    ASSERT_TRUE(t) << t.error();
+    (*t)->enable_trace(trace, false);
+    ASSERT_TRUE((*t)->connect(Endpoint{Ipv4Addr::from_octets(198, 19, 12, 5), 9}, {}));
+    std::array<std::byte, 2048> syn{};
+    EXPECT_GT(::read(fds[1], syn.data(), syn.size()), 40);  // the SYN went out
+    ASSERT_NE((*t)->trace(), nullptr);
+    EXPECT_GE((*t)->trace()->events(), 1u);  // the SYN (and the state change)
+    EXPECT_FALSE(std::filesystem::exists(trace));  // nothing written during the run
+    const std::string sj = (*t)->stats_json();
+    for (const char* key : {"\"loop_iterations\":", "\"loop_pending_calls\":", "\"loop_lateness_count\":",
+                            "\"loop_lateness_max_ns\":", "\"dev_tx_errors\":0", "\"dev_rx_errors\":0",
+                            "\"dev_device_failed\":false", "\"dev_tx_batch_max\":1", "\"trace_events\":",
+                            "\"trace_blocks\":1"}) {
+      EXPECT_NE(sj.find(key), std::string::npos) << key << " in " << sj;
+    }
+  }
+  ::close(fds[1]);
+  const auto tl = lines_of(trace);
+  ASSERT_GE(tl.size(), 2u);
+  bool syn_seen = false;
+  for (const auto& l : tl) {
+    syn_seen = syn_seen || (l.find("\"ev\":\"tx\"") != std::string::npos &&
+                            l.find("\"tx\":\"syn\"") != std::string::npos);
+  }
+  EXPECT_TRUE(syn_seen) << tl[0];
+  const auto sl = lines_of(stats);
+  ASSERT_EQ(sl.size(), 1u);
+  EXPECT_TRUE(sl[0].starts_with("{\"ev\":\"stack_stats\",")) << sl[0];
+  EXPECT_NE(sl[0].find("\"trace_events\":" + std::to_string(tl.size())), std::string::npos) << sl[0];
+}
+
+// The analysis reads the same keys from both senders' samples (M2 design
+// §5.9): both are TcpInfo, written by add_fields.
+TEST(BulkJsonl, StackAndKernelSamplesHaveTheSameKeys) {
+  const auto keys = [](const TcpInfo& info) {
+    JsonLine line;
+    add_fields(line, info);
+    std::set<std::string> out;
+    const std::string s = line.str();
+    for (std::size_t i = s.find('"'); i != std::string::npos; i = s.find(",\"", i)) {
+      const std::size_t start = s[i] == '"' ? i + 1 : i + 2;
+      const std::size_t end = s.find('"', start);
+      out.insert(s.substr(start, end - start));
+      i = end;
+    }
+    return out;
+  };
+  const ::tcp_info ti{};
+  const auto kernel = keys(sample_from_tcp_info(ti, "cubic"));
+  TcpInfo stack;
+  stack.total_retrans = 3;
+  EXPECT_EQ(keys(stack), kernel);
+  for (const char* k : {"sndbuf_limited_us", "rwnd_limited_us", "total_retrans", "data_segs_out",
+                        "dsack_dups", "bytes_received", "cwnd", "pacing_rate", "delivery_rate"}) {
+    EXPECT_TRUE(kernel.contains(k)) << k;
+  }
+}
+
+// With the utcp backend, the line after the clock pair is the effective
+// configuration with the --set options.
+TEST(BulkMain, ConfigLineFollowsTheClockLine) {
+  const std::string path = testing::TempDir() + "/bulk_test_config.jsonl";
+  const TransportFactory make = [](const BackendSelection&)
+      -> std::expected<std::unique_ptr<Transport>, std::string> {
+    return std::make_unique<FakeTransport>();
+  };
+  const char* const argv[] = {"utcp-bulk", "--connect", "10.0.0.1:9", "--send", "--bytes", "10",
+                              "--set", "snd_buf_max=64Mi", "--set", "gso_max_size=65215",
+                              "--jsonl", path.c_str()};
+  EXPECT_EQ(main_(static_cast<int>(std::size(argv)), argv, make), 1);
+  const auto lines = lines_of(path);
+  ASSERT_GE(lines.size(), 2u);
+  EXPECT_TRUE(lines[0].starts_with("{\"ev\":\"clock\",")) << lines[0];
+  EXPECT_TRUE(lines[1].starts_with("{\"ev\":\"config\",\"set\":\"snd_buf_max=64Mi gso_max_size=65215\","))
+      << lines[1];
+  EXPECT_NE(lines[1].find("\"snd_buf_max\":\"67108864\""), std::string::npos) << lines[1];
+  EXPECT_NE(lines[1].find("\"gso_max_size\":\"65215\""), std::string::npos) << lines[1];
+  EXPECT_NE(lines[1].find("\"cc\":\"newreno\""), std::string::npos) << lines[1];
+  // The kernel backend has no stack configuration.
+  const char* const kargv[] = {"utcp-bulk", "--backend", "kernel", "--connect", "10.0.0.1:9", "--send",
+                               "--bytes", "10", "--jsonl", path.c_str()};
+  EXPECT_EQ(main_(static_cast<int>(std::size(kargv)), kargv, make), 1);
+  const auto kl = lines_of(path);
+  ASSERT_GE(kl.size(), 2u);
+  EXPECT_FALSE(kl[1].starts_with("{\"ev\":\"config\"")) << kl[1];
 }
 
 }  // namespace

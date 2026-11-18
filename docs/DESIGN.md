@@ -1442,3 +1442,199 @@ allows, so the core links no stdio. Backend and apps use `std::expected<T, std::
 - Fixed-width integers for wire and protocol quantities, `std::span`/`std::byte` for bytes, no `reinterpret_cast`
   of packet bytes (explicit big-endian loads and stores). Comments cite RFC sections (`// RFC 9293 §3.10.7.4:`)
   and Linux functions when copying Linux (`// as Linux tcp_cwnd_restart()`). Failing tests are fixed, never weakened.
+
+## 14. Comparison testbed (M2d)
+
+The testbed on which the stack and Linux are compared (PLAN 2d). Scripts in `testbed/m2/` (they source
+`testbed/m1/common.sh` for its helpers), runner and analysis in `tools/m2/`, results in `docs/RESULTS.md`.
+
+### 14.1 Topology and slots
+
+```
+snd --(a)-- r1 --(b)-- r2 --(c)-- rcv        containers ${UTCP_M2_PREFIX:-utcp-m2}-sN-{snd,r1,r2,rcv}
+              netem on r1's b side            networks  ...-sN-{a,b,c}
+                          tbf on r2's c side
+net a 198.19.X.0/24: snd .2, r1 .3   net b X+1: r1 .3, r2 .4   net c X+2: r2 .4, rcv .5
+X = 10+4N for the timing slots N = 0, 1; X = 40+4(N-2) for N >= 2 (the M1 testbeds of the M2 tasks use
+198.19.20-34); stack: TUN utcpK in snd, kernel side 198.18.(8N+K).1/24, the stack 198.18.(8N+K).2, K = 0..7
+```
+
+- `up.sh --slot N [--nontiming]` starts the four containers (`--init`, `--cap-add NET_ADMIN`, the sender
+  also `--device /dev/net/tun`; the repository read-only at `/utcp`, the volume `utcp-data` at `/data`).
+  Every container has its default route removed and static routes along the chain (198.18.8N.0/21 back
+  toward the sender, which forwards between eth0 and the TUNs), and permanent neighbour entries for its
+  adjacent hops, so no packet bypasses the routers and no ARP crosses netem (an ARP packet takes a draw
+  from netem's PRNG and shifts a seeded loss sequence; found by `tests/interop/m2_testbed.sh`).
+- CPUs: slot 0 sender 8,9, receiver 10, routers 11; slot 1 12,13 / 14 / 15; `--nontiming` and slots ≥ 2
+  put everything on 16-31. Softirq work of the whole path runs mostly on the transmitting CPU (veth
+  `__netif_rx` queues to the current CPU's backlog), so on the sender's core for both senders.
+- Interfaces: sender eth0 `noqueue`, tso and gso off; routers and receiver gro off; TUNs `pfifo limit
+  10000`, `txqueuelen 10000`, MTU 1500. Sender `tcp_wmem` max 64 MB, `tcp_no_metrics_save` on sender and
+  receiver, receiver `tcp_rmem` at its default (32 MB max).
+- `down.sh --slot N` removes exactly the slot's containers and networks.
+
+### 14.2 Shaping, records, captures
+
+- `shape.sh` deletes and re-adds, per run: `netem limit 20000 delay RTTms [loss random P% seed S]` on r1
+  toward r2 (all delay and loss; no jitter), `tbf rate BWmbit burst B limit Q` on r2 toward the receiver
+  (B = max(2·1514, BW·1 ms) bytes); the reverse interfaces keep `noqueue`. tbf counts the Ethernet
+  header (1514-byte frames).
+- `record.sh` prints, per container, `ip -s -d link` (MTU, `gso_ipv4_max_size`, drops), `tc -s -raw qdisc`
+  (`-raw` so that tbf shows its `limit`), offloads, routes, cpuset, the `net.ipv4.tcp_*`/`net.core.*`
+  sysctls, `nstat -asz` on sender and receiver; on the host `uname -r`, softnet_stat, the `cpu` lines of
+  `/proc/stat`, `/proc/softirqs`, bridge-nf, `tcp_cubic`/`tcp_bbr` parameters, `uptime`, the top CPU users,
+  the threads on CPUs 8-15, `CLK_TCK` and each container's cgroup `cpu.stat` `usage_usec` (the cgroup
+  from `/proc/<pid>/cgroup` of its init). `analyze.py` parses this format. The foreign CPU time on the
+  slot's CPUs is bounded from these: lower = Δbusy − Δirq − Δsoftirq − Δcontainers, upper = Δbusy −
+  Δcontainers (the server's kernel has no `CONFIG_IRQ_TIME_ACCOUNTING`, so a tick in softirq while one
+  of our tasks runs counts in both softirq and that task's usage); the lower bound flags at 2 %.
+- Captures: `tcpdump -s 128 -B 16384 --time-stamp-precision nano 'not ether multicast'` in the routers,
+  r1-in (r1's a side), r2-out (r2's c side) and for calibration r1-out (r1's b side, after netem). The
+  filter leaves out the host's SSDP multicast from each bridge's gateway address. tcpdump hands packets
+  over in ring blocks retired after its 1 s timeout and loses an unretired block on SIGINT, so the
+  runner waits until both ends of the connection have left every state but TIME-WAIT, stops the pings
+  0.5 s later and tcpdump 1.5 s after that; `capture.json` checks `captured` against `received by filter`.
+  `capture.json` also holds, per capture, the data segments and retransmissions toward the receiver in
+  10 ms bins, and for r1-in the sender's echo requests paired with their replies by ICMP id and
+  sequence ([seq, request time, RTT ns]).
+- Ping RTTs: iputils prints an RTT of 100 ms or more as whole milliseconds (10-100 ms with 0.1 ms), so
+  runs take them from the r1-in capture (request in, reply out; the two sender-r1 veth hops are left
+  out, and the idle base removes them anyway), and the idle pings of gate items 1 and 6 from a capture
+  `icmp` next to the pinging end (`analyze.py pings`): r1's sender side for the sender's pings, r2's
+  receiver side for the receiver's pings to the stack, so that netem lies between request and reply. `ping.txt` stays for runs without a capture.
+- tbf sampler: one loop in r2, `$EPOCHREALTIME` and `tc -s qdisc show` every 10 ms (`tbf.txt`).
+
+### 14.3 Runs and analysis
+
+- `utcp-bulk` writes a clock line first in its JSONL (`{"ev":"clock","monotonic_ns":M,"realtime_ns":R}`)
+  and a `start` line at the connection's establishment; the receiver's `start` is t₀. Containers share the
+  host's CLOCK_MONOTONIC.
+- `tools/m2/matrix.py one` runs one (cell, implementation, algorithm) run: shape, record, captures,
+  sampler, receiver, 3 s of idle pings (`ping -D -O -i 0.05 -s 56`), sender, record, `analyze.py captures`
+  and `analyze.py run`. `calibrate` runs the gate (§14.4). Every run directory has `meta.json` with the
+  reuse key (binary and core-library sha256, build, `uname -r`, image id, scripts hash, sysctls and
+  module parameters).
+- `tools/m2/analyze.py`: the window [t₀ + 5 s, min(t₀ + S, sender start + S)] with interpolated bounds
+  (the sender's `start` line is its connect returning, one RTT before t₀, and its writes last S from
+  there); the metrics, validity rules, flags, run counting and gap rule of `docs/RESULTS.md`; the §5.9
+  cross-check: over the same window, the r1-in capture's data segments and retransmissions against the
+  sender's counters and r2-out's data segments against the receiver's `data_segs_in`, flagged beyond
+  max(20, 0.1 %) segments (retransmissions max(3, 5 %)), tolerances set from the 112 stored runs; `tables` writes `runs.csv` and
+  `cells.csv`; `archive` writes the analysis archive (no captures) with a sha256 manifest, from which
+  `tables --archive` regenerates both files byte for byte. Unit tests: `tools/m2/test_analyze.py`.
+
+### 14.4 Calibration gate: deviations from the M2 design §5.4
+
+Found while running the gate; each follows the measured behaviour of tbf, netem and ping:
+- Item 3 (loss) counts netem's losses as r1-in minus r1-out data segments, with both captures complete
+  (a packet missing from r1-out would count as a loss). The design's r1-in − r2-out − tbf drops counts
+  tbf drops of ping packets as data losses (seen: 23 vs 20 in one run); it is reported next to it.
+- Item 4 (queue): a drop interval of the 10 ms sampler is accepted when max(b_i, b_i+1) ≥ Q − 1514 − B −
+  R·Δt, the backlog a tail drop at the limit implies (tbf drops a frame only when backlog + frame > Q,
+  and the queue drains at most at rate R plus the bucket). The design's 0.9·Q fails on correct tail drops:
+  in 10 ms the queue drains 12 500 B at 10 Mbit/s and 125 000 B at 100 Mbit/s, as much as a 0.5×BDP queue
+  holds. The count against 0.9·Q is reported. Where that level is not positive (Q ≤ 1514 + B + R·Δt: the
+  0.5×BDP queues at 20 ms) any backlog meets it; such intervals are counted as not testable and the
+  report says "not testable at 10 ms sampling" instead of passing them as tested. The ping check
+  compares with the largest backlog a ping can find, the whole frames that fit below Q with it, instead
+  of Q·8/BW (3 % lower for Q = 12 500 B).
+- Item 5 includes no `time_squeeze` and no capture kernel drop, as RESULTS.md states it.
+- The pass decisions are pure functions (`gate_item1` .. `gate_item6_run`), unit-tested at their bounds;
+  `gate.json` records the runs' reuse key.
+- Item 6 (stack) adds a "path" run with the stack's send buffer at 400 000 B (between BDP and BDP + Q), so
+  the TUN path is measured without loss recovery in play, next to the design's run.
+
+### 14.5 Scripted drops
+
+`drop.sh --slot N arm --offsets OFF[:N],... --copies K,... [--span B]` installs table `ip utcp_drop` on a
+router. A target (stream offset OFF, count N, default 1) selects the first N segments whose first byte lies
+in [OFF, OFF + N·B), in the order they reach the router; B defaults to 1448, the sender's MSS with
+timestamps, and the range ends early at the next target's offset. A segment is at most one MSS long, so the
+range always holds N segment starts whatever sizes the sender chose: an offset need not be a segment
+boundary, and a short segment earlier in the stream (the Linux sender sent 512 B at offset 195 480 in one
+verification run, 840 B at 440 192 in another, which moved every later boundary) only moves the selection
+to the next start. Exact matching on ISN + 1 + OFF, the first version, found nothing in those runs.
+
+A watcher in the router, Python on an AF_PACKET socket bound to the interface from the sender, reads the
+SYN's ISN and adds the ranges ISN + 1 + [OFF, OFF + len) to an interval verdict map `targets`; a range
+across 2^32 is two elements. Its log gives the SYN's kernel receive time and the delay to arming, which
+must stay below one RTT (the first data segment). The first version waited on `tcpdump --immediate-mode
+-c 1`, whose exit came 21-64 ms after the SYN in 54 logged runs: more than the 20 ms RTT, so a
+target in the first window could have been missed. The forward-hook rules, one per TCP data offset so that only packets
+with payload match (IP length above 20 + 4 · doff), send a packet whose sequence is in a range to its
+target's chain. The chain counts the starts latched in sets `n1..nN` (keyed by the receiver address, used as
+flags; a start after the N-th passes) and puts each latched sequence in `c1`; sets `c1..cK` count copies of
+a latched sequence (a packet in `c(j)` but not `c(j+1)` is copy j+1) and the copies listed in `--copies`
+are dropped. A retransmission that starts at another sequence number (repacketised) is not counted as a
+copy. `drop.sh ... ct --packet N` drops `ct original packets N`. `tools/m2/dropcheck.py` lists what a
+router dropped by comparing the captures before and after it (transmissions told apart by IP ID and TSval)
+and, with `--targets`, which segments the rule must latch, computed from the capture before the router;
+`tests/interop/m2_testbed_drops.sh` checks the drops against that: copy 1, copy 2 (r2 drops copy 1 so that
+a copy 2 exists), copies 1 and 2, an offset inside a segment, a burst of 5, and a `ct` drop.
+
+### 14.6 The stack sender's options and counters
+
+`utcp-bulk` with the utcp backend (`apps/common/kernel_transport.hpp`):
+- `--set FIELD=VALUE`, repeatable, applies `set_config_field` to the profile's `TcpConfig` in command-line
+  order (sizes `64Mi`, durations `200ms`, rates `50Mbit` = bytes/s × 8); `check_tcp_config` runs after
+  the last one. The JSONL's second line is `{"ev":"config","set":"...",<every TcpConfig field>}`. With
+  `--backend kernel`, `--set` and `--trace` are errors.
+- `--trace FILE` keeps the stack's trace events as `TraceEvent` structs in memory (`TraceRecorder`, blocks of
+  64 MiB, added when one is full; nothing is formatted or written while the program runs) and writes them
+  as JSONL (`add_fields`) when the transport is destroyed. `--trace-kinds` selects the `TraceKind`s;
+  `rexmit` keeps only tx events of retransmissions (fast_rexmit, rexmit, rto_rexmit, pmtu_rexmit, tlp).
+  Default `cwnd,recovery,rto,rexmit` (M2 design §5.6). The core does not emit `cwnd` or `recovery`
+  events yet, so a trace holds the retransmissions and RTOs only.
+- `--stats FILE` (one line, written at exit or on SIGINT/SIGTERM), in this order: every StackStats
+  counter, the EventLoop's counters (`loop_*`; `loop_pending_calls` counts the iterations in which
+  connections blocked on transmit-queue or pool space resumed, §3.4), the lateness histogram
+  (`loop_lateness_count`, `loop_lateness_max_ns`, `loop_lateness_bucket_I` for each non-empty log2
+  bucket I), with a trace `trace_events` and `trace_blocks`, and the DeviceStats counters (`dev_*`;
+  `dev_tx_batch_max` is the most datagrams one drain of the stack wrote) ending with
+  `dev_device_failed`, which the M1 backend check reads at the line's end. Device errors and datagrams
+  the stack dropped itself (`IpOutDiscards`, `TcpExtTCPRcvQDrop`, `TcpExtTCPOFODrop`) invalidate a run; a
+  non-zero `loop_pending_calls` flags it (`stack_blocked`): the stack waited for the TUN, it lost nothing.
+- Both senders write the same sample keys (`add_fields` of `TcpInfo`), among them
+  `sndbuf_limited_us`, `rwnd_limited_us`, `total_retrans`, `data_segs_out`, `dsack_dups`.
+- Every stack run of the runner uses `--set snd_buf_max=64Mi --set rcv_buf_max=32Mi --set
+  gso_max_size=G` (M2 design §5.3), G = the sender eth0's `gso_ipv4_max_size` (measured per run with
+  `ip -d link`, 65536 on the server's veth) − 320 − 1, as TcpConfig's default derives it (device size −
+  MAX_TCP_HEADER − 1, MAX_TCP_HEADER taken as 320; `net/core/sock.c` is not in the server's partial
+  v7.0 tree, so the 320 is not checked here); `meta.json` has `gso_ipv4_max_size` and `stack_set`.
+  The sender's eth0 has tso and gso off, so the Linux sender sends single segments; what that means for
+  its pacing bursts is m2b-rate-pacing's question.
+
+### 14.7 Run plans, the parallel-mode proof and plots
+
+- `matrix.py run PLAN.toml --slot N (--gate CAMPAIGN | --no-gate)` (format in `load_plan`; example
+  `testbed/m2/plans/mini.toml`): cells × algorithms × repetitions. Each algorithm has a label, its
+  `name` or cc, "-PROFILE" for a stack profile other than linux and 8 hex digits of the sha256 of its
+  `stack_set`; runs are named `<cell>-<label>-r<rep>-<impl>` and cells, reruns and plots group by
+  (cell, label); two algorithms with one label may not share an implementation. One group per (cell,
+  algorithm, repetition) holds its runs (the stack's and Linux's when the algorithm lists both
+  implementations) back to back in one slot. From the plan's one seed, in order: the shuffle of the
+  groups, then per group its netem seed (shared by its runs) and the order inside it. Repetition r runs
+  on slot r mod (number of slots). `expand` prints the list; the expanded plan is stored as `plan.json`
+  in the campaign and a restart with a different plan is refused.
+- Checks before the first run: one slot unless `--parallel` (RESULTS.md: timing runs are serial); a slot
+  outside CPUs 8-15 only with `--nontiming`, which marks the runs `timing` false; a calibration gate
+  (`--gate`, repeatable) whose `gate.json` passed on that slot with the reuse key the runs get now
+  (static meta and a fresh `record.sh` sysctl dump), or `--no-gate`; no finished run of the plan with
+  another reuse key, or `--rekey`, which moves those groups' directories to `aside/<run>-rekey-<time>`.
+- Resuming: a run whose `summary.json` exists is skipped; a run directory without it is moved to
+  `aside/<run>-<time>` and the run is repeated; each run first stops what an interrupted run left in the
+  slot (senders, pings, captures, the tbf sampler). An invalid group is rerun as a whole right after it,
+  as `<run>-rerunK` with the same netem seed, in-group order and `order` (meta `rerun` = K), at most
+  `A.RERUN_CAP` times per cell and algorithm; the analysis counts the first 5 valid groups.
+- `matrix.py proof --campaign C` (M2 design §6): serial on slot 0, then the same list on slots 0 and 1 at
+  once, 5 repetitions of item 1 (idle ping) and items 2 and 4 (Linux CUBIC, 0 %, 2×BDP) for the four
+  (bandwidth, RTT) pairs and of stack NewReno at 100 Mbit/s, 20 ms, 0 %, 2×BDP with the trace; serially
+  also the stack run without the trace (the trace overhead, §5.6). `proof.json` and `proof.md` compare
+  each parallel slot with the serial runs (medians and ranges; the stack's lateness p99 from the pooled
+  `--stats` histograms, its max from the summary lines). The decisions are `proof_evaluate`, a pure
+  function: the histogram percentile follows `LatenessHistogram::percentile` (rank correction, clamped
+  to the maximum), and since a log2 bucket is a factor of 2 wide, "p99 ≤ 2 × serial" is read as at most
+  one bucket higher; the maximum is exact and compared as ≤ 2 ×.
+- `matrix.py plot --campaign C` runs `tools/m2/plot.py` (matplotlib, in the image) in a helper container:
+  per (cell, algorithm) one PNG of the median-goodput valid run of each implementation, cwnd with the
+  retransmission and RTO marks, delivery and pacing rate, and the receiver's 100 ms goodput.

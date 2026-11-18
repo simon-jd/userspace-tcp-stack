@@ -45,6 +45,13 @@ std::optional<std::string> CliArgs::get(std::string_view name) const {
   return std::nullopt;
 }
 
+std::vector<std::string> CliArgs::all(std::string_view name) const {
+  if (const auto it = every_.find(name); it != every_.end()) {
+    return it->second;
+  }
+  return {};
+}
+
 // --- CliParser.
 
 CliParser::CliParser(std::string program, std::string summary)
@@ -119,13 +126,16 @@ std::expected<CliArgs, std::string> CliParser::parse(std::span<const std::string
       out.values_[o->name] = "";
       continue;
     }
+    std::string value;
     if (inline_value) {
-      out.values_[o->name] = std::string(*inline_value);
+      value = std::string(*inline_value);
     } else if (i + 1 < args.size()) {
-      out.values_[o->name] = std::string(args[++i]);
+      value = std::string(args[++i]);
     } else {
       return std::unexpected("option --" + o->name + " needs a value (" + o->metavar + ")");
     }
+    out.every_[o->name].push_back(value);
+    out.values_[o->name] = std::move(value);
   }
   if (out.positionals_.size() > pos_.size()) {
     return std::unexpected("unexpected argument " + single_quoted(out.positionals_[pos_.size()]));

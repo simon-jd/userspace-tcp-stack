@@ -23,6 +23,18 @@
 //
 // --recv-pause MS:BYTES stops reading for MS after every BYTES read, so the
 // sender sees a zero window.
+//
+// The JSONL file starts with one clock line, {"ev":"clock","monotonic_ns":M,
+// "realtime_ns":R}: R is CLOCK_REALTIME at the moment CLOCK_MONOTONIC read M
+// (the mean of two realtime reads around it), so CLOCK_REALTIME times from
+// other tools (ping -D, tcpdump) convert to the samples' clock: t = rt - R + M
+// (DESIGN §14). When the connection is established (accepted or connected)
+// a start line {"t":...,"ev":"start","role":...} follows; its t is the start
+// of the duration and of the testbed's measurement window. With the utcp
+// backend a config line (config_line) follows the clock line.
+//
+// The utcp backend's --set, --trace, --trace-kinds and --stats options are
+// described in common/kernel_transport.hpp and DESIGN §14.6.
 #pragma once
 
 #include <cstddef>
@@ -129,6 +141,13 @@ private:
   bool done_ = false;
   Result result_;
 };
+
+// The clock line described at the top, from the system clocks.
+[[nodiscard]] JsonLine clock_line();
+// The utcp backend's configuration, the line after the clock line:
+// {"ev":"config","set":"FIELD=VALUE ...",<every TcpConfig field as the text
+// get_config_field gives>}; "set" lists the --set options in order.
+[[nodiscard]] JsonLine config_line(const BackendSelection& b);
 
 // The whole program: options, transport, run, finish_closing, summary.
 // Returns the exit status (0 = success). `make` creates the transport (tests

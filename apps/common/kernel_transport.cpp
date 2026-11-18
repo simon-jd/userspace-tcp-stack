@@ -16,7 +16,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "common/utcp_transport.hpp"
 #include "utcp/check.hpp"
+#include "utcp/config.hpp"
+#include "utcp/trace.hpp"
 
 namespace utcp::app {
 
@@ -767,8 +770,54 @@ void add_backend_options(CliParser& p) {
               "as one JSON line to FILE when the program ends")
       .option("spin-us", "US", "utcp backend: busy-poll the last US microseconds before a deadline",
               "0")
-      .option("seed", "N", "utcp backend: stack seed (default: getrandom)");
+      .option("seed", "N", "utcp backend: stack seed (default: getrandom)")
+      .option("set", "FIELD=VALUE",
+              "utcp backend: set a TcpConfig field of the profile (repeatable; e.g. "
+              "snd_buf_max=64Mi, test_fixed_pacing_rate=50Mbit)")
+      .option("trace", "FILE",
+              "utcp backend: keep the stack's trace events in memory and write them to FILE as "
+              "JSON lines when the program ends")
+      .option("trace-kinds", "LIST",
+              "utcp backend: trace kinds, comma-separated (state, tx, rx, ack, rtt, rto, cwnd, "
+              "recovery, timer, icmp, drop; rexmit = tx events of retransmissions only)",
+              std::string(default_trace_kinds));
 }
+
+namespace {
+
+// --trace-kinds: the trace mask and whether tx events are limited to
+// retransmissions.
+std::expected<std::pair<std::uint32_t, bool>, std::string> parse_trace_kinds(std::string_view list) {
+  std::uint32_t mask = 0;
+  bool rexmit = false, all_tx = false;
+  while (!list.empty()) {
+    const auto comma = list.find(',');
+    const std::string_view name = list.substr(0, comma);
+    list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+    if (name == "rexmit") {
+      rexmit = true;
+      mask |= trace_bit(TraceKind::tx);
+      continue;
+    }
+    bool found = false;
+    for (int k = 0; k < trace_kind_count; ++k) {
+      if (to_string(static_cast<TraceKind>(k)) == name) {
+        mask |= trace_bit(static_cast<TraceKind>(k));
+        all_tx = all_tx || static_cast<TraceKind>(k) == TraceKind::tx;
+        found = true;
+      }
+    }
+    if (!found) {
+      return std::unexpected("--trace-kinds: unknown kind '" + std::string(name) + "'");
+    }
+  }
+  if (mask == 0) {
+    return std::unexpected(std::string("--trace-kinds: no kind given"));
+  }
+  return std::pair{mask, rexmit && !all_tx};
+}
+
+}  // namespace
 
 std::expected<BackendSelection, std::string> parse_backend_options(const CliArgs& a) {
   BackendSelection b;
@@ -813,6 +862,41 @@ std::expected<BackendSelection, std::string> parse_backend_options(const CliArgs
     u.stack.seed = Seed::from_u64(*v);
     u.seed_from_getrandom = false;
   }
+  for (const std::string& s : a.all("set")) {
+    const auto eq = s.find('=');
+    if (eq == std::string::npos || eq == 0) {
+      return std::unexpected("--set: FIELD=VALUE, not '" + s + "'");
+    }
+    const std::string name = s.substr(0, eq), value = s.substr(eq + 1);
+    if (auto r = set_config_field(u.stack.tcp, name, value); !r) {
+      return std::unexpected("--set " + s + ": " + r.error());
+    }
+    b.sets.emplace_back(name, value);
+  }
+  if (const auto bad = check_tcp_config(u.stack.tcp)) {
+    return std::unexpected("--set: " + *bad);
+  }
+  if (const auto t = a.get("trace")) {
+    if (t->empty()) {
+      return std::unexpected(std::string("--trace: a file name"));
+    }
+    const auto kinds = parse_trace_kinds(a.get("trace-kinds").value_or(std::string(default_trace_kinds)));
+    if (!kinds) {
+      return std::unexpected(kinds.error());
+    }
+    b.trace_file = *t;
+    u.stack.trace_mask = kinds->first;
+    b.trace_rexmit_only = kinds->second;
+  } else if (a.given("trace-kinds")) {
+    return std::unexpected(std::string("--trace-kinds needs --trace"));
+  }
+  if (b.kernel) {
+    for (const char* name : {"set", "trace"}) {
+      if (a.given(name)) {
+        return std::unexpected(std::string("--") + name + " is for the utcp backend");
+      }
+    }
+  }
   return b;
 }
 
@@ -820,7 +904,14 @@ std::expected<std::unique_ptr<Transport>, std::string> make_transport(const Back
   if (b.kernel) {
     return std::make_unique<KernelTransport>();
   }
-  return make_utcp_transport(b.utcp);
+  auto t = UtcpTransport::open(b.utcp);
+  if (!t) {
+    return std::unexpected(std::move(t.error()));
+  }
+  if (!b.trace_file.empty()) {
+    (*t)->enable_trace(b.trace_file, b.trace_rexmit_only);
+  }
+  return std::unique_ptr<Transport>(std::move(*t));
 }
 
 }  // namespace utcp::app
