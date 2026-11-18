@@ -239,7 +239,8 @@ private:
     };
     std::optional<Ack> accepted, pending;
     std::uint32_t max_window = 0;
-    bool pending_pure = false;
+    bool pending_ack_only = false, pending_has_sack = false;
+    std::optional<std::uint32_t> sacked_before;  // matching rx trace, before this ACK was processed
     std::optional<std::pair<Seq32, Seq32>> pending_dsack;
     void accept_ack(const TraceEvent& e);
     std::vector<std::pair<Seq32, Seq32>> sacked;  // disjoint, above high_ack

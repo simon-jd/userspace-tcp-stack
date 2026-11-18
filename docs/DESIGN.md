@@ -1256,7 +1256,9 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
 With `--strict-fast-rexmit` the first PRR retransmission is subject to cwnd. A TLP requires RACK-TLP enabled and negotiated
 SACK, may exceed cwnd by one packet, and is forbidden in Recovery or Loss. The probe records wire SND.NXT, including FIN.
 An accepted ACK at or beyond that marker ends a new-data probe. At equality, a retransmitted probe
-requires a pure duplicate ACK or a matching D-SACK. An ACK beyond the marker, Recovery/Loss, or RTO
+requires a pure duplicate ACK or a matching D-SACK. Linux also accepts a duplicate ACK carrying
+redundant SACK information. At an unchanged cumulative ACK the receive and accepted-ACK snapshots
+distinguish newly SACKed segments from repeated blocks. An ACK beyond the marker, Recovery/Loss, or RTO
 also ends the episode (RFC 8985 §7.4.2).
 
 The pacing checker groups each sender's transmit traces at `burst_start`. At the gate rate, a burst takes

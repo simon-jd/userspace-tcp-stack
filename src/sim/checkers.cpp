@@ -498,7 +498,9 @@ void InFlightChecker::on_ingress(std::uint32_t node, std::span<const std::byte> 
   // commits this packet's window and probe evidence.
   const auto window = std::uint32_t{p->tcp.h.window} << peer_shift(x);
   x.pending = Dir::Ack{p->tcp.h.seq, ack, window};
-  x.pending_pure = flags == wire::tcp_ack && p->tcp.payload.empty() && p->tcp.opt.sack_count == 0;
+  x.pending_ack_only = flags == wire::tcp_ack && p->tcp.payload.empty();
+  x.pending_has_sack = p->tcp.opt.sack_count != 0;
+  x.sacked_before.reset();
   x.pending_dsack.reset();
   if (x.probe && p->tcp.opt.sack_count > 0) {
     const auto [begin, end] = p->tcp.opt.sack[0];
@@ -539,7 +541,12 @@ void InFlightChecker::Dir::accept_ack(const TraceEvent& e) {
   if (accepted && before(a.number, accepted->number)) return;
   const bool advances = !accepted || after(a.number, accepted->number);
   const bool update = advances || after_eq(a.seq, accepted->seq);
-  const bool pure_duplicate = !advances && pending_pure && (!update || a.window == accepted->window);
+  // At an unchanged cumulative ACK no segment leaves the queue. Between
+  // the matching rx/ack snapshots, a new SACK increases sacked_out
+  // (Linux FLAG_DATA_SACKED). A repeated SACK leaves it unchanged.
+  const bool no_new_sack = !pending_has_sack || sacked_before == e.sacked_out;
+  const bool pure_duplicate = !advances && pending_ack_only && no_new_sack &&
+                              (!update || a.window == accepted->window);
   if (update) {
     accepted = a;
     max_window = std::max(max_window, a.window);
@@ -562,6 +569,10 @@ std::optional<std::string> InFlightChecker::on_trace(std::uint32_t node, const T
   if (e.kind == TraceKind::state && e.state == TcpState::closed) dir.probe.reset();
   if (e.ca == CaState::loss || e.ca == CaState::recovery) {
     dir.probe.reset();
+  }
+  if (e.kind == TraceKind::rx && dir.pending && dir.pending->seq == Seq32(e.seq) &&
+      dir.pending->number == Seq32(e.ack)) {
+    dir.sacked_before = e.sacked_out;
   }
   if (e.kind == TraceKind::ack) dir.accept_ack(e);
   if (e.kind == TraceKind::rto ||

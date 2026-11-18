@@ -354,7 +354,8 @@ struct ProbeFixture {
 
   void input(unsigned offset, std::uint16_t window, std::size_t len = 0,
              std::vector<std::pair<std::uint32_t, std::uint32_t>> sack = {},
-             bool accepted = true, unsigned peer_off = 1) {
+             bool accepted = true, unsigned peer_off = 1,
+             std::optional<std::pair<unsigned, unsigned>> sack_counts = {}) {
     const auto seq = iss_b + peer_off;
     const auto number = iss_a + 1 + offset;
     checker.on_ingress(0, seg(eb, ea, seq, number, ack, window, len, {}, sack));
@@ -366,6 +367,13 @@ struct ProbeFixture {
       event.ack = number;
       event.snd_una_off = offset;
       event.mss = 1000;
+      if (sack_counts) {
+        auto rx = event;
+        rx.kind = TraceKind::rx;
+        rx.sacked_out = sack_counts->first;
+        EXPECT_FALSE(checker.on_trace(0, rx));
+        event.sacked_out = sack_counts->second;
+      }
       EXPECT_FALSE(checker.on_trace(0, event));
     }
   }
@@ -432,6 +440,28 @@ TEST(SimCheckersInFlight, NewDataProbeEndsAtWireMarker) {
     f.input(marker, 4000);
     EXPECT_FALSE(f.second_rejected());
   }
+}
+
+TEST(SimCheckersInFlight, DuplicateAtMarkerDistinguishesNewAndRedundantSack) {
+  ProbeFixture f(true);
+  // New data after the retransmitted probe leaves a hole and a segment
+  // beyond it. The first ACK of the marker advances; neither packet's
+  // receipt can yet be inferred.
+  auto later = f.probe;
+  later.tx = TxKind::data;
+  for (unsigned i = 1; i <= 2; ++i) {
+    later.seq = iss_a + 1 + 1000 * i;
+    later.snd_nxt_off += 1000;
+    EXPECT_FALSE(f.checker.on_trace(0, later));
+  }
+  f.input(1000, 4000);
+  EXPECT_TRUE(f.second_rejected());
+  const std::vector<std::pair<std::uint32_t, std::uint32_t>> block{
+      {iss_a + 2001, iss_a + 3001}};
+  f.input(1000, 4000, 0, block, true, 1, {{0, 1}});
+  EXPECT_TRUE(f.second_rejected());  // FLAG_DATA_SACKED
+  f.input(1000, 4000, 0, block, true, 1, {{1, 1}});
+  EXPECT_FALSE(f.second_rejected());  // same wire option, no new segment SACKed
 }
 
 TEST(SimCheckersInFlight, RejectedIngressCannotChangeDuplicateAckWindow) {
