@@ -226,8 +226,21 @@ void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
   CcConn& c = t.cc_conn;
   c.cwnd = syn_loss ? 1u : initial_window(t);
   c.ssthresh = cfg_.initial_ssthresh;
+  // Linux counts the SYN via tcp_ack/tcp_rate_gen on active open. The
+  // passive SYN-ACK is credited directly in TCP_SYN_RECV. Neither control
+  // segment carries the data snapshot needed for a bandwidth record.
+  ++t.rate.delivered;
+  if (!t.passive) {
+    (void)rate_gen(t.rate, {}, 1, 0, 1, false, t.rtt.min_rtt(), Duration{-1}, false, now);
+  }
   refresh_cc(t, now);
+  c.delivered = t.rate.delivered;
+  c.delivered_time = t.rate.delivered_time;
   t.algo().init(c);
+  t.rate.app_limited = c.app_limited;
+  if (!t.algo().has_cong_control()) {
+    c.pacing_rate = pacing_rate_for(c, c.packets_out, cfg_);
+  }
   t.lsndtime = now;
   t.backoff = 0;
   t.rto_count = 0;

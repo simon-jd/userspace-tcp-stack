@@ -370,8 +370,17 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     // Linux tcp_xmit_retransmit_queue checks tcp_pacing_check before each
     // retransmission, to the lost segments; every paced send moves
     // pacing_next (tcp_update_skb_after_send).
-    const bool pacing = t.txp.pacing_applies(cc, t.ctr.data_segs_out);
+    const bool pacing = cc.paced && t.txp.gate_rate(cc) != 0;
     const std::uint64_t rate = pacing ? t.txp.gate_rate(cc) : 0;
+    // Linux sets the departure stamp of every skb to at least now; after
+    // incrementing data_segs_out it charges the full skb reaching ten.
+    const auto finish_burst = [&](std::uint64_t bytes) {
+      if (t.txp.pacing_applies(cc, t.ctr.data_segs_out)) {
+        t.pacing_next = pacing_next_after_send(t.pacing_next, now, bytes, rate);
+      } else {
+        t.pacing_next = std::max(t.pacing_next, now);
+      }
+    };
     const auto hold_for_pacing = [&] {
       if (core_.timers().deadline(t.t_pace) != t.pacing_next) {
         core_.timers().arm(t.t_pace, t.pacing_next);
@@ -407,7 +416,7 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     std::uint64_t rtx_bytes = 0, rtx_end = 0;
     const auto end_rtx_burst = [&] {
       if (pacing && rtx_bytes > 0) {
-        t.pacing_next = pacing_next_after_send(t.pacing_next, now, rtx_bytes, rate);
+        finish_burst(rtx_bytes);
       }
       rtx_left = 0;
       rtx_bytes = 0;
@@ -530,12 +539,12 @@ void TcpEngine::transmit(Tcb& t, Time now) {
       if (pacing) {
         burst_bytes += len;
         if (--burst_left == 0) {
-          t.pacing_next = pacing_next_after_send(t.pacing_next, now, burst_bytes, rate);
+          finish_burst(burst_bytes);
         }
       }
     }
     if (pacing && burst_left > 0 && burst_bytes > 0) {
-      t.pacing_next = pacing_next_after_send(t.pacing_next, now, burst_bytes, rate);
+      finish_burst(burst_bytes);
     }
     // 3. A FIN with no data left to carry it. Like Linux tcp_cwnd_test, the
     // final bare FIN is exempt from the cwnd gate; it is sent at the window
@@ -583,7 +592,7 @@ void TcpEngine::transmit(Tcb& t, Time now) {
           break;
         }
         if (pacing) {
-          t.pacing_next = pacing_next_after_send(t.pacing_next, now, *len, rate);
+          finish_burst(*len);
         }
       }
     }

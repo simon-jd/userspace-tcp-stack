@@ -1313,16 +1313,16 @@ TEST(TcpTimer, PacedProbesFollowThePacingGateAndDelayTheRto) {
   pto.attach(x.script);
   pto.answer = TlpAction::new_data;
   const Time t0 = x.d().now();
-  pto.at = t0 + 20ms;
+  pto.at = t0 + 90ms;
   ASSERT_TRUE(x.open(30));
   EXPECT_EQ(x.data_count(x.out()), 10u);  // the first 10 segments are not paced
   const Duration rto = x.stack().tcp_info(x.s->h)->rto;
   const std::uint32_t max_snd_wnd = 65535u << 7;  // the peer's window, scale 7
 
-  // 1. The gate is open (pacing_next not set yet): the probe goes out and
+  // 1. The gate is open (startup EDT has elapsed): the probe goes out and
   // moves pacing_next by half its 7.3 ms (the lateness credit, as pacing_next
   // was far behind): the RTO is a full RTO plus 3 ms.
-  x.d().run_for(20ms);
+  x.d().run_for(90ms);
   const Time t1 = x.d().now();
   auto o = x.out();
   ASSERT_EQ(o.size(), 1u);

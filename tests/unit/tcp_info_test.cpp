@@ -252,9 +252,11 @@ TEST(TcpInfo, TraceKindsOfAConnection) {
 // ---- m2-found acceptance test 5 (M2-DESIGN §1.9, §2.6, §5.3).
 
 // tcpi_reordering is recovery's (3: the stub's dupthresh), tcpi_delivery_rate
-// and tcpi_delivery_rate_app_limited come from the tcp_rate_gen record (stub:
-// none), not from tp->app_limited, which an application-limited writer sets;
-// utcp-bulk's JSONL sample lines (add_fields) carry all four.
+// and tcpi_delivery_rate_app_limited come from the tcp_rate_gen record
+// (m2b-rate-pacing): every sample of these small writes is app-limited, so
+// the record holds an app-limited sample with a rate; before any sample the
+// flag is 1, as Linux tcp_init_sock sets it. utcp-bulk's JSONL sample lines
+// (add_fields) carry all four.
 TEST(TcpInfo, M2FieldsFromRecoveryAndTheRateRecord) {
   for (const utcp::ProfileId profile : {utcp::ProfileId::rfc, utcp::ProfileId::linux_compat}) {
     SCOPED_TRACE(profile == utcp::ProfileId::rfc ? "rfc" : "linux_compat");
@@ -263,6 +265,10 @@ TEST(TcpInfo, M2FieldsFromRecoveryAndTheRateRecord) {
     h.set_delay(Side::b, 5ms);
     const auto p = open(h);
     ASSERT_TRUE(p);
+    const auto i0 = h.a().tcp_info(p->client);
+    ASSERT_TRUE(i0);
+    EXPECT_EQ(i0->delivery_rate, 0u);  // no record yet
+    EXPECT_TRUE(i0->app_limited);
     // Small writes with nothing in flight: application-limited (§5.4).
     for (int i = 0; i < 20; ++i) {
       ASSERT_TRUE(h.a().tcp_send(p->client, t::pattern(100)));
@@ -274,13 +280,14 @@ TEST(TcpInfo, M2FieldsFromRecoveryAndTheRateRecord) {
     ASSERT_TRUE(i);
     EXPECT_EQ(i->reordering, 3u);
     EXPECT_EQ(i->reord_seen, 0u);
-    EXPECT_EQ(i->delivery_rate, 0u);  // no record yet (m2b-rate-pacing fills it)
-    EXPECT_FALSE(i->app_limited);     // the record's flag, not tp->app_limited
+    EXPECT_GT(i->delivery_rate, 0u);  // the record of an app-limited sample
+    EXPECT_TRUE(i->app_limited);      // the record's flag
     EXPECT_GT(i->delivered, 0u);
     utcp::app::JsonLine line;
     utcp::app::add_fields(line, *i);
     const std::string js = line.str();
-    for (const char* f : {"\"delivery_rate\":0", "\"app_limited\":false", "\"reordering\":3",
+    const std::string rate = "\"delivery_rate\":" + std::to_string(i->delivery_rate);
+    for (const char* f : {rate.c_str(), "\"app_limited\":true", "\"reordering\":3",
                           "\"reord_seen\":0"}) {
       EXPECT_NE(js.find(f), std::string::npos) << f << " in " << js;
     }

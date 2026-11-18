@@ -10,12 +10,19 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 #include "utcp/time.hpp"
 
 namespace utcp {
 
 struct TxSeg;
+
+// RateState::app_limited of a new connection (Linux tcp_init_sock:
+// tp->app_limited = ~0U, "a bubble in the pipe until at least the first
+// ACK"): segments sent before the first rate_gen are app-limited, and the
+// first rate_gen clears it (Linux's after(delivered, ~0U) is true there).
+inline constexpr std::uint64_t rate_app_limited_initial = std::numeric_limits<std::uint64_t>::max();
 
 // Per-connection rate state (the tcp_sock fields of tcp_rate.c).
 struct RateState {
@@ -24,14 +31,16 @@ struct RateState {
   Time first_tx_time;           // tp->first_tx_mstamp: start of the current send interval
   bool has_sent = false;        // the two times above are set
   // tp->app_limited: 0 = not application-limited, else the `delivered` value
-  // (delivered + in_flight, or 1) below which samples are app-limited (§5.4).
-  std::uint64_t app_limited = 0;
+  // (delivered + in_flight, or 1) below which samples are app-limited (§5.4);
+  // rate_app_limited_initial until the first rate_gen.
+  std::uint64_t app_limited = rate_app_limited_initial;
   // The record kept for tcpi_delivery_rate (tcp_rate_gen, Linux 7.0
   // tcp_input.c:1791-1797: tp->rate_delivered, rate_interval_us,
-  // rate_app_limited). Filled by m2b-rate-pacing; stays zero until then.
+  // rate_app_limited). rate_app_limited starts true as in Linux
+  // tcp_init_sock, so tcpi_delivery_rate_app_limited is 1 before a sample.
   std::uint64_t rate_delivered = 0;  // packets
   Duration rate_interval{0};
-  bool rate_app_limited = false;
+  bool rate_app_limited = true;
 };
 
 // One rate sample per ACK (tcp_rate_gen, §5.4).
@@ -89,7 +98,7 @@ RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacke
 
 // tcpi_delivery_rate from the record (Linux tcp_compute_delivery_rate,
 // tcp.c:396): rate_delivered * mss * 10^6 / rate_interval_us bytes/s, 0
-// without a record. Stub (0) until m2b-rate-pacing.
+// without a record; the interval in whole microseconds as Linux keeps it.
 [[nodiscard]] std::uint64_t rate_delivery_rate(const RateState& rs, std::uint32_t mss);
 
 // tcp_rate_check_app_limited, from tcp_send (§5.4): marks the connection

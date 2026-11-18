@@ -41,3 +41,6 @@ add_test(NAME interop.m1_dsack_check
 # with known answers (DESIGN §14).
 add_test(NAME interop.m2_analyze_check
          COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/m2/test_analyze.py)
+
+add_test(NAME interop.m2_pacing_check
+         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/m2_pacing_check.py)
