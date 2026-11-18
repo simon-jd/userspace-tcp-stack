@@ -99,7 +99,7 @@ replay_py=$(cat <<'PY'
 import json, sys
 bursts = []  # [t_ns, rate, bytes, segments]
 for ln in sys.stdin:
-    if '"kind":"tx"' not in ln:
+    if '"ev":"tx"' not in ln:
         continue
     e = json.loads(ln)
     if not e.get("len") or not e.get("gate_rate"):
