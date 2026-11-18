@@ -153,6 +153,34 @@ TEST(SackScoreboard, EntryByDupAcksCountedOnCumulativeAcks) {
   EXPECT_EQ(r.stats.TcpExtTCPSackRecovery, 1u);
 }
 
+// Entry by DupAcks counted on SACK ACKs that change the window (RFC 6675
+// §2: an ACK that SACKs new data is a DupAck whatever else it carries; the
+// engine marks a window-changing ACK as no RFC 5681 duplicate, so
+// AckInput::dupack is false on it). SACK 3 (DupAcks 1); the window grows and
+// 5 is SACKed (2, still Disorder: only 3 and 5 lie above 4, and IsLost(1)
+// needs 3 SACKed segments); the window shrinks and 7 is SACKed (3: entry;
+// IsLost marks 1 and 2 at the same ACK, 3 SACKed above). The DupAcks values
+// are the check: entry alone would also follow from IsLost.
+TEST(SackScoreboard, EntryByDupAcksCountedOnWindowChangingAcks) {
+  Rig r(utcp::test::rig::rfc_cfg());
+  r.send_new(10);
+  r.now += 100ms;
+  r.ack(1, {{3, 3}});
+  EXPECT_EQ(r.rec.scoreboard().dupacks(), 1u);
+  const utcp::AckOutcome o = r.ack_new_window(1, {{3, 3}, {5, 5}}, r.wnd + 8 * utcp::test::rig::mss);
+  EXPECT_EQ(o.newly_sacked, 1u);
+  EXPECT_EQ(r.rec.scoreboard().dupacks(), 2u);
+  EXPECT_EQ(r.rec.state(), CaState::disorder);
+  EXPECT_FALSE(r.pkt(1).lost);
+  r.ack_new_window(1, {{3, 3}, {5, 5}, {7, 7}}, r.wnd - 4 * utcp::test::rig::mss);
+  EXPECT_EQ(r.rec.scoreboard().dupacks(), 3u);
+  EXPECT_EQ(r.rec.state(), CaState::recovery);
+  EXPECT_TRUE(r.pkt(1).lost);
+  EXPECT_TRUE(r.pkt(2).lost);
+  EXPECT_FALSE(r.pkt(4).lost);  // 5, 7 above
+  EXPECT_EQ(r.stats.TcpExtTCPSackRecovery, 1u);
+}
+
 // A partial ACK with SACK marks nothing by itself (the RFC 6582 head rule is
 // for connections without SACK, M2-DESIGN §1.2); IsLost marks the new head
 // once 3 SACKed segments lie above it.

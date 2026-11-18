@@ -161,7 +161,7 @@ struct Rig {
   // SACK blocks are the byte ranges given.
   AckOutcome ack_bytes(std::uint64_t una, std::vector<Range> blocks,
                        std::optional<Range> dsack = std::nullopt,
-                       std::optional<std::uint32_t> tsecr = {}) {
+                       std::optional<std::uint32_t> tsecr = {}, bool window_update = false) {
     AckInput in;
     in.now = now;
     in.prior_una = q.una();
@@ -170,7 +170,9 @@ struct Rig {
     in.dsack = dsack;
     in.tsecr = tsecr;
     in.now_ts = static_cast<std::uint32_t>(now.ns / 1'000'000) + ts_offset;
-    in.dupack = in.new_una == q.una() && q.counters().packets_out > 0;
+    // tcp_input.cpp: an ACK that changes SND.WND is not a duplicate ACK.
+    in.window_update = window_update;
+    in.dupack = in.new_una == q.una() && q.counters().packets_out > 0 && !window_update;
     ctx = std::make_unique<AckContext>(AckContext{q, rec, rtt, cc, algo, rate, cfg, stats, ctr,
                                                   wnd, sack, backoff, rto_count, max_snd_wnd,
                                                   ts_offset, pacing_delay});
@@ -182,6 +184,21 @@ struct Rig {
       rto_count = 0;
     }
     return out;
+  }
+
+  // ack() on an ACK that also offers a new window `new_wnd` (!= wnd): the
+  // engine takes the window before process_ack and sets window_update, so
+  // the ACK is not a duplicate ACK (tcp_input.cpp, RFC 5681 §2 (d)).
+  AckOutcome ack_new_window(std::uint32_t cum,
+                            std::vector<std::pair<std::uint32_t, std::uint32_t>> sacked,
+                            std::uint32_t new_wnd) {
+    EXPECT_NE(new_wnd, wnd);
+    wnd = new_wnd;
+    std::vector<Range> blocks;
+    for (const auto& [first, last] : sacked) {
+      blocks.push_back(Range{off_of(first), off_of(last + 1)});
+    }
+    return ack_bytes(off_of(cum), std::move(blocks), std::nullopt, std::nullopt, true);
   }
 
   // The xmit timer as the engine sees it.
