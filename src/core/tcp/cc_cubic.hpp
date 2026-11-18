@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "core/tcp/cc.hpp"
+#include "core/tcp/hystart.hpp"
 
 namespace utcp {
 
@@ -36,6 +37,8 @@ private:
   void rfc_update(CcConn& c, std::uint32_t acked);
   void shift_epoch(std::uint32_t now, std::uint32_t idle);
 
+  ClassicHyStart classic_;
+  HyStartPlusPlus plus_;
   std::optional<std::uint32_t> epoch_, pause_;
   std::uint32_t last_max_ = 0, prior_ = 0, origin_ = 0, k_ = 0;
   std::uint32_t last_cwnd_ = 0, last_time_ = 0, cnt_ = 0, tcp_cwnd_ = 0;

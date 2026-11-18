@@ -48,11 +48,15 @@ std::uint32_t cubic_root(std::uint64_t value) {
 }
 
 std::string_view Cubic::name() const { return "cubic"; }
-void Cubic::init(CcConn&) { *this = Cubic{}; }
+void Cubic::init(CcConn& c) {
+  *this = Cubic{};
+  classic_.reset_round(c);
+}
 void emplace_cubic(CcStorage& s) { s.emplace<Cubic>(); }
 
 std::uint32_t Cubic::ssthresh(const CcConn& c) {
   // RFC 9438 §§4.6-4.7; Linux cubictcp_recalc_ssthresh.
+  plus_.end();
   epoch_.reset();
   pause_.reset();
   prior_ = c.cwnd;
@@ -149,7 +153,11 @@ void Cubic::cong_avoid(CcConn& c, const AckOutcome& out) {
     pause_.reset();
   }
   auto acked = out.delivered;
-  if (c.cwnd < c.ssthresh) acked = slow_start(c, acked, rfc ? 1u : acked);
+  if (c.cwnd < c.ssthresh) {
+    const auto limit = c.hystart == Hystart::hystart_pp && plus_.active(c)
+        ? plus_.growth(c, acked) : (rfc ? 1u : acked);
+    acked = slow_start(c, acked, limit);
+  }
   if (acked == 0) return;
   if (rfc) rfc_update(c, acked);
   else linux_update(c, acked);
@@ -179,15 +187,20 @@ void Cubic::set_state(CcConn& c, CaState state) {
     // §4.8: forget W_max on RTO but preserve cwnd_prior for Reno friendliness.
     const auto previous = prior_;
     init(c);
+    plus_.end();
     if (c.flavor == CcFlavor::rfc) prior_ = previous;
   }
 }
 
 void Cubic::pkts_acked(CcConn& c, const AckSample& sample) {
+  if (c.hystart == Hystart::hystart_pp && plus_.active(c) && c.cwnd < c.ssthresh)
+    plus_.sample(c, sample.rtt);
   if (sample.rtt.count() < 0) return;
   if (epoch_ && static_cast<std::int32_t>(jiffies(c.now) - *epoch_) < 1000) return;
   const auto us = bounded(static_cast<std::uint64_t>(sample.rtt.count()) / 1000);
   if (delay_min_us_ == 0 || us < delay_min_us_) delay_min_us_ = std::max(us, 1u);
+  if (c.hystart == Hystart::hystart_classic && c.cwnd < c.ssthresh)
+    classic_.sample(c, std::max(us, 1u), delay_min_us_);
 }
 
 }  // namespace utcp

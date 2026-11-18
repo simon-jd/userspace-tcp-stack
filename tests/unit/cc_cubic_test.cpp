@@ -262,9 +262,17 @@ TEST(CcCubic, RfcTimeoutRestartsAtZeroK) {
 
 TEST(CcCubic, RfcLossFreeSlowStartExitSetsPriorAndZeroK) {
   Flow f(CcFlavor::rfc);
+  f.c.hystart = Hystart::hystart_pp;
   f.c.ssthresh = cwnd_infinite;
+  f.c.snd_nxt = 100;
+  for (int i = 0; i < 8; ++i) f.sample(20ms);
   f.ack();
-  f.c.ssthresh = f.c.cwnd;  // threshold supplied by a loss-free HyStart++ exit
+  for (int round = 0; round <= 5; ++round) {
+    f.c.snd_una = f.c.snd_nxt;
+    f.c.snd_nxt += 100;
+    for (int i = 0; i < 8; ++i) f.sample(24ms);
+  }
+  ASSERT_EQ(f.c.ssthresh, 101u);
   f.ack();
   EXPECT_EQ(View::prior(f.a), 101u);
   EXPECT_EQ(View::origin(f.a), 101u);

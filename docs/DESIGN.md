@@ -1103,6 +1103,13 @@ ahead, accumulates fractional packets, and excludes application-limited interval
 5.8). Its multiplicative decrease uses FlightSize. Its Reno estimate changes to unit additive increase
 at the prior window. The first loss-free exit from slow start sets that prior window to the exit cwnd.
 
+CUBIC reads the independently selectable `hystart` setting during slow start. Classic HyStart uses Linux
+v7.0's ACK-train and round-minimum delay detectors, configured low window and inter-ACK gap, and records
+the detection counts and exit windows. RFC 9406 HyStart++ bounds unpaced growth to eight packets per ACK.
+After eight RTT samples show sufficient inflation over the previous round, conservative slow start divides
+growth by four and carries fractional packets. An RTT decrease can resume regular slow start. Five
+conservative rounds, including the partial entry round, end the initial slow start.
+
 ### 5.3 What M1 ships
 
 Enough to move 1 GB under netem loss, with the interface above in place:

@@ -11,9 +11,10 @@ namespace utcp {
 
 namespace {
 
-[[nodiscard]] bool valid_options(const TcpSocketOptions& o) {
-  if (o.cc && *o.cc != CcAlgo::newreno) {
-    return false;  // M1: NewReno only
+[[nodiscard]] bool valid_options(const TcpSocketOptions& o, CcAlgo fallback) {
+  const auto cc = o.cc.value_or(fallback);
+  if (cc != CcAlgo::newreno && cc != CcAlgo::cubic) {
+    return false;
   }
   if (o.rcv_buf && *o.rcv_buf == 0) {
     return false;
@@ -28,7 +29,7 @@ namespace {
 
 std::expected<Handle, Error> TcpEngine::tcp_listen(Endpoint local, std::uint32_t backlog,
                                                    const TcpSocketOptions& opts) {
-  if (local.port == 0 || !valid_options(opts)) {
+  if (local.port == 0 || !valid_options(opts, cfg_.cc)) {
     return std::unexpected(Error::invalid_argument);
   }
   if (local.addr.v != 0 && local.addr != core_.local_addr()) {
@@ -73,7 +74,7 @@ std::expected<Handle, Error> TcpEngine::tcp_accept(Handle listener) {
 
 std::expected<Handle, Error> TcpEngine::tcp_connect(Endpoint remote, const TcpSocketOptions& opts,
                                                     std::uint16_t local_port) {
-  if (remote.addr.v == 0 || remote.port == 0 || !valid_options(opts)) {
+  if (remote.addr.v == 0 || remote.port == 0 || !valid_options(opts, cfg_.cc)) {
     return std::unexpected(Error::invalid_argument);
   }
   std::uint16_t port = local_port;
@@ -453,7 +454,7 @@ std::expected<void, Error> TcpEngine::tcp_set_options(Handle h, const TcpSocketO
     return std::unexpected(Error::bad_handle);
   }
   Tcb& t = *p;
-  if (!valid_options(opts)) {
+  if (!valid_options(opts, t.opts.cc) || (opts.cc && *opts.cc != t.opts.cc)) {
     return std::unexpected(Error::invalid_argument);
   }
   if (opts.rcv_buf) {
