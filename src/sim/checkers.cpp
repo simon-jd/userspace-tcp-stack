@@ -15,7 +15,7 @@ namespace {
 
 constexpr std::array<std::string_view, verdict_count> verdict_names{
     "ok", "stream", "termination", "inflight", "progress",
-    "leak", "stuck", "livelock", "workload", "planted"};
+    "leak", "stuck", "livelock", "workload", "planted", "pacing"};
 
 std::string tuple_string(const FourTuple& t) {
   return to_string(t.local) + ">" + to_string(t.remote);
@@ -402,6 +402,10 @@ std::optional<std::string> InFlightChecker::on_egress(std::uint32_t node,
       d.own_syn = true;
       d.iss = p->tcp.h.seq;
       d.own_ws = p->tcp.opt.wscale;
+      d.own_sack = p->tcp.opt.sack_permitted;
+      d.probe.reset();
+      d.last_window.reset();
+      d.episode_end_ack.reset();
       d.edge.reset();
       d.high_sent.reset();
       d.high_ack.reset();
@@ -457,6 +461,7 @@ void InFlightChecker::on_ingress(std::uint32_t node, std::span<const std::byte> 
       x.peer_syn = true;
       x.peer_isn = p->tcp.h.seq;
       x.peer_ws = p->tcp.opt.wscale;
+      x.peer_sack = p->tcp.opt.sack_permitted;
     }
     if (has_ack) {
       // RFC 7323 §2.2: the window of a SYN is never scaled.
@@ -478,6 +483,23 @@ void InFlightChecker::on_ingress(std::uint32_t node, std::span<const std::byte> 
     return;
   }
   Dir& x = xit->second;
+  x.episode_end_ack.reset();
+  if (x.probe) {
+    // A pure duplicate ACK neither advances the ACK nor changes the window.
+    bool ends = x.high_ack == ack && flags == wire::tcp_ack && p->tcp.payload.empty() &&
+                x.last_window == p->tcp.h.window && p->tcp.opt.sack_count == 0;
+    if (p->tcp.opt.sack_count > 0) {
+      const auto [begin, end] = p->tcp.opt.sack[0];
+      // RFC 2883 §4: below the cumulative ACK or nested in the next block.
+      const auto second = p->tcp.opt.sack[1];
+      const bool dsack = before_eq(end, ack) || (p->tcp.opt.sack_count > 1 &&
+                         before_eq(second.first, begin) && before_eq(end, second.second));
+      ends |= dsack && before(begin, end) && before_eq(begin, x.probe->first) &&
+              after_eq(end, x.probe->end);
+    }
+    if (ends) x.episode_end_ack = ack;
+  }
+  x.last_window = p->tcp.h.window;
   const Seq32 cand = ack + (std::uint32_t{p->tcp.h.window} << peer_shift(x));
   if (!x.edge || after(cand, *x.edge)) {
     x.edge = cand;
@@ -503,8 +525,18 @@ void InFlightChecker::on_ingress(std::uint32_t node, std::span<const std::byte> 
 
 std::optional<std::string> InFlightChecker::on_trace(std::uint32_t node, const TraceEvent& e) {
   const auto conn = std::make_pair(node, e.conn_id);
+  auto& dir = dirs_[e.tuple];
+  if (e.kind == TraceKind::state && e.state == TcpState::closed) dir.probe.reset();
+  if (e.ca == CaState::loss || e.ca == CaState::recovery) {
+    dir.probe.reset();
+  }
+  if (e.kind == TraceKind::ack && dir.probe &&
+      (e.snd_una_off >= dir.probe->high || dir.episode_end_ack == Seq32(e.ack))) {
+    dir.probe.reset();
+  }
   if (e.kind == TraceKind::rto ||
       (e.kind == TraceKind::timer && e.timer == TraceTimer::rto && e.timer_op == TimerOp::fired)) {
+    dir.probe.reset();
     rto_pending_.insert(conn);
     return std::nullopt;
   }
@@ -512,6 +544,21 @@ std::optional<std::string> InFlightChecker::on_trace(std::uint32_t node, const T
     return std::nullopt;
   }
   switch (e.tx) {
+    case TxKind::tlp: {
+      const std::string who = conn_string(node, e.conn_id, e.tuple);
+      if (!dir.own_sack || !dir.peer_sack) return who + " TLP without negotiated SACK";
+      if (e.ca == CaState::recovery || e.ca == CaState::loss) return who + " TLP in Recovery/Loss";
+      if (dir.probe) return who + " second TLP in open probe episode";
+      if (std::uint64_t{e.in_flight} > std::uint64_t{e.cwnd} + 1) return who + " TLP exceeds cwnd+1";
+      dir.probe = Dir::Probe{e.snd_nxt_off, Seq32(e.seq), Seq32(e.seq) + e.len};
+      dir.episode_end_ack.reset();
+      return std::nullopt;
+    }
+    case TxKind::fast_rexmit:
+      if (!strict_ || (reductions_.contains(node) && reductions_.at(node) == RecoveryReduction::rfc6675)) {
+        return std::nullopt;
+      }
+      break;
     case TxKind::data:
     case TxKind::fin:
     case TxKind::rexmit:
@@ -530,8 +577,7 @@ std::optional<std::string> InFlightChecker::on_trace(std::uint32_t node, const T
       rto_pending_.erase(conn);  // the expiry retransmitted the SYN or SYN-ACK
       return std::nullopt;
     default:
-      // fast_rexmit and tlp are exempt (RFC 6675 §5 (4.3), RFC 8985 §7.3);
-      // the other kinds carry no data.
+      // Pure control segments do not consume congestion-window space.
       return std::nullopt;
   }
   if (e.len == 0) {
@@ -566,6 +612,79 @@ std::optional<std::string> InFlightChecker::on_trace(std::uint32_t node, const T
            "marks has " + std::to_string(wire_in_flight) + " bytes in flight on the wire > cwnd " +
            std::to_string(e.cwnd) + " * mss " + std::to_string(e.mss);
   }
+  return std::nullopt;
+}
+
+// --- PacingChecker (§7.3). A burst is charged once its last segment is known.
+void PacingChecker::Sender::finish_burst() {
+  if (bytes == 0) return;
+  const Time base = std::max(edt, sent);
+  if (segments >= 10) {
+    __extension__ using Wide = unsigned __int128;
+    const Wide interval = Wide{bytes} * 1'000'000'000 / rate;
+    const auto late = static_cast<std::uint64_t>(std::max((sent - edt).count(), std::int64_t{0}));
+    const Wide charge = interval - std::min<Wide>(interval / 2, late);
+    edt = base + Duration{static_cast<std::int64_t>(std::min<Wide>(charge, Duration::max().count()))};
+  } else {
+    edt = base;
+  }
+  bytes = 0;
+}
+
+std::optional<std::string> PacingChecker::on_trace(std::uint32_t node, const TraceEvent& e) {
+  const auto key = std::pair{node, e.conn_id};
+  if (e.kind == TraceKind::state && e.state == TcpState::closed) {
+    senders_.erase(key);
+    return std::nullopt;
+  }
+  if (e.kind == TraceKind::rto ||
+      (e.kind == TraceKind::timer && e.timer == TraceTimer::rto && e.timer_op == TimerOp::fired)) {
+    senders_[key].rto_head = true;
+  }
+  if (e.kind != TraceKind::tx) return std::nullopt;
+  Sender& s = senders_[key];
+  const bool head = e.tx == TxKind::rto_rexmit && s.rto_head;
+  if (e.tx == TxKind::syn || e.tx == TxKind::synack || e.tx == TxKind::rto_rexmit) s.rto_head = false;
+  const bool repeat_probe = e.tx == TxKind::tlp && e.snd_nxt_off <= s.nxt;
+  s.nxt = std::max(s.nxt, e.snd_nxt_off);
+  if (e.len == 0) return std::nullopt;
+  const bool exempt = head || repeat_probe;
+  if (e.burst_start || exempt || !e.gate_rate) s.finish_burst();
+  s.segments = std::min(10u, s.segments + 1);
+  const auto who = [&] { return conn_string(node, e.conn_id, e.tuple); };
+  if (exempt) {
+    // Timer sends bypass the gate but charge EDT at the active sender rate.
+    const auto conf = configs_.find(node);
+    if (e.gate_rate) {
+      s.rate = e.gate_rate;
+    } else if (conf != configs_.end() && (conf->second.test_fixed_pacing_rate ||
+                                         conf->second.pacing == Pacing::always)) {
+      s.rate = conf->second.test_fixed_pacing_rate.value_or(e.pacing_rate);
+    } else {
+      s.rate = 0;
+    }
+    if (s.rate && s.segments >= 10) {
+      s.sent = e.t;
+      s.bytes = e.len;
+      s.finish_burst();
+    }
+    return std::nullopt;
+  }
+  if (!e.gate_rate) {
+    // Legacy startup can be untagged. A still-pending gate applies to new-data probes too.
+    if (e.t + 1us < s.edt && e.tx != TxKind::zwp) {
+      return who() + " untagged payload before EDT";
+    }
+    return std::nullopt;
+  }
+  if (e.burst_start) {
+    if (e.t + 1us < s.edt) return who() + " paced burst before EDT " + std::to_string(s.edt.ns);
+    s.rate = e.gate_rate;
+    s.sent = e.t;
+  } else if (!s.bytes || s.sent != e.t || s.rate != e.gate_rate) {
+    return who() + " paced segment without matching burst start";
+  }
+  s.bytes += e.len;
   return std::nullopt;
 }
 

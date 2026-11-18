@@ -50,6 +50,7 @@ struct WireEvent {
 };
 
 struct WorldOptions {
+  bool strict_fast_rexmit = false;
   // `livelock` limits (§7.1).
   std::uint64_t max_events_per_instant = 1'000'000;
   std::uint64_t max_events = 200'000'000;
@@ -167,6 +168,7 @@ private:
   StreamChecker stream_;
   TerminationChecker termination_;
   InFlightChecker inflight_;
+  PacingChecker pacing_;
   ProgressChecker progress_;
   RunDigest digest_;
 

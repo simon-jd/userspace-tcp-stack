@@ -161,6 +161,68 @@ NodeSpec generate_node(const Seed& master, std::uint32_t index) {
   return n;
 }
 
+// M2 congestion-control scenarios use a single bottleneck in each direction.
+void generate_congestion(Scenario& s, const Seed& master) {
+  Rng path = Rng::derive(master, "gen/m2/path");
+  const auto rate = (1 + path.below64(100)) * 1'000'000;
+  // At the smallest BDP, four BDP must still hold a 1500-byte datagram.
+  const auto min_rtt_ms = (3'000'000 + rate - 1) / rate;
+  const auto rtt_ms = min_rtt_ms + path.below64(201 - min_rtt_ms);
+  const auto bdp = rate * rtt_ms / 8000;
+  // Draw a quarter-BDP multiple with room for at least one full packet.
+  const auto min_quarters = std::max<std::uint64_t>(1, (6000 + bdp - 1) / bdp);
+  const auto queue = bdp * (min_quarters + path.below64(17 - min_quarters)) / 4;
+  for (std::uint32_t i = 0; i < 2; ++i) {
+    NodeSpec& n = s.node[i];
+    Rng conf = Rng::derive(master, label("gen/m2/node/", node_name(i)));
+    n.hystart = conf.below(2) ? Hystart::hystart_classic : Hystart::hystart_pp;
+    n.recovery_reduction = conf.below(2) ? RecoveryReduction::prr : RecoveryReduction::rfc6675;
+    n.rack_tlp = n.recovery_reduction == RecoveryReduction::prr && conf.below(2);
+    n.pacing = static_cast<Pacing>(conf.below(3));
+    if (s.gen_version >= 5) {
+      Rng cc = Rng::derive(master, label("gen/m2/cc/", node_name(i)));
+      n.cc = cc.below(2) ? CcAlgo::cubic : CcAlgo::newreno;
+    }
+    const std::string name = i == 0 ? "a>b" : "b>a";
+    Rng link = Rng::derive(master, label("gen/m2/link/", name));
+    LinkParams p;
+    p.rate_bps = rate;
+    p.queue_bytes = static_cast<std::uint32_t>(queue);
+    p.delay = ns(rtt_ms * 500'000);
+    const auto loss = link.below(5) == 0 ? 0 : 1 + link.below(50'000);
+    if (link.below(2)) {
+      p.loss_ppm = loss;
+    } else {
+      // Stationary bad-state probability p/(p+r) <= the chosen loss.
+      p.burst.r_ppm = 100'000 + link.below(400'001);
+      p.burst.p_ppm = static_cast<std::uint32_t>(std::uint64_t{loss} * p.burst.r_ppm /
+                                                 (1'000'000 - loss));
+    }
+    if (link.below(12) == 0) {
+      p.allow_reorder = true;
+      p.jitter = p.delay / 8;
+    }
+    if (link.below(12) == 0) {
+      p.dup_ppm = 1 + link.below(5000);
+      p.dup_extra_delay = p.delay / 2;
+    }
+    s.link.push_back({name, p});
+    s.path.push_back({i, 1 - i, {i}});
+  }
+  Rng workload = Rng::derive(master, "gen/m2/workload");
+  s.app_idle_timeout = 300s;
+  ConnSpec c;
+  c.client = workload.below(2);
+  c.bytes_c2s = log_uniform(workload, 16 * kib, 256 * kib);
+  c.bytes_s2c = log_uniform(workload, 1, 32 * kib);
+  if (workload.below(4) == 0) {
+    c.write_interval = ns(log_uniform(workload, 1'000'000, rtt_ms * 2'000'000));
+    c.write_max_c = c.write_max_s = 128 + workload.below(1921);
+    c.bytes_c2s = log_uniform(workload, kib, 16 * kib);
+  }
+  s.conn.push_back(c);
+}
+
 LinkSpec clean_segment(std::string name) {
   LinkSpec l;
   l.name = std::move(name);
@@ -192,6 +254,13 @@ Scenario generate_scenario(std::uint64_t seed, NodeKind nodes, const GenOptions&
   }
 
   s.node = {generate_node(master, 0), generate_node(master, 1)};
+
+  s.gen_version = opt.version;
+  UTCP_CHECK(opt.version >= 3 && opt.version <= max_gen_version);
+  if (opt.version >= 4) {
+    generate_congestion(s, master);
+    return s;
+  }
 
   // Path character, shared by both directions.
   Rng rp = Rng::derive(master, "gen/path");
@@ -370,8 +439,15 @@ constexpr std::array<EnumName<CloseMode>, 5> close_modes{{{CloseMode::close, "cl
                                                           {CloseMode::simultaneous, "simultaneous"}}};
 constexpr std::array<EnumName<ProfileId>, 2> profiles{
     {{ProfileId::rfc, "rfc"}, {ProfileId::linux_compat, "linux_compat"}}};
-constexpr std::array<EnumName<TestFault>, 3> test_faults{
+constexpr std::array<EnumName<CcAlgo>, 2> cc_names{{{CcAlgo::newreno, "newreno"}, {CcAlgo::cubic, "cubic"}}};
+constexpr std::array<EnumName<Hystart>, 2> hystarts{{{Hystart::hystart_pp, "hystart_pp"}, {Hystart::hystart_classic, "hystart_classic"}}};
+constexpr std::array<EnumName<RecoveryReduction>, 2> reductions{{{RecoveryReduction::prr, "prr"}, {RecoveryReduction::rfc6675, "rfc6675"}}};
+constexpr std::array<EnumName<Pacing>, 3> pacings{{{Pacing::cc_requested, "cc_requested"}, {Pacing::always, "always"}, {Pacing::never, "never"}}};
+constexpr std::array<EnumName<TestFault>, 6> test_faults{
     {{TestFault::none, "none"},
+     {TestFault::prr_skip_force, "prr_skip_force"},
+     {TestFault::double_tlp, "double_tlp"},
+     {TestFault::ignore_pacing_gate, "ignore_pacing_gate"},
      {TestFault::unscaled_peer_window, "unscaled_peer_window"},
      {TestFault::overscaled_peer_window, "overscaled_peer_window"}}};
 
@@ -619,6 +695,13 @@ void visit(V& v, Scenario& s) {
   v.field("app_idle_timeout_ns", s.app_idle_timeout);
   v.list("node", s.node, [&](const std::string& p, NodeSpec& n) {
     v.enumeration(p + "profile", n.profile, profiles);
+    if (s.gen_version >= 4) {
+      v.enumeration(p + "cc", n.cc, cc_names);
+      v.enumeration(p + "hystart", n.hystart, hystarts);
+      v.enumeration(p + "recovery_reduction", n.recovery_reduction, reductions);
+      v.field(p + "rack_tlp", n.rack_tlp);
+      v.enumeration(p + "pacing", n.pacing, pacings);
+    }
     v.field(p + "sack", n.sack);
     v.field(p + "timestamps", n.timestamps);
     v.field(p + "window_scaling", n.window_scaling);
@@ -675,6 +758,9 @@ void visit(V& v, Scenario& s) {
     v.field(p + "pause_c_ns", c.pause_c);
     v.field(p + "pause_every_s", c.pause_every_s);
     v.field(p + "pause_s_ns", c.pause_s);
+    if (s.gen_version >= 4) {
+      v.field(p + "write_interval_ns", c.write_interval);
+    }
     v.field(p + "abort_after_ns", c.abort_after);
   });
   v.list("udp", s.udp, [&](const std::string& p, UdpSpec& u) {
@@ -701,6 +787,16 @@ void visit(V& v, Scenario& s) {
 std::optional<std::string> validate(const Scenario& s) {
   if (s.node.size() != 2) {
     return "node.count must be 2";
+  }
+  if (s.gen_version >= 4) {
+    for (const NodeSpec& n : s.node) {
+      if (n.rack_tlp && n.recovery_reduction == RecoveryReduction::rfc6675) {
+        return "rack_tlp requires PRR";
+      }
+      if (s.gen_version == 4 && n.cc != CcAlgo::newreno) {
+        return "gen 4 requires NewReno";
+      }
+    }
   }
   std::set<std::string> names;
   for (const LinkSpec& l : s.link) {
@@ -740,8 +836,9 @@ std::optional<std::string> validate(const Scenario& s) {
     }
   }
   for (const ConnSpec& c : s.conn) {
-    if (c.client >= s.node.size() || c.write_max_c == 0 || c.write_max_s == 0) {
-      return "conn with bad client or write_max";
+    if (c.client >= s.node.size() || c.write_max_c == 0 || c.write_max_s == 0 ||
+        c.write_interval < Duration::zero()) {
+      return "conn with bad client, write_max or write_interval";
     }
     if (c.mode == CloseMode::simultaneous && c.client_port == 0) {
       return "simultaneous conn needs a client_port";
@@ -781,6 +878,13 @@ std::optional<std::string> validate(const Scenario& s) {
 }
 
 }  // namespace
+
+std::optional<TestFault> test_fault_from_string(std::string_view s) noexcept {
+  for (const auto& entry : test_faults) {
+    if (entry.name == s) return entry.value;
+  }
+  return std::nullopt;
+}
 
 std::string to_kv(const Scenario& s) {
   Scenario copy = s;
@@ -825,9 +929,9 @@ std::expected<Scenario, std::string> parse_kv(std::string_view text) {
   if (const auto unused = r.unused(); !unused.empty()) {
     return std::unexpected("unknown key " + unused.front());
   }
-  if (s.gen_version > gen_version) {
+  if (s.gen_version > max_gen_version) {
     return std::unexpected("gen_version " + std::to_string(s.gen_version) +
-                           " is newer than this binary's " + std::to_string(gen_version));
+                           " is newer than this binary's " + std::to_string(max_gen_version));
   }
   if (auto err = validate(s)) {
     return std::unexpected(*err);

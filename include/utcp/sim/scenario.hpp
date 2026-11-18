@@ -28,7 +28,8 @@ namespace utcp::sim {
 // Bumped whenever generate_scenario() changes what a seed produces.
 // 2: shared listeners (backlog limits).
 // 3: a small ChunkPool (NodeSpec::chunk_limit) in half of the small-queue seeds.
-inline constexpr std::uint32_t gen_version = 3;
+inline constexpr std::uint32_t gen_version = 3;  // default until M2 integration
+inline constexpr std::uint32_t max_gen_version = 5;
 
 enum class NodeKind : std::uint8_t {
   stack,      // StackNode: a Stack running the scripted workload
@@ -70,6 +71,13 @@ struct NodeSpec {
   std::uint32_t host_drain_max = 0;  // datagrams the host drains per wake-up; 0 = all
   Duration host_delay{};             // when the host drains the rest
 
+  // Explicit controls in version 4+ scenarios. Older scenarios use the profile.
+  CcAlgo cc = CcAlgo::newreno;
+  Hystart hystart = Hystart::hystart_classic;
+  RecoveryReduction recovery_reduction = RecoveryReduction::prr;
+  bool rack_tlp = true;
+  Pacing pacing = Pacing::cc_requested;
+
   bool operator==(const NodeSpec&) const = default;
 };
 
@@ -107,6 +115,8 @@ struct ConnSpec {
   std::uint64_t pause_every_s = 0;
   Duration pause_s{};
   Duration abort_after{};  // `abort`: time from connected to tcp_abort
+
+  Duration write_interval{};  // wait after each successful write (both ends)
 
   bool operator==(const ConnSpec&) const = default;
 };
@@ -168,6 +178,7 @@ struct GenOptions {
   // Draw from an extra labelled stream first (test: adding a consumer must not
   // change the scenario).
   bool probe_extra_label = false;
+  std::uint32_t version = gen_version;
 };
 
 // The scenario of `seed` (ranges of DESIGN §7.2).
@@ -193,6 +204,7 @@ struct GenOptions {
 [[nodiscard]] std::string_view to_string(NodeKind k) noexcept;
 [[nodiscard]] std::string_view to_string(Plant p) noexcept;
 [[nodiscard]] std::string_view to_string(CloseMode m) noexcept;
+[[nodiscard]] std::optional<TestFault> test_fault_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<NodeKind> node_kind_from_string(std::string_view s) noexcept;
 
 }  // namespace utcp::sim

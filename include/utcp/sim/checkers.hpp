@@ -6,6 +6,7 @@
 // | StreamChecker      | application writes and reads             | off                      |
 // | TerminationChecker | state and tx rst events, app closes      | any close cause          |
 // | InFlightChecker    | wire datagrams, tx and RTO events        | on                       |
+// | PacingChecker      | payload sends, burst metadata, timer events | on                    |
 // | ProgressChecker    | progress events (World)                  | on                       |
 // | QuiescenceChecker  | Stack::debug_usage() at the end (World)  | on                       |
 // SelfCheck (Stack::debug_check() after every call) is in the World.
@@ -48,8 +49,9 @@ enum class Verdict : std::uint8_t {
   livelock,     // too many events at one instant or in the run (§7.1)
   workload,     // an API call failed in a way the workload does not allow
   planted,      // Scenario::plant == fail
+  pacing,       // PacingChecker
 };
-inline constexpr int verdict_count = 10;
+inline constexpr int verdict_count = 11;
 
 [[nodiscard]] std::string_view to_string(Verdict v) noexcept;
 [[nodiscard]] std::optional<Verdict> verdict_from_string(std::string_view s) noexcept;
@@ -186,7 +188,8 @@ private:
 // datagrams that pass the IPv4 and TCP checksum checks count, and a delivered
 // SYN counts only if its sequence number is the ISN its sender actually used.
 // Self-reported (TraceKind::tx events of data segments): packets_in_flight <=
-// cwnd, except fast_rexmit, the head rto_rexmit and tlp (RFC 6675 §5 (4.3),
+// cwnd, except fast_rexmit (strict mode: RFC 6675 nodes only), the head
+// rto_rexmit and one TLP probe, limited to cwnd+1 (RFC 6675 §5 (4.3),
 // Linux tcp_retransmit_timer, RFC 8985 §7.3); in Open with no loss marks, the
 // wire bytes in flight (highest sent - highest delivered ACK - bytes SACKed
 // on the wire) <= cwnd * mss. Trace tx events carry in_flight after the
@@ -196,6 +199,9 @@ private:
 // expiry is checked like rexmit.
 class InFlightChecker {
 public:
+  void set_strict_fast_rexmit(bool on) { strict_ = on; }
+  void set_reduction(std::uint32_t node, RecoveryReduction reduction) { reductions_[node] = reduction; }
+
   // A datagram `node` handed to the host (before impairment).
   [[nodiscard]] std::optional<std::string> on_egress(std::uint32_t node,
                                                      std::span<const std::byte> datagram);
@@ -216,15 +222,43 @@ private:
     Seq32 peer_isn{0};
     std::optional<std::uint8_t> peer_ws;
     std::optional<Seq32> edge, high_sent, high_ack;
+    bool own_sack = false, peer_sack = false;
+    struct Probe {
+      std::uint64_t high;
+      Seq32 first, end;
+    };
+    std::optional<Probe> probe;
+    std::optional<std::uint16_t> last_window;
+    std::optional<Seq32> episode_end_ack;
     std::vector<std::pair<Seq32, Seq32>> sacked;  // disjoint, above high_ack
   };
   [[nodiscard]] std::uint8_t peer_shift(const Dir& d) const noexcept;
   void add_sack(Dir& d, Seq32 begin, Seq32 end);
   [[nodiscard]] static std::uint32_t sacked_bytes(const Dir& d) noexcept;
 
+  bool strict_ = false;
+  std::map<std::uint32_t, RecoveryReduction> reductions_;
   std::map<FourTuple, Dir> dirs_;  // keyed by (sender, receiver)
   // (node, conn_id) with an RTO expiry whose head rto_rexmit is still to come.
   std::set<std::pair<std::uint32_t, std::uint32_t>> rto_pending_;
+};
+
+// Independent replay of paced bursts, keyed by sending stack and connection.
+class PacingChecker {
+public:
+  void set_config(std::uint32_t node, const TcpConfig& config) { configs_[node] = config; }
+  [[nodiscard]] std::optional<std::string> on_trace(std::uint32_t node, const TraceEvent& e);
+
+private:
+  struct Sender {
+    Time edt{}, sent{};
+    std::uint64_t bytes = 0, rate = 0, nxt = 0;
+    unsigned segments = 0;
+    bool rto_head = false;
+    void finish_burst();
+  };
+  std::map<std::pair<std::uint32_t, std::uint32_t>, Sender> senders_;
+  std::map<std::uint32_t, TcpConfig> configs_;
 };
 
 // --- ProgressChecker: while any workload connection is unfinished, some

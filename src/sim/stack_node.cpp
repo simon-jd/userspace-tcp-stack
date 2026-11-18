@@ -20,6 +20,13 @@ StackConfig stack_config(const Scenario& s, std::uint32_t index) {
   c.mtu = 1500;
   c.seed = Rng::derive_seed(Seed::from_u64(s.seed), "node/" + node_name(index) + "/stack");
   c.tcp = tcp_config(n.profile);
+  if (s.gen_version >= 4) {
+    c.tcp.cc = n.cc;
+    c.tcp.hystart = n.hystart;
+    c.tcp.recovery_reduction = n.recovery_reduction;
+    c.tcp.rack_tlp = n.rack_tlp;
+    c.tcp.pacing = n.pacing;
+  }
   c.tcp.sack = n.sack;
   c.tcp.timestamps = n.timestamps;
   c.tcp.window_scaling = n.window_scaling;
@@ -111,7 +118,7 @@ public:
     std::uint32_t write_max = 1;
     std::uint64_t pause_every = 0, next_pause = 0;
     Duration pause{};
-    Time paused_until{};
+    Time paused_until{}, next_write{};
     bool eof = false, shut_wr = false;
     Time abort_at = Time::never();
     Time last_activity{};
@@ -440,7 +447,7 @@ public:
       }
     }
     const bool may_send = !(e.mode == CloseMode::half_close && !e.client) || e.eof;
-    if (may_send && e.sent < e.to_send) {
+    if (may_send && e.sent < e.to_send && e.next_write <= t) {
       if (!write(e)) {
         return;
       }
@@ -536,6 +543,11 @@ public:
       counts_.tcp_bytes_sent += *r;
       ctx_->stream().on_written(e.conn, e.send_dir, e.sent);
       touch(e);
+      const auto gap = s_.conn[e.conn].write_interval;
+      if (gap > Duration::zero()) {
+        e.next_write = now() + gap;
+        break;
+      }
     }
     return true;
   }
@@ -752,6 +764,7 @@ public:
         case Phase::open:
           t = std::min(t, e.last_activity + s_.app_idle_timeout);
           t = std::min(t, e.abort_at);
+          if (e.sent < e.to_send && e.next_write > n) t = std::min(t, e.next_write);
           if (!e.eof && e.paused_until > n) {
             t = std::min(t, e.paused_until);
           }

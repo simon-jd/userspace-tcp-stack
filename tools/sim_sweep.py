@@ -84,6 +84,10 @@ class Sweep:
 
     def sim_args(self):
         a = ["--nodes", self.args.nodes]
+        if self.args.gen_version is not None:
+            a += ["--gen-version", str(self.args.gen_version)]
+        if self.args.strict_fast_rexmit:
+            a.append("--strict-fast-rexmit")
         for name in ("plant_fail", "plant_abort", "plant_hang", "plant_segv"):
             v = getattr(self.args, name)
             if v:
@@ -264,6 +268,8 @@ def main():
                    help="utcp-sim to run (default: the gcc-sweep build, Release with UTCP_DCHECK)")
     p.add_argument("--asan-sim", help="utcp-sim of an ASan/UBSan build to replay failing seeds")
     p.add_argument("--timeout", type=float, default=120.0, help="wall-clock seconds per seed")
+    p.add_argument("--gen-version", type=int, choices=(3, 4, 5))
+    p.add_argument("--strict-fast-rexmit", action="store_true")
     p.add_argument("--nodes", choices=("stack", "synthetic"), default="stack")
     p.add_argument("--plant-fail", default="", help="seeds that fail (tests the tooling)")
     p.add_argument("--plant-abort", default="", help="seeds that abort")
