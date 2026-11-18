@@ -1286,9 +1286,12 @@ the credit rule of §5.5.
 Measured (m2b-rate-pacing at 76f4e3f, 2026-11-18, `tests/interop/m2_pacing.sh --cpus 12-15 --seconds 20 --runs 3`, M1
 testbed with netem delay 10 ms each way, `--set test_fixed_pacing_rate=50Mbit`, gcc-release, no `--spin-us`):
 the Linux receiver's goodput was 49.886, 49.883 and 49.876 Mbit/s (−0.23 to −0.25 %, the handshake and first
-RTTs inside the receiver's 20 s); bursts of 4 packets; loop lateness p50 4-8 µs, p99 16-131 µs, max 1.9-3.4 ms
-(log2 bucket bounds); the stack trace's EDT replay found no burst before its modelled departure, and burst starts within 1 ms of their modelled departure came 2.4-4.9 µs (p50) and 9-113 µs (p99) after it, at most 0.86 ms within that subset. The cutoff excluded 4, 4 and 5 later starts respectively. Other tenants' unpinned
-processes ran on CPUs 12-15 (2-12 % busy per CPU); the run with the highest p99 had the most of it. Without
+RTTs inside the receiver's 20 s), with bursts of 4 packets. Loop lateness p50 (4-8 µs) and p99 (16-131 µs) were
+log2 bucket upper bounds. The observed maximum ranged from 1.9 to 3.4 ms. The stack trace's EDT replay found
+no burst before its modelled departure, and burst starts within 1 ms of their modelled departure came 2.4-4.9 µs
+(p50) and 9-113 µs (p99) after it, at most 0.86 ms within that subset. The cutoff excluded 4, 4 and 5 later starts
+respectively. Other tenants' processes were observed on CPUs 12-15. Per-CPU utilization ranged from 0.67% to
+11.51%, and the third run had both the highest p99 and the highest CPU utilization. Without
 the delay (min_rtt ~0.1 ms, bursts of 45 packets) one run gave 50.008 Mbit/s.
 
 ### 8.4 Later backends
