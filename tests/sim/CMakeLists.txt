@@ -30,3 +30,7 @@ if(utcp_sim_test_sources)
     PROPERTIES TIMEOUT 1500
     DISCOVERY_MODE PRE_TEST)
 endif()
+
+add_test(NAME sim.SweepReplay
+  COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/sweep_replay.py" $<TARGET_FILE:utcp-sim>
+    "${PROJECT_SOURCE_DIR}/tools/sim_sweep.py")

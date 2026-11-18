@@ -67,7 +67,7 @@ World::World(const Scenario& s, std::vector<std::unique_ptr<Node>> nodes, WorldO
   inflight_.set_strict_fast_rexmit(opt_.strict_fast_rexmit);
   for (std::uint32_t i = 0; i < s.node.size(); ++i) {
     const auto conf = stack_config(s, i).tcp;
-    inflight_.set_reduction(i, conf.recovery_reduction);
+    inflight_.set_config(i, conf);
     pacing_.set_config(i, conf);
   }
   if (nodes.empty()) {

@@ -200,7 +200,10 @@ private:
 class InFlightChecker {
 public:
   void set_strict_fast_rexmit(bool on) { strict_ = on; }
-  void set_reduction(std::uint32_t node, RecoveryReduction reduction) { reductions_[node] = reduction; }
+  void set_config(std::uint32_t node, const TcpConfig& config) { configs_[node] = config; }
+  void set_reduction(std::uint32_t node, RecoveryReduction reduction) {
+    configs_[node].recovery_reduction = reduction;
+  }
 
   // A datagram `node` handed to the host (before impairment).
   [[nodiscard]] std::optional<std::string> on_egress(std::uint32_t node,
@@ -223,13 +226,22 @@ private:
     std::optional<std::uint8_t> peer_ws;
     std::optional<Seq32> edge, high_sent, high_ack;
     bool own_sack = false, peer_sack = false;
+    // The send high-water mark uses wire sequence space, including FIN.
+    std::optional<Seq32> sent_end;
     struct Probe {
-      std::uint64_t high;
-      Seq32 first, end;
+      Seq32 high;
+      bool retrans;
     };
     std::optional<Probe> probe;
-    std::optional<std::uint16_t> last_window;
-    std::optional<Seq32> episode_end_ack;
+    struct Ack {
+      Seq32 seq, number;
+      std::uint32_t window;
+    };
+    std::optional<Ack> accepted, pending;
+    std::uint32_t max_window = 0;
+    bool pending_pure = false;
+    std::optional<std::pair<Seq32, Seq32>> pending_dsack;
+    void accept_ack(const TraceEvent& e);
     std::vector<std::pair<Seq32, Seq32>> sacked;  // disjoint, above high_ack
   };
   [[nodiscard]] std::uint8_t peer_shift(const Dir& d) const noexcept;
@@ -237,7 +249,7 @@ private:
   [[nodiscard]] static std::uint32_t sacked_bytes(const Dir& d) noexcept;
 
   bool strict_ = false;
-  std::map<std::uint32_t, RecoveryReduction> reductions_;
+  std::map<std::uint32_t, TcpConfig> configs_;
   std::map<FourTuple, Dir> dirs_;  // keyed by (sender, receiver)
   // (node, conn_id) with an RTO expiry whose head rto_rexmit is still to come.
   std::set<std::pair<std::uint32_t, std::uint32_t>> rto_pending_;
@@ -252,6 +264,7 @@ public:
 private:
   struct Sender {
     Time edt{}, sent{};
+    std::optional<Time> legacy_startup;
     std::uint64_t bytes = 0, rate = 0, nxt = 0;
     unsigned segments = 0;
     bool rto_head = false;

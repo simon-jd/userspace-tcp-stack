@@ -1253,16 +1253,18 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
 | `QuiescenceChecker` | after all workload connections end, run until `next_deadline()` is never or only `pmtu_expiry`; then `debug_usage()` must show no live slots, TIME_WAIT entries, queued packets or events, or armed connection timers, and every buffer and chunk free; else `leak` | on |
 | `SelfCheck` | `Stack::debug_check()` after every call; ASan/UBSan in sweep builds | on |
 
-With `--strict-fast-rexmit` the first PRR retransmission is subject to cwnd. A TLP requires negotiated
-SACK, may exceed cwnd by one packet, and is forbidden in Recovery or Loss. A second TLP requires the previous
-episode to have ended through a cumulative ACK of the probe, a pure duplicate ACK, a D-SACK of its bytes,
-entry to Recovery/Loss, or RTO.
+With `--strict-fast-rexmit` the first PRR retransmission is subject to cwnd. A TLP requires RACK-TLP enabled and negotiated
+SACK, may exceed cwnd by one packet, and is forbidden in Recovery or Loss. The probe records wire SND.NXT, including FIN.
+An accepted ACK at or beyond that marker ends a new-data probe. At equality, a retransmitted probe
+requires a pure duplicate ACK or a matching D-SACK. An ACK beyond the marker, Recovery/Loss, or RTO
+also ends the episode (RFC 8985 §7.4.2).
 
 The pacing checker groups each sender's transmit traces at `burst_start`. At the gate rate, a burst takes
 `bytes × 10⁹ / gate_rate` nanoseconds. The next deadline is the later of the send time and prior deadline,
 plus that interval, less lateness credit capped at half the interval. Startup bursts stamp the send time
 until a burst reaches ten cumulative payload segments. The entire crossing burst is charged. Older traces
-can omit the initial exempt bursts' gate tags. An RTO head or retransmitted TLP bypasses the gate and
+can omit the initial exempt bursts' gate tags. Subsequent ordinary paced sends report the configured
+fixed rate or the current sender pacing rate. A burst may start up to 1 µs before its deadline. An RTO head or retransmitted TLP bypasses the gate and
 advances the deadline when pacing applies. New-data TLPs pass the gate.
 
 A survivor whose peer has failed with `timed_out` would wait forever if the peer's RST was lost (no keepalive
