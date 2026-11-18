@@ -318,7 +318,7 @@ public:
 };
 
 // The stack sends 1460-byte segments to a scripted peer at a fixed pacing
-// rate (bytes/s); recovery is the stub unless the script says otherwise.
+// rate (bytes/s). Unset script hooks use the negotiated recovery policy.
 struct PacedSender {
   static constexpr std::uint32_t mss = 1460;
   t::ScriptedRecovery script;
@@ -484,33 +484,42 @@ TEST(TxPolicy, LostLoopStopsAtAClosedGateAndRetransmissionsMoveIt) {
 }
 
 // At 25 kB/s each two-segment burst advances EDT by 116.8 ms.
-// The first ACK opens cwnd before startup EDT. At that EDT a new burst
-// leaves, then RTO resends the head immediately while the gate is closed.
+// Two paced bursts leave after the first ACK arms the RTO. At expiry the
+// second burst's EDT is still ahead, so resending the head extends that EDT.
 TEST(TxPolicy, RtoHeadIsNotGatedButMovesPacingNext) {
   PacedSender x(25'000);
+  x.s->po.sack = false;  // Exercise the RTO without a tail loss probe replacing it.
   ASSERT_TRUE(x.open(40));
   EXPECT_EQ(x.sent().size(), 10u);
   const Time t0 = x.now();
   x.d().run_for(10ms);
   const Time t1 = x.now();
   x.ack(4);
-  const utcp::Duration rto = x.stack().tcp_info(x.s->h)->rto;
-  ASSERT_LT(t1 + rto, t0 + 233600us);
-  ASSERT_GT(t1 + rto, t0 + 116800us);
+  EXPECT_EQ(x.stack().tcp_info(x.s->h)->rto, 210ms);  // 10 ms SRTT + 200 ms variance floor.
+  // The ACK re-arms the RTO with the whole-ms part of the 106.8 ms left to EDT.
+  const Time expiry = t1 + 210ms + 106ms;
   EXPECT_TRUE(x.sent().empty());
   x.run_to(t0 + 116800us);
   EXPECT_EQ(x.sent(), x.segs({10, 11}));
-  x.run_to(t1 + rto);
+  x.run_to(t0 + 233600us);
+  EXPECT_EQ(x.sent(), x.segs({12, 13}));
+  EXPECT_EQ(x.stack().next_deadline(), expiry);
+  x.run_to(expiry - 1ns);
+  EXPECT_TRUE(x.sent().empty());
+  x.run_to(expiry);
   EXPECT_EQ(x.sent(), x.segs({4}));
   const auto head = x.log.of(TxKind::rto_rexmit);
   ASSERT_EQ(head.size(), 1u);
-  EXPECT_EQ(head[0].t, t1 + rto);  // pacing_next (t0 + 233.6 ms) is ahead
+  EXPECT_EQ(head[0].t, expiry);  // The next paced burst is due at t0 + 350.4 ms.
   EXPECT_EQ(head[0].gate_rate, 0u);
   EXPECT_FALSE(head[0].burst_start);
   x.ack(5);  // cwnd 2; segment 5 (marked lost by the RTO) waits
   EXPECT_TRUE(x.sent().empty());
-  EXPECT_EQ(x.stack().next_deadline(), t0 + 292ms);
-  x.run_to(t0 + 292ms);
+  const Time next_send = t0 + 408800us;  // 350.4 ms EDT + 1460 B / 25 kB/s.
+  EXPECT_EQ(x.stack().next_deadline(), next_send);
+  x.run_to(next_send - 1ns);
+  EXPECT_TRUE(x.sent().empty());
+  x.run_to(next_send);
   const auto s = x.sent();
   ASSERT_FALSE(s.empty());
   EXPECT_EQ(s[0], x.seg(5));
