@@ -1058,13 +1058,14 @@ RTO marks all lost and would give an inflated sample), `first_tx_time = delivere
 one (ties by end offset), `send_elapsed = last_tx − first_tx_time`, `ack_elapsed = delivered_time_now −
 snapshot.delivered_time`, advance `first_tx_time`; a SACKed segment sets `rate_used`. `tcp_rate_gen`: `interval =
 max(send_elapsed, ack_elapsed)`, `delivered = now_delivered − prior_delivered`; the sample is invalid without a
-prior snapshot, while `is_sack_reneg`, or when interval < min_rtt. `RateState::app_limited` is a delivered-count
+prior snapshot, while `is_sack_reneg`, or when interval < min_rtt. Send and ACK endpoints are quantized to
+whole microseconds before subtraction, and the min_rtt comparison uses microseconds. `RateState::app_limited` is a delivered-count
 marker (`delivered + in_flight`, or 1), cleared once `delivered` passes it; `tcp_send` sets it
 (`tcp_rate_check_app_limited`) when less than one MSS is unsent, no packet of the connection waits in the stack
 transmit queue (`StackCore::queued_for(slot)`, counted from `send_ipv4`'s owner slot), in flight < cwnd and
 lost_out ≤ retrans_out. A new connection starts with the marker `rate_app_limited_initial` (Linux
-`tcp_init_sock`: `tp->app_limited = ~0U`, a bubble until the first ACK): the initial window's segments are
-app-limited and the first `tcp_rate_gen` clears the marker (Linux's `after(delivered, ~0U)` holds there).
+`tcp_init_sock`: `tp->app_limited = ~0U`, a bubble until the first ACK): the active SYN ACK clears this marker via `tcp_rate_gen`.
+The passive side credits the SYN-ACK directly. Both start established with one delivered packet and no bandwidth record.
 
 Each sample also carries `rs.rtt` = the ACK's ca_rtt (`tcp_ack_update_rtt`; −1 without one) and
 `rs.is_ack_delayed` (`FLAG_ACK_MAYBE_DELAYED`), valid or not. A valid sample updates the record kept for
@@ -1086,13 +1087,14 @@ struct RateState { /* ... */ std::uint64_t app_limited = rate_app_limited_initia
 ### 5.5 Pacing
 
 Each connection has an earliest departure time `pacing_next` (Linux EDT, `tcp_wstamp_ns`). `pacing_rate` is set by
-`cong_control` (BBR) or after every ACK as `tcp_update_pacing_rate` (mss·max(cwnd, packets_out)/srtt × 200 % if
+`cong_control` (BBR) or at handshake completion and after every data ACK as `tcp_update_pacing_rate` (mss·max(cwnd, packets_out)/srtt × 200 % if
 cwnd < ssthresh/2, else 120 %), and the gate applies only when `pacing_needed` (or a test knob) is set. An open gate
 allows one burst of `max(min((rate >> 10) + (gso_max_size >> (min_rtt_us >> 9)), gso_max_size) / mss,
 min_tso_segs())` segments (Linux `tcp_tso_autosize`; BBR's `min_tso_segs` is 1 below 1.2 Mbit/s, else 2). After a
 burst of `len` payload bytes, with `len_ns = len·10^9/rate`: `pacing_next = max(pacing_next, now) + len_ns −
 min(len_ns/2, max(0, now − pacing_next))` (Linux `tcp_update_skb_after_send`): lateness is credited up to half of
-this burst's own interval. The first 10 data segments are not paced (`data_segs_out ≥ 10`). A closed gate arms
+this burst's own interval. Startup also sends in quanta. Bursts ending before segment ten only move EDT up to the current time.
+The first burst ending at or beyond ten charges its full payload and the next burst checks that deadline. A closed gate arms
 the `pace` timer at `pacing_next`, which reaches the host through `next_deadline()`.
 
 - **Quantum.** `rate >> 10` bytes is about 0.98 ms of data; the RTT term `gso_max_size >> (min_rtt_us >> 9)` is
@@ -1285,8 +1287,7 @@ Measured (m2b-rate-pacing at 76f4e3f, 2026-11-18, `tests/interop/m2_pacing.sh --
 testbed with netem delay 10 ms each way, `--set test_fixed_pacing_rate=50Mbit`, gcc-release, no `--spin-us`):
 the Linux receiver's goodput was 49.886, 49.883 and 49.876 Mbit/s (−0.23 to −0.25 %, the handshake and first
 RTTs inside the receiver's 20 s); bursts of 4 packets; loop lateness p50 4-8 µs, p99 16-131 µs, max 1.9-3.4 ms
-(log2 bucket bounds); the stack trace's EDT replay found no burst before its modelled departure, and the gate's
-burst starts came 2.4-4.9 µs (p50) and 9-113 µs (p99) after it, at most 0.86 ms. Other tenants' unpinned
+(log2 bucket bounds); the stack trace's EDT replay found no burst before its modelled departure, and burst starts within 1 ms of their modelled departure came 2.4-4.9 µs (p50) and 9-113 µs (p99) after it, at most 0.86 ms within that subset. The cutoff excluded 4, 4 and 5 later starts respectively. Other tenants' unpinned
 processes ran on CPUs 12-15 (2-12 % busy per CPU); the run with the highest p99 had the most of it. Without
 the delay (min_rtt ~0.1 ms, bursts of 45 packets) one run gave 50.008 Mbit/s.
 

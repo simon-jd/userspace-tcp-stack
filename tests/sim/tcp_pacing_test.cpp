@@ -4,6 +4,7 @@
 // tcp_update_skb_after_send) computed from the trace alone, and a fixed
 // pacing rate gives its payload rate.
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -133,13 +134,18 @@ struct Burst {
   std::uint64_t rate = 0;   // bytes/s, the gate's
   std::uint64_t bytes = 0;  // payload
   std::uint32_t cwnd = 0, ssthresh = 0;
+  std::uint32_t segments = 1;
 };
 
 std::vector<Burst> bursts(const Outcome& o, std::uint32_t node) {
   std::vector<Burst> v;
   for (const Rec& r : o.trace) {
     const TraceEvent& e = r.e;
-    if (r.node != node || e.kind != TraceKind::tx || e.len == 0 || e.gate_rate == 0) {
+    if (r.node != node || e.kind != TraceKind::tx || e.len == 0) {
+      continue;
+    }
+    if (e.gate_rate == 0) {
+      ADD_FAILURE() << "missing pacing rate on sender payload";
       continue;
     }
     if (e.burst_start || v.empty()) {
@@ -150,8 +156,28 @@ std::vector<Burst> bursts(const Outcome& o, std::uint32_t node) {
     EXPECT_EQ(e.t, v.back().t) << "a burst spread over time";
     EXPECT_EQ(e.gate_rate, v.back().rate);
     v.back().bytes += e.len;
+    ++v.back().segments;
   }
   return v;
+}
+
+TEST(TcpPacingSim, ReplayRejectsUntaggedEligiblePayload) {
+  Outcome o;
+  TraceEvent e;
+  e.kind = TraceKind::tx;
+  e.tx = TxKind::data;
+  e.len = 1000;
+  e.gate_rate = 1'000'000;
+  e.burst_start = true;
+  for (int i = 0; i < 10; ++i) {
+    o.trace.push_back({0, e});
+  }
+  e.t = Time{5'000'000};
+  o.trace.push_back({0, e});
+  e.t += 1ns;
+  e.gate_rate = 0;
+  o.trace.push_back({0, e});
+  EXPECT_NONFATAL_FAILURE((void)bursts(o, 0), "missing pacing rate");
 }
 
 // The EDT replay of M2-DESIGN §4.4, independent of the engine's code: with
@@ -173,7 +199,9 @@ Replay replay(const std::vector<Burst>& bs) {
   constexpr std::int64_t slack_ns = 1000;
   Replay r;
   std::optional<std::int64_t> next;
+  std::uint64_t segments = 0;
   for (const Burst& b : bs) {
+    segments += b.segments;
     const std::int64_t t = b.t.ns;
     std::uint64_t late = std::numeric_limits<std::uint64_t>::max();
     bool held = false;
@@ -191,6 +219,10 @@ Replay replay(const std::vector<Burst>& bs) {
     }
     r.on_time.push_back(held);
     const std::int64_t base = next ? std::max(*next, t) : t;
+    if (segments < 10) {
+      next = base;
+      continue;
+    }
     auto len_ns = static_cast<std::uint64_t>(U128{b.bytes} * 1'000'000'000 / b.rate);
     len_ns -= std::min(len_ns / 2, late);
     next = base + static_cast<std::int64_t>(len_ns);
@@ -207,6 +239,7 @@ Replay replay(const std::vector<Burst>& bs) {
 // the gate rate falls where cwnd reaches ssthresh / 2.
 TEST(TcpPacingSim, PacedBurstsFollowTheEdtReplay) {
   const auto tweak = [](StackConfig& c) {
+    c.tcp.cc = CcAlgo::newreno;
     c.tcp.pacing = Pacing::always;
     c.tcp.initial_ssthresh = 100;
   };
@@ -245,6 +278,7 @@ TEST(TcpPacingSim, PacedBurstsFollowTheEdtReplay) {
 // departure.
 TEST(TcpPacingSim, ReplayCatchesAnIgnoredGate) {
   const auto tweak = [](StackConfig& c) {
+    c.tcp.cc = CcAlgo::newreno;
     c.tcp.pacing = Pacing::always;
     c.tcp.initial_ssthresh = 100;
     c.tcp.test_fault = TestFault::ignore_pacing_gate;
@@ -253,6 +287,16 @@ TEST(TcpPacingSim, ReplayCatchesAnIgnoredGate) {
   ASSERT_TRUE(o.ok()) << o.violations();
   const Replay r = replay(bursts(o, 0));
   EXPECT_GT(r.early, 10u);
+}
+
+bool covers_window(Time end, Time first) {
+  return end >= first + 11s;
+}
+
+TEST(TcpPacingSim, FixedRateWindowRequiresElevenSecondsAfterFirstArrival) {
+  const Time first{42};
+  EXPECT_FALSE(covers_window(first + 11s - 1ns, first));
+  EXPECT_TRUE(covers_window(first + 11s, first));
 }
 
 // test_fixed_pacing_rate is payload bytes per second (M2-DESIGN §2.5; the
@@ -276,7 +320,7 @@ TEST(TcpPacingSim, FixedRateGivesItsPayloadRate) {
   }
   ASSERT_TRUE(first.has_value());
   const Time from = *first + 1s, to = from + 10s;
-  ASSERT_GT((o.result.end - *first).count(), (11s).count());
+  ASSERT_TRUE(covers_window(o.result.end, *first));
   std::uint64_t bytes = 0;
   for (const Seg& g : in) {
     if (g.t >= from && g.t < to) {

@@ -326,9 +326,10 @@ struct PacedSender {
   std::optional<Scripted> s;
   Seq32 base;
 
-  explicit PacedSender(std::uint64_t rate) {
+  explicit PacedSender(std::uint64_t rate, std::uint32_t initial_cwnd = 10) {
     StackConfig cfg = config(Side::b);
     cfg.tcp.test_fixed_pacing_rate = rate;
+    cfg.tcp.initial_cwnd = initial_cwnd;
     cfg.test_recovery_script = &script;
     cfg.trace_mask = utcp::trace_bit(TraceKind::tx);
     cfg.tcp.snd_buf_init = 1 << 20;
@@ -403,6 +404,19 @@ struct PacedSender {
   void run_to(Time when) { d().run_for(when - now()); }
 };
 
+// At two segments per burst, the burst ending at segment ten charges 2920
+// bytes. The preceding burst left at the same instant, so it earns no credit.
+TEST(TxPolicy, LargeInitialWindowStopsAtTheFirstEdt) {
+  PacedSender x(1'000'000, 32);
+  ASSERT_TRUE(x.open(40));
+  const Time start = x.now();
+  EXPECT_EQ(x.sent().size(), 10u);
+  x.run_to(start + 2920us - 1ns);
+  EXPECT_TRUE(x.sent().empty());
+  x.run_to(start + 2920us);
+  EXPECT_EQ(x.sent(), x.segs({10, 11}));
+}
+
 // Linux tcp_xmit_retransmit_queue checks tcp_pacing_check before each skb
 // and every transmission moves tcp_wstamp_ns. At 1 MB/s a burst is 2
 // packets (1 000 000 >> 10 = 976 bytes < 1460: the floor), 2920 bytes =
@@ -434,8 +448,8 @@ TEST(TxPolicy, LostLoopStopsAtAClosedGateAndRetransmissionsMoveIt) {
   ASSERT_TRUE(x.open(40));
   EXPECT_EQ(x.sent().size(), 10u);  // the first 10 data segments are not paced
   x.d().run_for(10ms);
-  // cwnd 10 -> 14, 6 in flight. The gate is open (pacing_next was never
-  // set): segments 10 and 11; pacing_next = now + 2.92 ms - 1.46 ms (credit).
+  // cwnd 10 -> 14, 6 in flight. The initial EDT is far behind, so
+  // segments 10 and 11 take the full credit; pacing_next = now + 2.92 ms - 1.46 ms (credit).
   // 0.5 ms later recovery marks 5-8 lost (a REO timer armed with the ACK).
   const Time t1 = x.now();
   reo = t1 + 500us;
@@ -469,37 +483,34 @@ TEST(TxPolicy, LostLoopStopsAtAClosedGateAndRetransmissionsMoveIt) {
   x.stack().debug_check();
 }
 
-// tcp_retransmit_timer sends the head without tcp_pacing_check. At 25 kB/s
-// a 2-packet burst is 116.8 ms. The bursts after the ACK at t1 go out at t1
-// (pacing_next t1 + 58.4 ms, half credited), t1 + 58.4 ms (to t1 + 175.2)
-// and t1 + 175.2 ms (to t1 + 292); the RTO at t1 + RTO (< 292 ms) resends
-// the head at once, and its 1460 bytes move pacing_next 58.4 ms further,
-// so the next lost segment, once the ACK of the head opens cwnd, waits for
-// t1 + 350.4 ms.
+// At 25 kB/s each two-segment burst advances EDT by 116.8 ms.
+// The first ACK opens cwnd before startup EDT. At that EDT a new burst
+// leaves, then RTO resends the head immediately while the gate is closed.
 TEST(TxPolicy, RtoHeadIsNotGatedButMovesPacingNext) {
   PacedSender x(25'000);
   ASSERT_TRUE(x.open(40));
   EXPECT_EQ(x.sent().size(), 10u);
+  const Time t0 = x.now();
   x.d().run_for(10ms);
   const Time t1 = x.now();
   x.ack(4);
   const utcp::Duration rto = x.stack().tcp_info(x.s->h)->rto;
-  ASSERT_LT(rto, 292ms);
-  ASSERT_GT(rto, 175200us);
+  ASSERT_LT(t1 + rto, t0 + 233600us);
+  ASSERT_GT(t1 + rto, t0 + 116800us);
+  EXPECT_TRUE(x.sent().empty());
+  x.run_to(t0 + 116800us);
   EXPECT_EQ(x.sent(), x.segs({10, 11}));
-  x.run_to(t1 + 175200us);
-  EXPECT_EQ(x.sent(), x.segs({12, 13, 14, 15}));
   x.run_to(t1 + rto);
   EXPECT_EQ(x.sent(), x.segs({4}));
   const auto head = x.log.of(TxKind::rto_rexmit);
   ASSERT_EQ(head.size(), 1u);
-  EXPECT_EQ(head[0].t, t1 + rto);  // pacing_next (t1 + 292 ms) is ahead
+  EXPECT_EQ(head[0].t, t1 + rto);  // pacing_next (t0 + 233.6 ms) is ahead
   EXPECT_EQ(head[0].gate_rate, 0u);
   EXPECT_FALSE(head[0].burst_start);
   x.ack(5);  // cwnd 2; segment 5 (marked lost by the RTO) waits
   EXPECT_TRUE(x.sent().empty());
-  EXPECT_EQ(x.stack().next_deadline(), t1 + 350400us);
-  x.run_to(t1 + 350400us);
+  EXPECT_EQ(x.stack().next_deadline(), t0 + 292ms);
+  x.run_to(t0 + 292ms);
   const auto s = x.sent();
   ASSERT_FALSE(s.empty());
   EXPECT_EQ(s[0], x.seg(5));
@@ -511,18 +522,18 @@ TEST(TxPolicy, RtoHeadIsNotGatedButMovesPacingNext) {
 // __tcp_retransmit_skb without the check. At 100 kB/s one segment is
 // 14.6 ms. Ten segments go out unpaced at t0, two wait for cwnd; recovery
 // arms three PTOs in turn:
-//  t0 + 20 ms: new data: the gate is open (pacing_next never set): segment
+//  t0 + 40 ms: new data: the gate is open (the startup EDT has elapsed): segment
 //              10 as tlp, pacing_next = t0 + 20 + 14.6 - 7.3 (credit).
-//  t0 + 21 ms: new data: gated; nothing sent, the pace timer at t0 + 27.3.
-//  t0 + 22 ms: the last segment: sent at once (segment 10 again), and
-//              pacing_next moves to t0 + 27.3 + 14.6 = t0 + 41.9 ms.
+//  t0 + 41 ms: new data: gated; nothing sent, the pace timer at t0 + 47.3.
+//  t0 + 42 ms: the last segment: sent at once (segment 10 again), and
+//              pacing_next moves to t0 + 47.3 + 14.6 = t0 + 61.9 ms.
 TEST(TxPolicy, LossProbeRetransmissionIsNotGatedNewDataProbeIs) {
   PacedSender x(100'000);
   // The handshake takes 10 ms (open()); the data leaves at t0.
   const Time t0 = x.now() + 10ms;
-  std::vector<std::pair<Time, TlpAction>> plan{{t0 + 20ms, TlpAction::new_data},
-                                               {t0 + 21ms, TlpAction::new_data},
-                                               {t0 + 22ms, TlpAction::retransmit_last}};
+  std::vector<std::pair<Time, TlpAction>> plan{{t0 + 40ms, TlpAction::new_data},
+                                               {t0 + 41ms, TlpAction::new_data},
+                                               {t0 + 42ms, TlpAction::retransmit_last}};
   x.script.timer = [&](const RecoveryCtx&) -> std::optional<std::pair<XmitTimer, Time>> {
     if (!plan.empty()) {
       return std::pair{XmitTimer::pto, plan.front().first};
@@ -537,30 +548,30 @@ TEST(TxPolicy, LossProbeRetransmissionIsNotGatedNewDataProbeIs) {
   ASSERT_TRUE(x.open(12));
   ASSERT_EQ(x.now(), t0);
   EXPECT_EQ(x.sent().size(), 10u);
-  x.run_to(t0 + 20ms);
+  x.run_to(t0 + 40ms);
   EXPECT_EQ(x.sent(), x.segs({10}));
-  x.run_to(t0 + 21ms);
+  x.run_to(t0 + 41ms);
   EXPECT_TRUE(x.sent().empty());
-  EXPECT_EQ(x.stack().next_deadline(), t0 + 22ms);  // the third PTO, then the pace timer
-  x.run_to(t0 + 22ms);
+  EXPECT_EQ(x.stack().next_deadline(), t0 + 42ms);  // the third PTO, then the pace timer
+  x.run_to(t0 + 42ms);
   EXPECT_EQ(x.sent(), x.segs({10}));
-  EXPECT_EQ(x.stack().next_deadline(), t0 + 27300us);  // the pace timer of the second PTO
+  EXPECT_EQ(x.stack().next_deadline(), t0 + 47300us);  // the pace timer of the second PTO
   const auto tlp = x.log.of(TxKind::tlp);
   ASSERT_EQ(tlp.size(), 2u);
-  EXPECT_EQ(tlp[0].t, t0 + 20ms);
+  EXPECT_EQ(tlp[0].t, t0 + 40ms);
   EXPECT_EQ(tlp[0].gate_rate, 100'000u);  // through the gate
   EXPECT_TRUE(tlp[0].burst_start);
-  EXPECT_EQ(tlp[1].t, t0 + 22ms);  // pacing_next was 5.3 ms ahead
+  EXPECT_EQ(tlp[1].t, t0 + 42ms);  // pacing_next was 5.3 ms ahead
   EXPECT_EQ(tlp[1].gate_rate, 0u);
   EXPECT_FALSE(tlp[1].burst_start);
   EXPECT_EQ(x.script.calls_of("on_tlp_sent"),
             (std::vector<std::string>{"on_tlp_sent 1 1", "on_tlp_sent 1 0", "on_tlp_sent 2 1"}));
-  // The ACK of everything opens cwnd; segment 11 waits for t0 + 41.9 ms.
+  // The ACK of everything opens cwnd; segment 11 waits for t0 + 61.9 ms.
   x.ack(11);
   EXPECT_TRUE(x.sent().empty());
-  x.run_to(t0 + 41900us - Duration{1});
+  x.run_to(t0 + 61900us - Duration{1});
   EXPECT_TRUE(x.sent().empty());
-  x.run_to(t0 + 41900us);
+  x.run_to(t0 + 61900us);
   EXPECT_EQ(x.sent(), x.segs({11}));
   x.stack().debug_check();
 }

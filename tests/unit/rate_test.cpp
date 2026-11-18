@@ -242,6 +242,24 @@ TEST(Rate, DeliveryRateOfAScriptedWindow) {
   EXPECT_EQ(utcp::rate_delivery_rate(r2, 1448), 0u);
 }
 
+TEST(Rate, UsesMicrosecondEndpointsBeforeCheckingMinRtt) {
+  RateState rs;
+  const auto s = window(rs, 10, 1448, at(1ms + 900ns), at(21ms + 100ns), 20ms + 400ns);
+  ASSERT_TRUE(s.valid);
+  EXPECT_EQ(s.interval, 20ms);
+  EXPECT_EQ(rs.rate_interval, 20ms);
+  EXPECT_EQ(utcp::rate_delivery_rate(rs, 1448), 724'000u);
+
+  RateAck ack;
+  ack.has_prior = true;
+  ack.prior_first_tx_time = at(41ms + 900ns);
+  ack.prior_last_tx = at(61ms + 100ns);
+  ack.prior_time = at(60ms);
+  const auto compressed = utcp::rate_gen(rs, ack, 1, 0, 1, false, 20ms, 1ms, false, at(62ms));
+  ASSERT_TRUE(compressed.valid);
+  EXPECT_EQ(compressed.interval, 20ms);
+}
+
 // tcp_rate_gen (Linux 7.0 tcp_input.c:1791-1797): the record takes every
 // sample that is not app-limited, and an app-limited one only if its rate
 // (delivered / interval, compared by cross-multiplication) is at least the
@@ -268,6 +286,12 @@ TEST(Rate, RecordKeepsAppLimitedSamplesOnlyIfNotLower) {
   EXPECT_EQ(rs.rate_interval, 10ms);
   EXPECT_TRUE(rs.rate_app_limited);
   EXPECT_EQ(utcp::rate_delivery_rate(rs, 1448), 724'000u);
+  ASSERT_TRUE(window(rs, 10, 1448, at(220ms), at(240ms), 20ms).valid);
+  s = window(rs, 5, 1448, at(250ms), at(260ms + 999ns), 10ms, true);
+  ASSERT_TRUE(s.valid);
+  EXPECT_EQ(rs.rate_delivered, 5u);
+  EXPECT_EQ(rs.rate_interval, 10ms);
+  EXPECT_TRUE(rs.rate_app_limited);
   // App-limited and higher (12 / 10 ms): taken.
   s = window(rs, 12, 1448, at(300ms), at(310ms), 10ms, true);
   EXPECT_EQ(rs.rate_delivered, 12u);
@@ -376,6 +400,33 @@ TEST(Rate, NewConnectionStartsAppLimited) {
   EXPECT_FALSE(s2.is_app_limited);
   EXPECT_FALSE(rs.rate_app_limited);
   EXPECT_EQ(utcp::rate_delivery_rate(rs, 1448), 362'000u);
+}
+
+TEST(Rate, HandshakeAccountsForBothRolesBeforeAnyWrite) {
+  namespace t = utcp::test;
+  using namespace utcp::test::tcpt;
+  t::TcpHarness h(config(t::Side::a), config(t::Side::b));
+  h.set_delay(t::Side::a, 5ms);
+  h.set_delay(t::Side::b, 5ms);
+  const auto p = open(h, 100ms);
+  ASSERT_TRUE(p);
+  for (auto side : {t::Side::a, t::Side::b}) {
+    auto& stack = side == t::Side::a ? h.a() : h.b();
+    const auto sock = side == t::Side::a ? p->client : p->server;
+    const auto before = stack.tcp_info(sock);
+    ASSERT_TRUE(before);
+    EXPECT_EQ(before->delivered, 1u);
+    EXPECT_GT(before->pacing_rate, 0u);
+    EXPECT_EQ(before->delivery_rate, 0u);
+    EXPECT_TRUE(before->app_limited);
+    ASSERT_TRUE(stack.tcp_send(sock, t::pattern(100)));
+    h.run_for(100ms);
+    const auto after = stack.tcp_info(sock);
+    ASSERT_TRUE(after);
+    EXPECT_EQ(after->delivered, 2u);
+    EXPECT_GT(after->delivery_rate, 0u);
+    EXPECT_TRUE(after->app_limited);
+  }
 }
 
 // TcpInfo::app_limited and delivery_rate are the record's (tcp_get_info),

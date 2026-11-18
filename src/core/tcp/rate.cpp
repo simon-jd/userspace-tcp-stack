@@ -21,6 +21,13 @@ constexpr std::uint64_t whole_us(Duration d) noexcept {
   return d.count() > 0 ? static_cast<std::uint64_t>(d.count()) / 1000 : 0;
 }
 
+// tcp_skb_timestamp_us and tcp_stamp_us_delta: round each absolute stamp
+// before subtraction, and clamp an out-of-order pair to zero.
+constexpr Duration elapsed_us(Time end, Time start) noexcept {
+  const auto us = std::max<std::int64_t>(0, end.ns / 1000 - start.ns / 1000);
+  return std::chrono::microseconds{std::min(us, Duration::max().count() / 1000)};
+}
+
 }  // namespace
 
 void rate_on_send(RateState& rs, std::uint32_t packets_out, Time now) {
@@ -84,12 +91,12 @@ RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacke
   }
   s.delivered = rs.delivered - ack.prior_delivered;
   // Sending and ACKing are separate pipeline phases; use the longer one.
-  const Duration send_elapsed = ack.prior_last_tx - ack.prior_first_tx_time;
-  const Duration ack_elapsed = now - ack.prior_time;
+  const Duration send_elapsed = elapsed_us(ack.prior_last_tx, ack.prior_first_tx_time);
+  const Duration ack_elapsed = elapsed_us(now, ack.prior_time);
   s.interval = std::max(send_elapsed, ack_elapsed);
   // An interval below min_rtt (Duration::max() before any sample, as Linux's
   // ~0U) would overestimate the rate.
-  if (s.interval < min_rtt) {
+  if (min_rtt == Duration::max() || whole_us(s.interval) < whole_us(min_rtt)) {
     s.interval = Duration{-1};
     return s;
   }
