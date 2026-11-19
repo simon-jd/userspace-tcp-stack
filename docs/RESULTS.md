@@ -897,3 +897,21 @@ python3 -IB "$res/verify/compare_overlay.py" "$res/overlay-runs.csv" "$work/plot
 for file in "$res"/plots/*.png; do cmp "$file" "$work/plots/${file##*/}"; done
 python3 -IB "$res/render_tables.py" "$res"
 ```
+
+## Ablation
+
+The plan compares seven CUBIC stack configurations on two 1% loss paths with a 2×BDP queue. Each variant had five scheduled pairs. The two senders in each pair used the same netem seed and ran consecutively on slot 0. Linux always used kernel CUBIC. The 70 stack transfers and the ten Linux transfers paired with the Linux-compatible stack form the published comparison. The 60 other Linux controls are available in the per-run data and paired overlay plots. The RFC-paired sensitivity comparison uses RFC's own five Linux partners in each cell. Both the common reference and the campaign seed `20261120` were fixed before acquisition. [Plan](results/m2-ablation/plan.toml)
+
+| Stack sender | Fields added to the baseline |
+|---|---|
+| RFC | RFC profile, no variant-specific overrides |
+| RFC + RTO/estimator | `rto_min=200ms`, `rtt_estimator=linux` |
+| RFC + PRR | `recovery_reduction=prr` |
+| RFC + IW10 | `initial_cwnd=10` |
+| RFC + classic HyStart | `hystart=hystart_classic` |
+| RFC + all four | All five field changes above |
+| Linux-compatible stack | Linux profile, no variant-specific overrides |
+
+All stack senders use `snd_buf_max=64Mi`, `rcv_buf_max=32Mi` and `gso_max_size=65215` (the interface limit minus 321). The frozen RFC baseline reports a 1 s RTO floor, the RFC 6298 estimator, RFC 6675 reduction, the profile's default initial window (`none`), HyStart++, RFC congestion-control flavor and RACK/TLP disabled. The evidence checker compares each complete stack configuration field by field to the frozen profile with the registered overrides. The checker independently verifies per-connection CUBIC in every endpoint sample and terminal record. The baseline configuration's default CC field is `newreno`; the application explicitly selected CUBIC for the measured socket. [Configuration and trace readback](results/m2-ablation/profile-trace.csv) · [Endpoint CC](results/m2-ablation/endpoint-cc.csv)
+
+For each metric the frozen gap rule compares five-run medians and requires disjoint observed ranges. Goodput and queueing delays must differ by more than 10% of the Linux median. At 1% loss, excess stack retransmission must exceed 0.2 percentage points. Delay gaps below 1 ms carry the measurement-resolution annotation. Each primary share, `100 × (X − R) / (L − R)`, uses the same RFC baseline R and the Linux-compatible variant's kernel control L. Shares require a qualifying goodput gap. Bounds enumerate the eight min/max corners of X, R and L, using one R in numerator and denominator. The interaction subtracts all four single-knob shares from the all-four share and enumerates the joint corners with shared R and L. The residual reports the signed difference in Mbit/s, Linux-compatible minus all-four, without assigning it to an individual setting. Ranges describe the recorded runs. [Full-precision contrasts](results/m2-ablation/comparisons.csv) · [Shares and residuals](results/m2-ablation/effects.csv)
