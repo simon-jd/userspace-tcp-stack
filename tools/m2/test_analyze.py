@@ -5,12 +5,16 @@ plans, the reuse key, the parallel-mode comparison) and plot.py (the run
 selection) and dropcheck.py (the segments a scripted drop latches). Run:
 python3 -I tools/m2/test_analyze.py"""
 
+from contextlib import ExitStack
+import hashlib
 import json
 import math
 import struct
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1160,30 +1164,155 @@ class GateItems(unittest.TestCase):
         self.assertFalse(M.gate_item6_run({"goodput_bps": thr, "valid": True, "stack_device": {"x": 1}})["ok"])
 
 
+def fixture_meta_digest(meta):
+    encoded = json.dumps(meta, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def proof_files(par_ping=20.2, par_goodput=101.0, par_backlog=102.0, ser_p99_bucket=16, par_p99_bucket=17,
-                ser_max=1_000_000, par_max=2_000_000):
-    """Synthetic proof campaign files, 5 repetitions, pair (100, 20)."""
+                ser_max=1_000_000, par_max=2_000_000, stack_cc="newreno"):
+    """Five repetitions of the four Linux cells and the trace-on/off stack comparisons."""
     f = {}
     for sub in ("serial-s0", "parallel-s0", "parallel-s1"):
         par = sub != "serial-s0"
+        slot = int(sub[-1])
         for r in range(5):
-            f[f"{sub}/ping-100-20-2-r{r}/ping.json"] = {
-                "median_ms": par_ping if par else (19.9, 20.0, 20.0, 20.1, 20.3)[r]}
-            f[f"{sub}/rate-100-20-2-r{r}/summary.json"] = {
-                "valid": True, "goodput_bps": par_goodput if par else (99, 100, 100, 100, 102)[r],
-                "queue": {"backlog_max": par_backlog if par else (98, 100, 100, 100, 103)[r]}}
+            ident = {"campaign": "t/" + sub, "slot": slot, "rep": r, "queue_bdp": 2, "loss": 0}
+            cpus = range(8 + slot * 4, 12 + slot * 4)
+            common = {"valid": True, "rwnd_limited_frac": 0, "sndbuf_limited_frac": 0}
+            for bw in (10, 100):
+                for rtt in (20, 100):
+                    name = f"ping-{bw}-{rtt}-2-r{r}"
+                    cell = dict(ident, bw=bw, rtt=rtt)
+                    f[f"{sub}/{name}/ping.json"] = dict(cell, run=name, n=200, lost=0, reuse_key="key",
+                        median_ms=par_ping if par else (19.9, 20, 20, 20.1, 20.3)[r])
+                    name = f"rate-{bw}-{rtt}-2-r{r}"
+                    f[f"{sub}/{name}/meta.json"] = dict(cell, run=name, impl="linux", cc="cubic", timing=True,
+                        slot_cpus=",".join(map(str, cpus)), duration_s=30 if rtt == 20 else 60,
+                        cell=f"{bw}-{rtt}-0-2", order=r, gate="proof-rate", duration=30 if rtt == 20 else 60, reuse_key="key", sender_exit=0)
+                    f[f"{sub}/{name}/summary.json"] = dict(common, run=name, sender_ccs=["cubic"],
+                        goodput_bps=par_goodput if par else (99, 100, 100, 100, 102)[r],
+                        queue={"backlog_max": par_backlog if par else (98, 100, 100, 100, 103)[r]})
             b = par_p99_bucket if par else ser_p99_bucket
-            for name in ("stack-trace",) + (() if par else ("stack-notrace",)):
-                f[f"{sub}/{name}-r{r}/summary.json"] = {
-                    "valid": True, "goodput_bps": 100.0, "stack_lateness_hist": {"3": 98, str(b): 2},
-                    "sender_lateness_max_ns": par_max if par else ser_max}
+            for trace in ([True] if par else [True, False]):
+                name = f"stack-{'trace' if trace else 'notrace'}-r{r}"
+                t0 = T0 + (100 * r + slot + (1000 if par else 0) + (0 if trace else 40)) * NS
+                f[f"{sub}/{name}/meta.json"] = dict(ident, run=name, bw=100, rtt=20, duration=30, trace=trace,
+                    gate="proof-stack" if trace else "proof-notrace", impl="utcp", cc=stack_cc, profile="linux",
+                    slot_cpus=",".join(map(str, cpus)), duration_s=30, uptime="up", threads_on_8_15=[],
+                    cell="100-20-0-2", order=r, timing=True, reuse_key="key", sender_exit=0, boot_id="boot")
+                f[f"{sub}/{name}/summary.json"] = dict(common, run=name, goodput_bps=100, sender_ccs=[stack_cc],
+                    cpu={str(c): {"irq": 1, "softirq": 2} for c in cpus}, foreign_cpu_frac=0,
+                    softirqs={"NET_RX": 5, "NET_TX": 0, "HRTIMER": 1, "TIMER": 2},
+                    qdelay_p99_ms=3, sender_lateness_p99_ns=(1 << b) - 1, trace_events=1 if trace else None,
+                    stack_lateness_hist={"3": 98, str(b): 2}, sender_lateness_max_ns=par_max if par else ser_max,
+                    t0_ns=t0, sender_start_ns=t0 - 20_000_000, window_end_ns=t0 + 30 * NS - 20_000_000)
+    for path, meta in list(f.items()):
+        if path.endswith("/meta.json"):
+            f[path.removesuffix("meta.json") + "summary.json"]["proof_meta_sha256"] = fixture_meta_digest(meta)
     return f
 
 
 class ProofDecisions(unittest.TestCase):
     def items(self, **kw):
-        r = M.proof_evaluate(proof_files(**kw), "t", 5, [(100, 20)])
+        r = M.proof_evaluate(proof_files(**kw), "t", 5, M.PROOF_PAIRS)
         return {(i["item"], i["metric"], i["parallel_slot"]): i["ok"] for i in r["items"]}, r
+
+    def test_full_population_and_evidence(self):
+        stack = "parallel-s1/stack-trace-r3/"
+        for path, field, value in (
+                (stack, "valid", False), (stack, "sender_ccs", ["newreno", "cubic"]),
+                (stack, "stack_lateness_hist", {}), (stack, "sender_lateness_max_ns", None),
+                (stack, "sender_lateness_p99_ns", None), (stack, "sender_lateness_max_ns", -10), (stack, "qdelay_p99_ms", None),
+                (stack, "rwnd_limited_frac", None), (stack + "meta", "profile", "rfc"),
+                (stack + "meta", "cc", "cubic"), (stack + "meta", "bw", 10),
+                (stack + "meta", "rep", 0), (stack + "meta", "trace", False),
+                (stack + "meta", "reuse_key", "other"), (stack + "meta", "slot", 0),
+                (stack + "meta", "boot_id", "previous boot"), (stack + "meta", "slot_cpus", "8-11"),
+                (stack + "meta", "duration_s", 10), (stack, "softirqs", {}), (stack, "foreign_cpu_frac", None), (stack, "t0_ns", None),
+                ("serial-s0/stack-notrace-r2/", "valid", False),
+                ("serial-s0/stack-notrace-r2/", "trace_events", 0),
+                (stack + "meta", "cell", "10-100-0-2"),
+                ("parallel-s0/rate-10-100-2-r4/", "valid", False),
+                ("parallel-s0/rate-10-100-2-r4/", "sender_ccs", []),
+                ("parallel-s1/ping-100-20-2-r2/ping", "median_ms", None)):
+            files = proof_files()
+            key = path + ("summary.json" if path.endswith("/") else ".json")
+            with self.subTest(path=key, field=field):
+                files[key][field] = value
+                if key.endswith("meta.json"):
+                    files[path.removesuffix("meta") + "summary.json"]["proof_meta_sha256"] = fixture_meta_digest(files[key])
+                self.assertFalse(M.proof_evaluate(files, "t", 5, M.PROOF_PAIRS)["passed"])
+        files = {p: v for p, v in proof_files().items() if "-r0/" in p}
+        self.assertFalse(M.proof_evaluate(files, "t", 5, M.PROOF_PAIRS)["passed"])
+        self.assertFalse(M.proof_evaluate(files, "t", 1, M.PROOF_PAIRS)["passed"])
+        self.assertFalse(M.proof_evaluate(proof_files(), "t", 5, [(100, 20)])["passed"])
+
+    def test_equal_run_names_do_not_allow_swapping_summaries_across_slots(self):
+        files = proof_files()
+        run = "rate-100-20-2-r0/summary.json"
+        files["parallel-s1/" + run] = files["parallel-s0/" + run]
+        self.assertFalse(M.proof_evaluate(files, "t", 5, M.PROOF_PAIRS)["passed"])
+
+    def test_only_the_measured_stack_windows_count_as_parallel(self):
+        files = proof_files()
+        for leaf in ("t0_ns", "sender_start_ns", "window_end_ns"):
+            files["parallel-s1/stack-trace-r0/summary.json"][leaf] += 24 * NS
+        r = M.proof_evaluate(files, "t", 5, M.PROOF_PAIRS)
+        self.assertFalse(r["passed"])  # transfers overlap in warm-up, measured windows do not
+        self.assertEqual(r["stack_overlap"][0]["overlap_ns"], 0)
+
+    def test_cubic_selection_and_label(self):
+        files = proof_files(stack_cc="cubic")
+        r = M.proof_evaluate(files, "t", 5, M.PROOF_PAIRS, stack_cc="cubic")
+        self.assertTrue(r["passed"])
+        self.assertIn("CUBIC", M.proof_markdown(r))
+        self.assertFalse(M.proof_evaluate(files, "t", 5, M.PROOF_PAIRS)["passed"])
+        self.assertAlmostEqual(r["stack_overlap"][0]["overlap_ns"] / NS, 23.98)
+        for _, _, spec in M.proof_list(1, [(100, 20)], True, stack_cc="cubic"):
+            if "impl" in spec:
+                self.assertEqual(spec["cc"], "cubic")
+
+    def test_analyzer_reads_the_sender_samples(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rd = make_run(tmp, "actual", {"cc": "newreno"})
+            p = rd / "snd.jsonl"
+            rows = A.read_jsonl(p)
+            for row in rows:
+                if row.get("ev") == "sample":
+                    row["cc_name"] = "cubic"
+            p.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            self.assertEqual(A.summarize_run(rd)["sender_ccs"], ["cubic"])
+            measured = [row for row in rows if row.get("ev") == "sample" and row["t"] >= T0 + 5 * NS]
+            measured[0]["cc_name"] = "newreno"
+            del measured[1]["cc_name"]
+            rows[8]["cc_name"] = "outside-window"
+            p.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            self.assertEqual(A.summarize_run(rd)["sender_ccs"], ["", "cubic", "newreno"])
+
+    def test_copying_one_stack_trial_as_another_repetition(self):
+        files = proof_files()
+        for sub in ("parallel-s0", "parallel-s1"):
+            old = files[f"{sub}/stack-trace-r0/summary.json"]
+            new = files[f"{sub}/stack-trace-r1/summary.json"]
+            for field in ("t0_ns", "sender_start_ns", "window_end_ns"):
+                new[field] = old[field]
+        self.assertFalse(M.proof_evaluate(files, "t", 5, M.PROOF_PAIRS)["passed"])
+
+    def test_proof_transfer_needs_matching_endpoint_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rd = make_run(tmp, "rate", {"gate": "proof-rate"})
+            for fname in ("snd.jsonl", "rcv.jsonl"):
+                p = rd / fname
+                rows = A.read_jsonl(p)
+                rows[-1].update(bytes=1024, backend="kernel")
+                p.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            summary = A.summarize_run(rd)
+            self.assertTrue(summary["valid"])
+            self.assertEqual(summary["proof_meta_sha256"], fixture_meta_digest(json.loads((rd / "meta.json").read_text())))
+            rows[-1]["bytes"] = 1025
+            p.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            self.assertFalse(A.summarize_run(rd)["valid"])
 
     def test_limits_at_their_bounds(self):
         it, r = self.items()
@@ -1203,6 +1332,8 @@ class ProofDecisions(unittest.TestCase):
     def test_bucket_comparison(self):
         self.assertTrue(M.lateness_p99_ok(65535, 131071))
         self.assertFalse(M.lateness_p99_ok(65535, 131072))
+        self.assertFalse(M.lateness_max_ok(0, 1))
+        self.assertTrue(M.lateness_max_ok(0, 0))
         self.assertEqual(M.lateness_bucket(0), 0)
         self.assertEqual(M.lateness_bucket(65535), 16)
         self.assertEqual(M.lateness_bucket(65536), 17)
@@ -1285,8 +1416,28 @@ class ResumeKeys(unittest.TestCase):
         self.assertEqual(rows[0]["gap_goodput_bps"], "n/a")
 
     def test_gate_acceptance(self):
-        g = {"slot": 0, "passed": True, "reuse_keys": ["k1"]}
+        items = []
+        for bw in (10, 100):
+            for rtt in (20, 100):
+                for q in (0.5, 2):
+                    cell = dict(bw=bw, rtt=rtt, queue_bdp=q, ok=True)
+                    items.append(dict(cell, item=1))
+                    for i in (2, 4, 5):
+                        items.append(dict(cell, item=i, run=f"rate-{bw}-{rtt}-{q:g}"))
+                    for loss in (0.1, 1):
+                        for i in (3, 5):
+                            items.append(dict(cell, item=i, loss_pct=loss, run=f"loss-{bw}-{rtt}-{q:g}-{loss:g}"))
+        items.append(dict(item=6, part="ping", ok=True))
+        for part in ("run", "path"):
+            items.append(dict(item=6, part=part, ok=True, run="stack-100-20-2-" + part))
+        g = {"slot": 0, "passed": True, "reuse_keys": ["k1"], "items": items}
         self.assertIsNone(M.gate_rejects(g, 0, "k1"))
+        for rows in ([], items[:8] + items[-3:], items[:-3], items[:-1] + [items[-2]],
+                     [dict(items[0], ok=False)] + items[1:], [dict(items[0], slot=1)] + items[1:],
+                     [dict(items[0], reuse_key="k2")] + items[1:],
+                     [items[0], dict(items[1], run="rate-100-100-2")] + items[2:]):
+            with self.subTest(rows=len(rows), first=rows[:2]):
+                self.assertIsNotNone(M.gate_rejects(dict(g, items=rows), 0, "k1"))
         self.assertIsNotNone(M.gate_rejects(g, 1, "k1"))
         self.assertIsNotNone(M.gate_rejects(g, 0, "k2"))
         self.assertIsNotNone(M.gate_rejects(dict(g, passed=False), 0, "k1"))
@@ -1301,6 +1452,72 @@ class FakeSlot:
 
     def slot_cpus(self):
         return "8-11" if self.timing else "16-31"
+
+
+class ProofPhase(unittest.TestCase):
+    def phase(self, phase, one, cached=(), old_config=None):
+        slots = [FakeSlot(n, True) for n in ([0, 1] if phase == "parallel" else [0])]
+        for slot in slots:
+            slot.cleanup = mock.Mock()
+        store = {}
+        if old_config:
+            store["/data/m2/t/proof-config.json"] = json.dumps(old_config)
+        with ExitStack() as st:
+            patch = lambda name, **kw: st.enter_context(mock.patch.object(M, name, **kw))
+            patch("static_meta", return_value={})
+            st.enter_context(mock.patch.object(Path, "read_text", return_value="boot"))
+            patch("current_key", return_value="key")
+            patch("dexec", return_value="")
+            patch("read_volume", side_effect=lambda _, path: store.get(path))
+            patch("vol_write", side_effect=lambda _, path, text: store.update({path: text}))
+            patch("ping_only", return_value={"median_ms": 20, "p99_ms": 21})
+            patch("run_done", side_effect=lambda slot, _, name: {} if (slot.n, name) in cached else None)
+            patch("one_run", side_effect=one)
+            patch("log")
+            M.proof_phase("t", phase, slots, 1, [(100, 20)], "cubic")
+        return store
+
+    def test_only_parallel_stack_repetitions_rendezvous_and_resume_together(self):
+        calls = []
+        def one(slot, sub, name, spec, smeta, sender_barrier):
+            calls.append((slot.n, name, sender_barrier is not None))
+            if sender_barrier:
+                sender_barrier.wait(timeout=2)
+            return {}, {"valid": True}
+        store = self.phase("parallel", one, cached={(0, "stack-trace-r0")})
+        self.assertCountEqual(calls, [(n, name, sync) for n in (0, 1)
+                             for name, sync in (("rate-100-20-2-r0", False), ("stack-trace-r0", True))])
+        self.assertEqual(json.loads(store["/data/m2/t/parallel-s1/ping-100-20-2-r0/ping.json"])["slot"], 1)
+        calls.clear()
+        self.phase("serial", one)
+        self.assertCountEqual(calls, [(0, n, False) for n in ("rate-100-20-2-r0", "stack-trace-r0", "stack-notrace-r0")])
+
+    def test_sibling_setup_failure_releases_paired_sender(self):
+        entered, released = threading.Event(), threading.Event()
+        def one(slot, sub, name, spec, smeta, sender_barrier):
+            if sender_barrier:
+                if slot.n == 0:
+                    entered.set()
+                    try:
+                        sender_barrier.wait(timeout=2)
+                    except threading.BrokenBarrierError:
+                        released.set()
+                        raise
+                else:
+                    self.assertTrue(entered.wait(timeout=2))
+                    raise RuntimeError("receiver failed to start")
+            return {}, {}
+        with self.assertRaisesRegex(RuntimeError, "receiver failed to start"):
+            self.phase("parallel", one)
+        self.assertTrue(released.is_set())
+
+    def test_refuses_reusing_newreno_and_overwriting_archived_reports(self):
+        with self.assertRaisesRegex(RuntimeError, "new campaign"):
+            self.phase("serial", None, old_config={"stack_cc": "newreno"})
+        with mock.patch.object(M, "proof_files", return_value=proof_files()), mock.patch.object(M, "sh") as write:
+            with self.assertRaisesRegex(RuntimeError, "archived"):
+                M.proof_report("t", 5, M.PROOF_PAIRS)
+            write.assert_not_called()
 
 
 class RunnerRefusals(unittest.TestCase):

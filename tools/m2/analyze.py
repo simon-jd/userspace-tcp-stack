@@ -927,6 +927,11 @@ def run_window(meta, rcv, snd):
     return t0, lo, hi, snd_start
 
 
+def proof_meta_digest(meta):
+    """Bind a proof summary to its full metadata, including phase, slot and attempt."""
+    return hashlib.sha256(json.dumps(meta, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def summarize_run(rundir):
     """summary.json of a run directory (§5.13): every §5.9 metric that the run
     has inputs for, the validity flags and the reasons."""
@@ -970,6 +975,18 @@ def summarize_run(rundir):
         invalid("sender not ok")
     if rsum and ssum and rsum.get("sha256") != ssum.get("sha256"):
         invalid("sha256 differs")
+    # The configured CC in meta.json is only the request. Record every name
+    # observed in the measured window; an absent name remains visible.
+    out["sender_ccs"] = sorted({(row.get("cc_name") or "") if row.get("role") == "sender" else ""
+                                for row in snd if row.get("ev") == "sample" and lo <= row["t"] <= hi})
+    if meta.get("gate") in ("proof-rate", "proof-stack", "proof-notrace"):
+        out["proof_meta_sha256"] = proof_meta_digest(meta)
+        if not (rsum and ssum and rsum.get("bytes") and rsum["bytes"] == ssum.get("bytes")
+                and rsum.get("sha256") and rsum["sha256"] == ssum.get("sha256")
+                and rsum.get("role") == "receiver" and rsum.get("backend") == "kernel"
+                and ssum.get("role") == "sender"
+                and ssum.get("backend") == ("utcp" if meta["impl"] == "utcp" else "kernel")):
+            invalid("incomplete or mismatched proof endpoints")
     # Sender counters over the window.
     dsegs = delta(series(snd, "data_segs_out"), lo, hi)
     dret = delta(series(snd, "total_retrans"), lo, hi)
