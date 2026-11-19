@@ -10,6 +10,12 @@ tools=/utcp/tools/m2
 stage=$(mktemp -d "$dest/m2d-matrix-verification.XXXXXXXX")
 export TMPDIR="$stage" MPLCONFIGDIR="$stage/matplotlib" PYTHONDONTWRITEBYTECODE=1 LC_ALL=C
 echo "working in $stage"
+python3 -IB "$verify/seal_raw.py" "$camp" "$dest" >"$stage/raw-receipt.txt"
+raw=$(awk 'NR==1 {print $2}' "$stage/raw-receipt.txt")
+mkdir "$stage/full-restore"
+tar xzf "$raw" -C "$stage/full-restore"
+full="$stage/full-restore/m2-matrix"
+(cd "$full" && sha256sum --quiet -c ../manifest/raw.sha256)
 python3 -IB "$tools/analyze.py" tables "$stage/native" --campaign "$camp"
 python3 -IB "$docs/audit.py" "$camp" "$stage/observed"
 python3 -IB "$verify/physical_checkpoint.py" "$camp" "$stage/observed/evidence.csv" "$stage/physical"
@@ -18,12 +24,6 @@ python3 -IB "$docs/loss_replay.py" extract "$camp" "$stage/observed/evidence.csv
 python3 -IB "$docs/loss_replay.py" report "$camp" "$stage/wire-loss-inputs" "$stage/wire-report"
 python3 -IB "$tools/plot.py" "$camp" "$stage/plots" >"$stage/plot-selection.log"
 python3 -IB "$docs/report.py" "$camp" "$stage/native" "$stage/observed" "$stage/plot-selection.log" "$stage/report"
-python3 -IB "$verify/seal_raw.py" "$camp" "$dest" >"$stage/raw-receipt.txt"
-raw=$(awk 'NR==1 {print $2}' "$stage/raw-receipt.txt")
-mkdir "$stage/full-restore"
-tar xzf "$raw" -C "$stage/full-restore"
-full="$stage/full-restore/m2-matrix"
-(cd "$full" && sha256sum --quiet -c ../manifest/raw.sha256)
 python3 -IB "$verify/physical_checkpoint.py" "$full" "$stage/observed/evidence.csv" "$stage/full-physical"
 python3 -IB "$docs/replay_captures.py" "$full" "$stage/full-physical/capture-replay.csv" --jobs 4
 diff -qr "$stage/physical" "$stage/full-physical"

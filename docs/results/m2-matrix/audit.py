@@ -12,8 +12,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 CHECKPOINT = HERE.parent / "m2-checkpoint/verify"
-sys.path[:0] = [str(REPO / "tools/m2"), str(CHECKPOINT)]
+sys.path[:0] = [str(HERE), str(REPO / "tools/m2"), str(CHECKPOINT)]
 import analyze
+import attempts
 import checkpoint_inputs as checkpoint
 import diagnostics
 import endpoint_replay
@@ -250,7 +251,7 @@ ELIGIBLE_COUNTERS = (
 )
 
 
-def verified_trace(path, meta, conn, stats, summary):
+def verified_trace(path, meta, conn, stats, summary, sender_records=None):
     """A trace sink can be enabled for an entire transfer without receiving an eligible event."""
     assert meta["trace"] is True and path.is_file(), (path, "missing or disabled trace")
     n = stats.get("trace_events")
@@ -270,6 +271,22 @@ def verified_trace(path, meta, conn, stats, summary):
     )
     for k in ELIGIBLE_COUNTERS:
         assert stats[k] == 0 and summary["sender_counters"][k] == 0, (path, k)
+    records = (
+        list(diagnostics.rows(path.with_name("snd.jsonl")))
+        if sender_records is None
+        else sender_records
+    )
+    samples = [r for r in records if r.get("ev") == "sample"]
+    terminals = [r for r in records if r.get("ev") == "summary"]
+    assert samples and len(terminals) == 1, (path, "missing lifetime socket records")
+    for row in samples + terminals:
+        assert row.get("role") == "sender" and row.get("total_retrans") == 0, (
+            path,
+            "lifetime sender total_retrans",
+        )
+        for key in ("bytes_retrans", "retrans"):
+            if key in row:
+                assert row[key] == 0, (path, "lifetime sender " + key)
     return Counter(), hashlib.sha256(b"").hexdigest()
 
 
@@ -279,7 +296,7 @@ def trace_row(directory, meta, summary, profile):
     (conn,) = {r["conn_id"] for r in records if r.get("ev") == "sample"}
     stats = read(directory / "stats.json")
     counts, digest = verified_trace(
-        directory / "trace.jsonl", meta, conn, stats, summary
+        directory / "trace.jsonl", meta, conn, stats, summary, records
     )
     modes = Counter()
     lt = Counter()
@@ -346,58 +363,7 @@ def partial_row(directory, meta, summary):
 
 
 def preserved_attempts(campaign, planned):
-    """Inventory separately retained copies even when no endpoint or final metadata exists."""
-    source_manifest = campaign / "source-manifest.sha256"
-    if source_manifest.is_file():
-        files = {
-            line.split("  ", 1)[1]
-            for line in source_manifest.read_text().splitlines()
-            if line.split("  ", 1)[1].startswith("aside/")
-        }
-    else:
-        files = {
-            p.relative_to(campaign).as_posix()
-            for p in (campaign / "aside").rglob("*")
-            if p.is_file()
-        }
-    inputs = set(analyze.ARCHIVE_FILES) | {
-        "shape.txt",
-        "snd.out",
-        "rcv.out",
-        "r1-in.pcap",
-        "r2-out.pcap",
-    }
-    dirs = set()
-    for name in files:
-        path = Path(name)
-        if path.name in inputs:
-            dirs.add(path.parent)
-        elif path.name == "record.txt" and path.parent.name in ("pre", "post"):
-            dirs.add(path.parent.parent)
-    collected = []
-    for relative in sorted(dirs):
-        directory = campaign / relative
-        available = sorted(n for n in inputs if (relative / n).as_posix() in files)
-        meta = read(directory / "meta.json") if "meta.json" in available else {}
-        name = meta.get("rerun_of", meta.get("run", directory.name))
-        spec = planned.get(name, {})
-        summ = read(directory / "summary.json") if "summary.json" in available else {}
-        collected.append(
-            dict(
-                path=directory.relative_to(campaign).as_posix(),
-                run=meta.get("run", directory.name),
-                group=meta.get("group", spec.get("group")),
-                seed=meta.get("seed", spec.get("seed")),
-                rerun=meta.get("rerun"),
-                counted=False,
-                saved_validity=summ.get("valid"),
-                flags=summ.get("flags", []),
-                reasons=summ.get("invalid", []),
-                available_inputs=available,
-                absent_inputs=sorted(inputs - set(available)),
-            )
-        )
-    return collected
+    return attempts.preserved(campaign, planned, analyze.ARCHIVE_FILES)
 
 
 def main(campaign, out, live=False):
@@ -448,17 +414,35 @@ def main(campaign, out, live=False):
             for members in families.values()
             for m, _ in members
         } == planned.keys()
+    history = preserved_attempts(campaign, planned)
+    chronology = attempts.timeline(campaign, families, history)
+    by_condition = defaultdict(list)
+    orphaned = []
+    for item in history:
+        if item["group"] is None:
+            orphaned.append(item["path"])
+        else:
+            by_condition[item["cell"], item["algo"]].append(item)
     out.mkdir(parents=True, exist_ok=False)
     rows, trace, controls, medians, statuses = [], [], [], [], {}
-    for (cell, algo), members in sorted(families.items()):
-        pairs, bad, status = checkpoint.independently_count(members)
+    for cell, algo in sorted(families.keys() | by_condition.keys()):
+        members = families[cell, algo]
+        pairs, ledger = attempts.qualify(
+            members,
+            by_condition[cell, algo],
+            checkpoint.independently_count,
+            chronology,
+        )
+        if orphaned:
+            pairs = []
+            ledger.update(status="indeterminate (unassigned archive)", counted_pairs=0)
+            ledger["association_issues"].extend(orphaned)
+        status = ledger["status"]
         reps = [pair[0][0]["rep"] for pair in pairs]
         assert len(set(reps)) == len(reps)
         if status == "ok":
-            assert set(reps) == set(range(5)) and len(bad) <= 3
-        statuses[f"{cell}/{algo}"] = dict(
-            status=status, bad_pairs=bad, counted_pairs=len(pairs)
-        )
+            assert set(reps) == set(range(5)) and len(ledger["bad_pairs"]) <= 3
+        statuses[f"{cell}/{algo}"] = ledger
         counted = {m["run"] for pair in pairs for m, s in pair}
         for meta, summary in members:
             name = meta["run"]
@@ -509,6 +493,26 @@ def main(campaign, out, live=False):
                 medians.append(
                     dict(cell=cell, algo=algo, impl=side, run=name, goodput_bps=rate)
                 )
+    write_csv(
+        out / "attempt-chronology.csv",
+        (
+            "path",
+            "source",
+            "group",
+            "rerun",
+            "in_group",
+            "valid",
+            "attempted",
+            "first_ns",
+            "last_ns",
+            "position",
+            "order_issue",
+        ),
+        sorted(
+            chronology.values(),
+            key=lambda r: (r.get("position", float("inf")), r["path"]),
+        ),
+    )
     rows.sort(key=lambda r: (r["order"], r["rerun"]))
     write_csv(out / "evidence.csv", checkpoint.ROWS, rows)
     for filename, data in (
@@ -523,7 +527,7 @@ def main(campaign, out, live=False):
     for filename, data in (
         ("qualification.json", statuses),
         ("invalid-attempts.json", excluded),
-        ("preserved-attempts.json", preserved_attempts(campaign, planned)),
+        ("preserved-attempts.json", history),
     ):
         (out / filename).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     with tempfile.TemporaryDirectory() as scratch:

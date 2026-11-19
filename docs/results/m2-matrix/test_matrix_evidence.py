@@ -20,6 +20,14 @@ class FilteredTrace(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         self.path = Path(scratch.name) / "trace.jsonl"
         self.path.touch()
+        self.sender_rows = [
+            dict(ev="sample", role="sender", t=t, total_retrans=0, bytes_retrans=0)
+            for t in (1, 10, 15)
+        ]
+        self.sender_rows.append(dict(ev="summary", role="sender", total_retrans=0))
+        self.path.with_name("snd.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in self.sender_rows)
+        )
         self.meta = {"trace": True, "rcv_ip": "198.19.12.5"}
         self.stats = dict(
             trace_events=0, trace_blocks=1, **dict.fromkeys(audit.ELIGIBLE_COUNTERS, 0)
@@ -71,6 +79,21 @@ class FilteredTrace(unittest.TestCase):
         self.summary["capture"]["r1-in"]["retrans_segs"] = 1
         with self.assertRaises(AssertionError):
             self.check()
+
+    def test_empty_trace_rejects_lifetime_socket_contradictions(self):
+        for index, key in (
+            (0, "total_retrans"),
+            (2, "bytes_retrans"),
+            (3, "total_retrans"),
+        ):
+            with self.subTest(index=index, key=key):
+                rows = [dict(row) for row in self.sender_rows]
+                rows[index][key] = 1
+                self.path.with_name("snd.jsonl").write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows)
+                )
+                with self.assertRaisesRegex(AssertionError, "lifetime sender"):
+                    self.check()
 
     def test_empty_trace_contradicts_native_counter(self):
         for counter in audit.ELIGIBLE_COUNTERS:
@@ -200,6 +223,156 @@ class LossWire(unittest.TestCase):
                 "no sampled Loss",
                 loss.rows(root / "no-sample/kernel-rto-runs.csv")[0]["summary"],
             )
+
+
+class AttemptLedger(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.campaign = Path(scratch.name)
+        self.planned = {}
+        self.members = []
+        for index, impl in enumerate(("utcp", "linux")):
+            run = f"100-20-0.1-2-bbr-r0-{impl}"
+            self.planned[run] = dict(
+                run=run,
+                seed=33,
+                rep=0,
+                group=0,
+                in_group=index,
+                cell="100-20-0.1-2",
+                algo="bbr",
+                impl=impl,
+            )
+
+    def path(self, spec, retry, archive):
+        name = spec["run"] + (f"-rerun{retry}" if retry else "")
+        if archive is None:
+            return self.campaign / name
+        return self.campaign / "aside" / f"{name}.{archive:08d}" / "raw"
+
+    def pair(self, stamp, *, retry=0, archive=None, good=True, started=True):
+        for name, spec in self.planned.items():
+            side = spec["in_group"]
+            d = self.path(spec, retry, archive)
+            d.mkdir(parents=True)
+            member = dict(
+                spec, rerun=retry, run=name + (f"-rerun{retry}" if retry else "")
+            )
+            summary = dict(
+                valid=good or not side,
+                flags=["foreign_cpu"],
+                invalid=[] if good or not side else ["missing terminal"],
+            )
+            (d / "meta.json").write_text(json.dumps(member))
+            (d / "summary.json").write_text(json.dumps(summary))
+            if started:
+                t = stamp + side * 20
+                records = [
+                    dict(ev="start", t=t),
+                    dict(ev="sample", t=t + 1, bytes_sent=9),
+                ]
+                if summary["valid"]:
+                    records.append(dict(ev="summary", t=t + 2, bytes=9, ok=True))
+                (d / "snd.jsonl").write_text(
+                    "".join(json.dumps(x) + "\n" for x in records)
+                )
+            if archive is None:
+                self.members.append((member, summary))
+
+    def ledger(self):
+        history = audit.preserved_attempts(self.campaign, self.planned)
+        order = audit.attempts.timeline(
+            self.campaign, {("100-20-0.1-2", "bbr"): self.members}, history
+        )
+        _, ledger = audit.attempts.qualify(
+            self.members, history, audit.checkpoint.independently_count, order
+        )
+        return history, ledger
+
+    def test_preserved_failed_pairs_count_even_when_later_same_id_succeeds(self):
+        for i in range(3):
+            self.pair(100 * i, archive=i, good=False)
+        self.pair(500)
+        history, ledger = self.ledger()
+        self.assertEqual((len(ledger["bad_pairs"]), ledger["counted_pairs"]), (3, 1))
+        self.assertTrue(all("foreign_cpu" in h["flags"] for h in history))
+        self.pair(300, archive=3, good=False)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], len(ledger["bad_pairs"]), ledger["counted_pairs"]),
+            ("invalid (rerun cap)", 4, 0),
+        )
+
+    def test_shape_only_nested_raw_retains_decimal_cell_and_seed(self):
+        spec = next(iter(self.planned.values()))
+        d = self.path(spec, 0, 12)
+        d.mkdir(parents=True)
+        (d / "shape.txt").write_text("setup\n")
+        (d / "pre").mkdir()
+        (d / "pre/record.txt").touch()
+        (h,), ledger = self.ledger()
+        self.assertEqual((h["run"], h["group"], h["seed"]), (spec["run"], 0, 33))
+        self.assertEqual(h["physical"], "setup only; transfer unobserved")
+        self.assertIn("pre/record.txt", h["available_inputs"])
+        self.assertEqual(ledger["bad_pairs"], [])
+
+    def test_rerun_requires_supported_invalid_predecessors(self):
+        self.pair(200, retry=1)
+        _, ledger = self.ledger()
+        self.assertEqual(ledger["status"], "indeterminate (attempt association)")
+        self.pair(100, good=False)
+        _, ledger = self.ledger()
+        self.assertEqual((ledger["counted_pairs"], len(ledger["bad_pairs"])), (1, 1))
+        self.pair(300, retry=2)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], ledger["counted_pairs"]),
+            ("indeterminate (attempt association)", 0),
+        )
+
+    def test_hole_and_outside_cap(self):
+        self.pair(100, retry=4)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], ledger["counted_pairs"]), ("invalid (rerun cap)", 0)
+        )
+
+    def test_failed_summary_without_endpoint_activity_cannot_authorize_retry(self):
+        self.pair(100, good=False, started=False)
+        self.pair(200, retry=1)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], len(ledger["bad_pairs"]), ledger["counted_pairs"]),
+            ("indeterminate (attempt association)", 0, 0),
+        )
+
+    def test_prior_completed_archived_pair_and_overlaps_are_unresolved(self):
+        self.pair(100, archive=1)
+        self.pair(200)
+        _, ledger = self.ledger()
+        self.assertEqual(ledger["counted_pairs"], 0)
+        self.assertTrue(
+            any("possibly valid" in msg for msg in ledger["association_issues"])
+        )
+        self.pair(101, archive=2, good=False)
+        _, ledger = self.ledger()
+        self.assertEqual(ledger["counted_pairs"], 0)
+        self.assertTrue(any("overlap" in msg for msg in ledger["association_issues"]))
+
+    def test_archive_rejects_path_meta_mismatch_and_survives_truncated_bytes(self):
+        spec = next(iter(self.planned.values()))
+        d = self.path(spec, 0, 1)
+        d.mkdir(parents=True)
+        (d / "snd.jsonl").write_bytes(b'{"ev":"sample","t":4,"bytes_sent":8}\n\xff{')
+        (h,), ledger = self.ledger()
+        self.assertTrue(h["malformed_endpoint"])
+        self.assertEqual(
+            (h["physical"], len(ledger["bad_pairs"])), ("payload observed", 1)
+        )
+        (d / "meta.json").write_text('{"run":"unregistered"}')
+        with self.assertRaises(ValueError):
+            self.ledger()
 
 
 class GapBoundaries(unittest.TestCase):
