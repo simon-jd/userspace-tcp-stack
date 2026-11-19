@@ -142,6 +142,52 @@ TEST(TcpZeroWindow, ProbesDoubleToRtoMaxAndNeverAbortWhenAnswered) {
   }
 }
 
+// A nonzero SWS override is ordinary new data. With a fixed 100 B/s rate
+// the 10th 1000-byte segment holds the next departure for ten seconds,
+// well past the persist interval. A persist send that is itself the 10th
+// segment starts charging EDT at that segment.
+TEST(TcpZeroWindow, PositivePersistWindowHonorsAndAdvancesEdt) {
+  for (const int warm : {9, 10}) {
+    SCOPED_TRACE(warm);
+    auto cfg = traced(ProfileId::linux_compat);
+    cfg.tcp.test_fixed_pacing_rate = 100;
+    Scripted c(cfg);
+    c.po.wscale = std::nullopt;
+    ASSERT_TRUE(c.accept());
+    const auto start = c.d().now();
+    for (int i = 0; i < warm; ++i) {
+      ASSERT_EQ(c.stack().tcp_send(c.h, t::pattern(1000)).value_or(0), 1000u);
+      const auto data = c.out();
+      ASSERT_EQ(data.size(), 1u);
+      ASSERT_EQ(data[0].v.payload.size(), 1000u);
+      c.their = c.their + 1000;
+      if (i + 1 == warm) c.window = 300;
+      c.send(c.spec(w::tcp_ack));
+    }
+    const auto rto = c.stack().tcp_info(c.h)->rto;
+    ASSERT_LT(rto, 10s);
+    ASSERT_EQ(c.stack().tcp_send(c.h, t::pattern(2000)).value_or(0), 2000u);
+    const Duration first = warm == 9 ? rto : Duration{10s};
+    c.d().run_for(first - 1ns);
+    ASSERT_TRUE(c.out().empty()) << "data before the persist deadline or previous EDT";
+    c.d().run_for(1ns);
+    const auto sws = c.out();
+    ASSERT_EQ(sws.size(), 1u);
+    ASSERT_EQ(sws[0].v.payload.size(), 300u);
+    c.their = c.their + 300;
+    c.window = 65535;
+    c.send(c.spec(w::tcp_ack));
+    // len/rate = 3s. With only nine prior sends the first timer was
+    // late relative to the ninth send; EDT credits up to half an interval.
+    const auto credit = warm == 9 ? std::min(rto, Duration{1500ms}) : Duration::zero();
+    c.d().run_for(3s - credit - 1ns);
+    ASSERT_TRUE(c.out().empty()) << "the short persist send did not charge EDT";
+    c.d().run_for(1ns);
+    ASSERT_FALSE(c.out().empty());
+    EXPECT_EQ(c.d().now(), start + first + 3s - credit);
+  }
+}
+
 // §4.8: unanswered probes count against data_retries (Linux tcp_probe_timer:
 // icsk_probes_out >= tcp_retries2): after data_retries probes the next expiry
 // aborts with an RST and timed_out.

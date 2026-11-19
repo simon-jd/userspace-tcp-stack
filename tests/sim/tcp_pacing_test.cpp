@@ -66,6 +66,7 @@ Outcome paced_bulk(std::uint64_t seed, std::uint64_t total,
   Outcome o = run_sim(s, spec);
   if (o.ok()) {
     EXPECT_EQ(cl.sent, total);
+    EXPECT_EQ(o.counts[1].tcp_bytes_received, total);
   }
   return o;
 }
@@ -228,14 +229,14 @@ TEST(TcpPacingSim, CubicPacedBurstsFollowTheEdtReplay) {
 // The replay is not vacuous: with TestFault::ignore_pacing_gate (the gate
 // always open, pacing_next still advanced) bursts leave before the modelled
 // departure.
-TEST(TcpPacingSim, ReplayCatchesAnIgnoredGate) {
-  const auto tweak = [](StackConfig& c) {
-    c.tcp.cc = CcAlgo::newreno;
+void check_ignored_gate(CcAlgo cc) {
+  const auto tweak = [cc](StackConfig& c) {
+    c.tcp.cc = cc;
     c.tcp.pacing = Pacing::always;
     c.tcp.initial_ssthresh = 100;
     c.tcp.test_fault = TestFault::ignore_pacing_gate;
   };
-  const Outcome o = paced_bulk(9101, 2'000'000, tweak, true, false);
+  const Outcome o = paced_bulk(9101, 2'000'000, tweak, true, false, cc);
   // World stops on the first violation. The independent replay must flag
   // the same departure in the captured trace prefix.
   ASSERT_EQ(o.result.verdict, Verdict::pacing) << o.violations();
@@ -247,6 +248,13 @@ TEST(TcpPacingSim, ReplayCatchesAnIgnoredGate) {
   ASSERT_TRUE(r.first_early_at.has_value());
   EXPECT_EQ(*r.first_early_at, violation.t) << r.first_early;
   RecordProperty("first_early", r.first_early);
+}
+
+TEST(TcpPacingSim, ReplayCatchesAnIgnoredGate) {
+  check_ignored_gate(CcAlgo::newreno);
+}
+TEST(TcpPacingSim, CubicReplayCatchesAnIgnoredGate) {
+  check_ignored_gate(CcAlgo::cubic);
 }
 
 // Node 1 has a fixed rate even though its scenario profile defaults to

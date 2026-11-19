@@ -8,6 +8,7 @@ import tempfile
 
 sim, sweep = sys.argv[1:]
 golden = {
+    3: "0cf01e4d5eb07cb275d2052324445638f6564930408e983cc46a691a0ee3cecb",
     4: "9d33ebe468594b9446903e7dd887f2b24a7351de104ead0f74bb2e4692f7ff70",
     5: "52a0d36ca8f96aa4b832943b5ff909825874c483cfe7b55fdd840e7fd887809c",
 }
