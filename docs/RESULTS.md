@@ -180,16 +180,14 @@ and the per-item table `gate.md`. Items and pass conditions:
 | 1 | run | stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP: 66.54 Mbit/s (threshold 93.73); retransmitted 0.28 %; rwnd-limited 19.7 %, sndbuf-limited 0.0 %; loop lateness p99 bucket <= 262143 ns; drops none | NO |
 | 1 | path | stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP, --snd-buf 400000: 95.62 Mbit/s (threshold 93.73); retransmitted 0.00 %; rwnd-limited 0.0 %, sndbuf-limited 7.7 %; loop lateness p99 bucket <= 1048575 ns; drops none | yes |
 
-**Result.** Items 1-5 (Linux to Linux) pass on both slots in all 8 (bandwidth, RTT, queue) cells. Item 6
+**First calibration, November 14.** Items 1-5 (Linux to Linux) passed on both slots in all 8 (bandwidth, RTT, queue) cells. Item 6
 passes its ping part and fails its run on both slots: the stack (M1 code) reaches 65.4 and 66.5 Mbit/s
 against the 93.73 Mbit/s threshold. NewReno's slow-start overshoot overflows the 2×BDP queue (0.28-0.29 %
 of segments retransmitted, 647 and 632 tbf drops), and the M1 sender's recovery repairs about one hole
 per RTT (INTEROP.md open items), so the receiver's window stops advancing and the sender is
 rwnd-limited for 20 % of the window. The same run
 with the stack's send buffer at 400 000 B (below BDP + queue, no loss) carries 95.62 Mbit/s on both
-slots, so the TUN path is not the limit. The gate therefore has not passed: it is rerun in full on both slots
-with the M2 loss recovery (m2-found, m2a-recovery) and the final runner before the slots carry timing
-runs.
+slots. Each historical gate retained 66 passing rows and the failed default-buffer transfer.
 
 Captures: 68 per slot, 996.7 MB (slot 0) and 996.4 MB (slot 1) in total, at most 95.6 MB for one
 capture; 0 packets dropped by kernel in every one. In 4 runs (1 on slot 0, 3 on slot 1) 1 to 5 packets
@@ -235,6 +233,92 @@ filter = captured, 0 dropped by kernel). The watchers armed 2.2-2.7 ms after the
 No pass had a short segment before its target, so the shifted-boundary case was exercised live only by
 `mid` (an offset that is no segment start) and offline by the replay above. These 5 MB runs are shorter than
 the analysis window, so `summary.json` marks them invalid for the statistics; they are mechanism checks only.
+
+### Integrated calibration, November 19, 2026
+
+Both slots passed on commit `3f48c30dbf70240d50234f095eaca6de24fc0625`. Each full calibration
+covered all eight bandwidth, RTT and queue combinations, both loss rates, and both stack NewReno
+transfers. The fixed stack goodput threshold was 93.727873 Mbit/s. Each gate consumer rechecked
+62 source fingerprints. The separate slot 0 diagnostic on `8facd285` passed 67/67 under key
+`96d5b26f1e9db5fd7e971c8a5a304c420fb1605078a7ff8ce5d9c82bcfddcff7`.
+Its default and capped rates were 95.625960 and 95.617249 Mbit/s. Its peer slot and proof were
+never acquired. The November 14 runs above each passed 66/67.
+
+| Final slot | Passing rows by item 1–6 | Default / capped NewReno (Mbit/s) | Stack / kernel idle medians (ms) | Signed difference (ms) |
+|---|---|---:|---:|---:|
+| 0 | 8 / 8 / 16 / 8 / 24 / 3 | 95.625513 / 95.617723 | 20.0906315 / 20.0544080 | +0.0362235 |
+| 1 | 8 / 8 / 16 / 8 / 24 / 3 | 95.625965 / 95.617396 | 20.0836445 / 20.0569400 | +0.0267045 |
+
+| BW (Mbit/s) | RTT (ms) | Queue (×BDP) | Linux goodput, slots 0 / 1 (Mbit/s) | Idle ping p99, slots 0 / 1 (ms) |
+|---:|---:|---:|---:|---:|
+| 10 | 20 | 0.5 | 9.5491 / 9.5491 | 20.1309 / 20.1870 |
+| 10 | 20 | 2 | 9.5491 / 9.5492 | 20.1719 / 20.1961 |
+| 10 | 100 | 0.5 | 9.5495 / 9.5495 | 100.1210 / 100.2120 |
+| 10 | 100 | 2 | 9.5495 / 9.5497 | 100.1410 / 100.1984 |
+| 100 | 20 | 0.5 | 95.6255 / 95.6236 | 20.1601 / 20.1459 |
+| 100 | 20 | 2 | 95.6255 / 95.6255 | 20.1991 / 20.2141 |
+| 100 | 100 | 0.5 | 95.6258 / 95.6260 | 100.1327 / 100.1237 |
+| 100 | 100 | 2 | 95.6264 / 96.1082 | 100.1745 / 100.1790 |
+
+Slot 1's 96.1082 Mbit/s value comes from the receiver's TCP_INFO counter. The router capture
+shows 3,307,232 unique bytes already above the first hole at the start of the window. Closing
+the holes credited those buffered bytes during the window. At the end, all captured bytes formed
+one contiguous sequence. The TCP payload actually crossing the router in the 54.899956 s window
+measured 95.626314 Mbit/s.
+
+Each slot had 24 connected Linux CUBIC senders and two stack NewReno senders. All 52 transfers
+had matching endpoint byte counts and SHA-256. Independent interpolation of the receiver samples
+reproduced all reported goodputs. Each run covered both ends of its measured window.
+Reparsing the 136 transfer captures recovered 16,840,981 records. All filter and captured
+counts matched, with zero kernel capture drops. The 20 separate idle wire captures contained
+4,000 replies to 4,000 requests. The kernel controls probed the receiver from the sender.
+The stack probes ran from the Linux receiver to the stack TUN address. Default sndbuf-limited time
+was zero on both slots. The 400,000-byte controls spent 3.761% and 3.840% of their respective
+windows sndbuf-limited. All four transfers had zero rwnd-limited time.
+
+The canonical GCC 15.2 release build used `-O3 -DNDEBUG` in container path
+`/home/postedism/Desktop/utcp-wt/int-wire40`. Its executable and core library matched the
+functional-test build and the archived diagnostic binaries byte for byte. The 429-file source
+snapshot was checked against the Git tree on both hosts. Both live slots had the same key,
+`cd50db51c944442c8f1158f6b5e48f01ab3f913d9b96034a675af9a8aed9c1fd`.
+The kernel was `7.0.0-42-generic`, with scripts digest
+`43bf359c7ba1bf5d40f3a58ef7c4c9e5ba82737038b6d25ba35aa52d55b72912` and sysctl/module digest
+`795239ee27aa80ccc53bfffd887dddc48aaba8497ce72e08c1f23e1320cbadcf`. The topology records
+show sender veth TSO/GSO off and forwarding-interface GRO off. The sender had a 64 MiB TCP
+send-buffer maximum, the receiver a 32 MiB receive-buffer maximum, and both had
+`tcp_no_metrics_save=1`.
+
+The runs were acquired serially on the assigned topologies. For a clean reproduction use a fresh
+campaign name with the same frozen inputs. The original invocations were
+
+```sh
+set -euo pipefail
+export UTCP_M2_PREFIX=utcp-m2-finalgate UTCP_M2_JOB=utcp-m2-finalgate-runner
+sha=3f48c30dbf70240d50234f095eaca6de24fc0625
+for n in 0 1; do
+    taskset -c 16-31 nice -n 10 python3 tools/m2/matrix.py calibrate \
+        --slot "$n" --campaign "m2-integrate/${sha}-calib-a1-s$n"
+done
+```
+
+The raw roots in `utcp-data` are `/m2/m2-integrate/${sha}-calib-a1-s{0,1}/`.
+The corresponding `/m2/archive/m2-integrate-${sha}-calib-a1-s{0,1}-audit-1/` directories
+hold the non-pcap inputs and per-file raw indices. Adjacent `-physical-a1/` directories
+hold the independent packet counts, RTTs, load and per-run statistics.
+
+| Slot | Gate JSON SHA-256 | Compact analysis archive SHA-256 |
+|---|---|---|
+| 0 | `a3f4d37564f8fea9704c69775c63fec05e61e05cebb3f2d18fba7e80dbb596d8` | `b6d15cdb97fec301583606b1142281c12b77c93bfabfb278ace438bccc94324b` |
+| 1 | `8049131065bc7d9c9956beb4ba51009daf79168feabc36303f4b620d761d0c3d` | `4e7ba3c7838078f662f41006b16b7f1b0b8b435343e94d3148a6f43577132c74` |
+
+The original diagnostic gate JSON has SHA-256
+`801093b249e62b7e4ac0b7e8851d3e82a99cab22fa26683dfadb69de9f8ae053` in
+`/m2/m2-integrate/8facd2852d3d42c77a8204e2cf7d6ae28a7044c7-calib-a1-s0/`.
+For a later timing checkout, `/m2/archive/m2-integrate-${sha}-final-handoff-a1/README.md`
+contains the tested binary restore and live gate-consumer commands. Its manifest SHA-256 is
+`a246c0002e2409f33d3b7f0aea3a352bca3fad27a160b09ffc6c7193133786d6`. The underlying source,
+binaries, compiler cache, full topology and sysctls are in the sibling `-final-freeze-a1/` archive.
+Its manifest SHA-256 is `ac39786b0eec79f52bc79f51a2d6700796d172525f5e3f464b7a8dc24abdea49`.
 
 ## Gap rule and thresholds
 
@@ -313,7 +397,7 @@ Fixed parts (M2 design §6):
 - Every run records `uptime`, the top CPU users, the threads last seen on CPUs 8-15, and the slot CPUs'
   `/proc/stat` busy, irq and softirq deltas, `/proc/softirqs` and `/proc/net/softnet_stat`; since
   2026-11-16 also the four containers' cgroup CPU usage, from which `summary.json` and `runs.csv` give
-  the foreign CPU time on the slot's CPUs (Method; flagged at 2 %). The runs below predate it.
+  the foreign CPU time on the slot's CPUs (Method; flagged at 2 %). The November 15 NewReno runs predate it.
 - The softirq work of the whole path (r1 forwarding, netem, tbf, the receiver's TCP input and ACKs, the
   ACKs' processing at the sender) runs mostly on the CPU that transmitted, the sender's core; the
   stack's loop lateness therefore includes it, and both senders see the same work on the same core.
