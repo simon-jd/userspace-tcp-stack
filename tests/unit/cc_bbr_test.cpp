@@ -511,5 +511,77 @@ TEST_F(CcBbrModel, JiffiesDeadlineCanCrossThe32BitClockRollover) {
   EXPECT_NE(b.info().mode, Bbr::Mode::probe_rtt);
 }
 
+TEST_F(CcBbrModel, HighRatePolicerComparisonUsesKernelU32Products) {
+  c.now = c.delivered_time = Time{} + 100ms;
+  c.srtt = c.min_rtt = 1ms;
+  c.cwnd = 10000;
+  c.mss = 1000;
+  c.delivered = 0;
+  rng = Rng{Seed::from_u64(37)};
+  b.init(c);
+  rs.interval = rs.rtt = 1ms;
+  const std::array<unsigned, 9> losses{1, 0, 0, 0, 800, 0, 0, 0, 1600};
+  for (std::size_t i = 0; i < losses.size(); ++i) {
+    rs.acked_sacked = i < 5 ? 1000 : 2000;
+    rs.delivered = rs.acked_sacked;
+    rs.losses = losses[i];
+    rs.prior_in_flight = rs.acked_sacked + rs.losses;
+    ack(1ms);
+  }
+  EXPECT_TRUE(b.info().lt_use_bw);
+  EXPECT_EQ(b.info().bandwidth_q24, 25165824u);
+  EXPECT_EQ(c.cwnd, 5696u);
+  EXPECT_EQ(c.pacing_rate, 1485000000u);
+}
+
+TEST_F(CcBbrModel, ProbeRttDeadlineWrappingToZeroRearmsOnTheNextAck) {
+  c.now = c.delivered_time = Time{} + std::chrono::milliseconds{4294957095LL};
+  c.mss = 1000;
+  c.in_flight = 4;
+  c.cwnd = 20;
+  c.srtt = c.min_rtt = 1ms;
+  c.delivered = 0;
+  b.init(c);
+  rs.delivered = 1;
+  rs.rtt = rs.interval = 1ms;
+  rs.prior_in_flight = 5;
+  ack(10001ms);
+  ack(1ms);
+  ack(200ms);
+  ASSERT_EQ(jiffies(c.now), 1u);
+  EXPECT_EQ(b.info().mode, Bbr::Mode::probe_rtt);
+  EXPECT_EQ(c.cwnd, 4u);
+  ack(1ms);
+  EXPECT_NE(b.info().mode, Bbr::Mode::probe_rtt);
+}
+
+TEST_F(CcBbrModel, StartupInitialWindowExceptionUsesLowWordOfDelivered) {
+  c.now = c.delivered_time = Time{} + 100ms;
+  c.cwnd = 10;
+  c.mss = 1000;
+  c.srtt = 100ms;
+  c.min_rtt = 1ms;
+  c.delivered = (1ULL << 32) - 3;
+  b.init(c);
+  rs.interval = 1ms;
+  rs.rtt = -1ns;
+  rs.delivered = rs.prior_in_flight = 1;
+  ack(1ms);
+  ack(1ms);
+  EXPECT_EQ(c.cwnd, 10u);
+  ack(1ms);
+  ASSERT_EQ(c.delivered, 1ULL << 32);
+  EXPECT_EQ(c.cwnd, 11u);
+}
+
+TEST_F(CcBbrModel, InitialPacingUsesHighGainBeforeTheFirstGainUpdate) {
+  EXPECT_EQ(b.info().pacing_gain_q8, 0u);
+  EXPECT_EQ(b.info().cwnd_gain_q8, 0u);
+  EXPECT_EQ(c.pacing_rate, 2068934u);
+  ack();
+  EXPECT_EQ(b.info().pacing_gain_q8, 739u);
+  EXPECT_EQ(b.info().cwnd_gain_q8, 739u);
+}
+
 }  // namespace
 }  // namespace utcp

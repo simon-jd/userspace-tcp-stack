@@ -3,7 +3,6 @@
 
 #include <array>
 #include <cstdint>
-#include <optional>
 
 #include "core/tcp/cc.hpp"
 #include "core/tcp/minmax.hpp"
@@ -58,7 +57,8 @@ class Bbr final : public CongestionControl {
   void update_gains();
 
   Mode mode_ = Mode::startup;
-  std::uint32_t pacing_gain_ = 739, cwnd_gain_ = 739;
+  // bbr_init uses high_gain directly. Stored gains are set by the first ACK.
+  std::uint32_t pacing_gain_ = 0, cwnd_gain_ = 0;
   WindowMax max_bw_;
   std::uint32_t min_rtt_us_ = UINT32_MAX, min_stamp_ = 0;
   std::uint64_t next_round_ = 0;
@@ -67,7 +67,7 @@ class Bbr final : public CongestionControl {
 
   std::uint32_t phase_ = 0;
   Time phase_start_;
-  std::optional<std::uint32_t> probe_deadline_;
+  std::uint32_t probe_deadline_ = 0;  // Linux uses zero as the unarmed jiffies32 value.
   bool probe_round_ = false;
   CaState previous_ca_ = CaState::open;
   std::uint32_t saved_cwnd_ = 0;

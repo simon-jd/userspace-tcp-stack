@@ -191,9 +191,10 @@ void Bbr::sample_lt(const CcConn& c, const RateSample& rs) {
     return;
   }
 
-  const U64 delivered = c.delivered - lt_delivered_;
-  const U64 lost = c.lost - lt_lost_;
-  if (!delivered || Wide{lost} * unit < Wide{delivered} * 50) {
+  // Linux compares the two scaled interval counters as unsigned 32-bit values.
+  const auto delivered = static_cast<U32>(c.delivered - lt_delivered_);
+  const auto lost = static_cast<U32>(c.lost - lt_lost_);
+  if (!delivered || lost * unit < delivered * 50u) {
     return;
   }
   const auto ms = c.delivered_time.ns / 1'000'000 - lt_start_.ns / 1'000'000;
@@ -205,9 +206,12 @@ void Bbr::sample_lt(const CcConn& c, const RateSample& rs) {
     return;
   }
   const auto estimate = bw_sample(delivered, static_cast<U64>(ms) * 1000);
-  const auto diff = std::max(estimate, lt_bw_) - std::min(estimate, lt_bw_);
-  if (lt_bw_ && (U64{diff} * 8 <= lt_bw_ || bytes_per_second(diff, c.mss, unit) <= 500)) {
-    lt_bw_ = static_cast<U32>((U64{lt_bw_} + estimate) / 2);
+  const U32 delta = estimate - lt_bw_;
+  const U32 diff = std::min(delta, 0u - delta);  // magnitude of signed low-word difference
+  // bbr_lt_bw_interval_done compares both Q8 products modulo 2^32. At high
+  // packet rates simplifying this to an unscaled fraction changes the decision.
+  if (lt_bw_ && (diff * unit <= 32u * lt_bw_ || bytes_per_second(diff, c.mss, unit) <= 500)) {
+    lt_bw_ = (lt_bw_ + estimate) / 2;
     lt_active_ = true;
     pacing_gain_ = unit;
     lt_rounds_ = 0;
@@ -306,7 +310,7 @@ void Bbr::check_drain(CcConn& c) {
 
 void Bbr::finish_probe_rtt(CcConn& c) {
   const auto now = jiffies(c.now);
-  if (!probe_deadline_ || !after_tick(now, *probe_deadline_)) {
+  if (!probe_deadline_ || !after_tick(now, probe_deadline_)) {
     return;
   }
   min_stamp_ = now;
@@ -331,7 +335,7 @@ void Bbr::probe_rtt(CcConn& c, const RateSample& rs) {
   if (expired && !idle_ && mode_ != Mode::probe_rtt) {
     mode_ = Mode::probe_rtt;
     save_window(c);
-    probe_deadline_.reset();
+    probe_deadline_ = 0;
   }
   if (mode_ == Mode::probe_rtt) {
     c.app_limited = std::max<U64>(1, c.delivered + c.in_flight);
@@ -396,7 +400,8 @@ void Bbr::update_window(CcConn& c, const RateSample& rs) {
       const auto growth = packets(U64{window} + acked);
       if (full_pipe_) {
         window = std::min(growth, target);
-      } else if (window < target || c.delivered < initial_window) {
+      } else if (window < target || static_cast<U32>(c.delivered) < initial_window) {
+        // Linux's initial-window exception reads tp->delivered as a u32.
         window = growth;
       }
       window = std::max(window, min_window);
