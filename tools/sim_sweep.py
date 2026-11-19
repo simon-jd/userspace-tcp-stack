@@ -82,8 +82,14 @@ class Sweep:
             return []
         return ["taskset", "-c", self.args.cpus, "nice", "-n", "10"]
 
+    def checker_args(self):
+        return ["--strict-fast-rexmit"] if self.args.strict_fast_rexmit else []
+
     def sim_args(self):
         a = ["--nodes", self.args.nodes]
+        if self.args.gen_version is not None:
+            a += ["--gen-version", str(self.args.gen_version)]
+        a += self.checker_args()
         for name in ("plant_fail", "plant_abort", "plant_hang", "plant_segv"):
             v = getattr(self.args, name)
             if v:
@@ -243,7 +249,8 @@ class Sweep:
                "violation": first.get("violation"), "events": first.get("events"),
                "digests": [r.get("digest") for r in [first] + runs],
                "verdicts": [r.get("verdict") for r in [first] + runs],
-               "identical": identical, "no_digest": no_digest, "dir": str(d)}
+               "identical": identical, "no_digest": no_digest, "dir": str(d),
+               "replay_args": ["--scenario", "scenario.txt", *self.checker_args()]}
         if self.args.asan_sim:
             a = self.rerun(seed, d, "asan", self.args.asan_sim)
             out["asan"] = {"verdict": a.get("verdict"), "digest": a.get("digest")}
@@ -264,6 +271,8 @@ def main():
                    help="utcp-sim to run (default: the gcc-sweep build, Release with UTCP_DCHECK)")
     p.add_argument("--asan-sim", help="utcp-sim of an ASan/UBSan build to replay failing seeds")
     p.add_argument("--timeout", type=float, default=120.0, help="wall-clock seconds per seed")
+    p.add_argument("--gen-version", type=int, choices=(3, 4, 5))
+    p.add_argument("--strict-fast-rexmit", action="store_true")
     p.add_argument("--nodes", choices=("stack", "synthetic"), default="stack")
     p.add_argument("--plant-fail", default="", help="seeds that fail (tests the tooling)")
     p.add_argument("--plant-abort", default="", help="seeds that abort")
@@ -308,6 +317,7 @@ def main():
         verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
     summary = {
         "seeds": [a, b],
+        "strict_fast_rexmit": args.strict_fast_rexmit,
         "runs": len(sweep.results),
         "missing": missing,
         "verdicts": verdicts,

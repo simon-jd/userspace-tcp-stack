@@ -142,6 +142,8 @@ struct Options {
   NodeKind nodes = NodeKind::stack;
   std::set<std::uint64_t> plant_fail, plant_abort, plant_hang, plant_segv;
   std::optional<std::uint64_t> plant_after;
+  GenOptions generator;
+  bool strict_fast_rexmit = false;
   std::optional<TestFault> test_fault;
   std::string pcap_dir;
   std::string trace_path;
@@ -172,6 +174,7 @@ void apply(const Options& o, Scenario& s) {
 // Runs one scenario; false if it failed.
 bool run_one(const Scenario& s, const Options& o, app::JsonlWriter& out) {
   WorldOptions wo;
+  wo.strict_fast_rexmit = o.strict_fast_rexmit;
   if (o.max_events) {
     wo.max_events = *o.max_events;
   }
@@ -226,6 +229,8 @@ int main(int argc, char** argv) {
       .option("seed-range", "A:B", "run seeds A..B-1")
       .option("scenario", "FILE", "run a key=value scenario file")
       .option("corpus", "DIR", "run every DIR/*.scenario")
+      .option("gen-version", "N", "generator version for --seed and --seed-range (3, 4, 5)")
+      .flag("strict-fast-rexmit", "check PRR first retransmissions against cwnd")
       .option("nodes", "KIND", "stack or synthetic (generated scenarios)", "stack")
       .option("jsonl", "FILE", "result lines ('-' = stdout)", "-")
       .option("pcap", "DIR", "write DIR/seed-N/{scenario.txt,<node>.egress.pcap,<node>.ingress.pcap}")
@@ -239,7 +244,7 @@ int main(int argc, char** argv) {
       .option("plant-after", "N", "events before a planted abort or hang")
       .option("test-fault", "NAME",
               "set TcpConfig::test_fault on every node (none, unscaled_peer_window, "
-              "overscaled_peer_window)")
+              "overscaled_peer_window, prr_skip_force, double_tlp, ignore_pacing_gate)")
       .option("max-events", "N", "livelock limit per run");
   auto args = cli.parse(argc, argv);
   if (!args) {
@@ -256,6 +261,13 @@ int main(int argc, char** argv) {
   };
 
   Options o;
+  o.strict_fast_rexmit = args->flag("strict-fast-rexmit");
+  if (const auto v = args->get("gen-version")) {
+    const auto n = app::parse_u64(*v);
+    if (!n || *n < 3 || *n > max_gen_version) return usage_error("--gen-version: expected 3, 4 or 5");
+    if (args->get("scenario") || args->get("corpus")) return usage_error("--gen-version requires generated seeds");
+    o.generator.version = static_cast<std::uint32_t>(*n);
+  }
   if (const auto k = node_kind_from_string(*args->get("nodes"))) {
     o.nodes = *k;
   } else {
@@ -284,15 +296,9 @@ int main(int argc, char** argv) {
     o.max_events = *n;
   }
   if (const auto v = args->get("test-fault")) {
-    if (*v == "none") {
-      o.test_fault = TestFault::none;
-    } else if (*v == "unscaled_peer_window") {
-      o.test_fault = TestFault::unscaled_peer_window;
-    } else if (*v == "overscaled_peer_window") {
-      o.test_fault = TestFault::overscaled_peer_window;
-    } else {
-      return usage_error("--test-fault: none, unscaled_peer_window or overscaled_peer_window");
-    }
+    o.test_fault = test_fault_from_string(*v);
+    if (!o.test_fault) return usage_error("--test-fault: unknown name");
+
   }
   {
     auto n = app::parse_u64(*args->get("snaplen"));
@@ -358,7 +364,7 @@ int main(int argc, char** argv) {
   }
 
   const auto scenario_at = [&](std::uint64_t i) {
-    Scenario s = fixed.empty() ? generate_scenario(first + i, o.nodes) : fixed[i];
+    Scenario s = fixed.empty() ? generate_scenario(first + i, o.nodes, o.generator) : fixed[i];
     apply(o, s);
     return s;
   };

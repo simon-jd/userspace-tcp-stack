@@ -64,6 +64,12 @@ World::World(const Scenario& s, std::vector<std::unique_ptr<Node>> nodes, WorldO
       progress_(bound_of(s)),
       now_(s.start),
       instant_(s.start) {
+  inflight_.set_strict_fast_rexmit(opt_.strict_fast_rexmit);
+  for (std::uint32_t i = 0; i < s.node.size(); ++i) {
+    const auto conf = stack_config(s, i).tcp;
+    inflight_.set_config(i, conf);
+    pacing_.set_config(i, conf);
+  }
   if (nodes.empty()) {
     for (std::uint32_t i = 0; i < s_.node.size(); ++i) {
       nodes.push_back(make_node(s_, i));
@@ -111,6 +117,7 @@ void World::on_trace(std::uint32_t node, const TraceEvent& e) {
   if (auto v = inflight_.on_trace(node, e)) {
     violation(Verdict::inflight, std::move(*v));
   }
+  if (auto v = pacing_.on_trace(node, e)) violation(Verdict::pacing, std::move(*v));
   if (e.kind == TraceKind::state) {
     progress_.on_progress(now_);
   }

@@ -10,6 +10,7 @@
 #include "core/wire/tcp.hpp"
 #include "utcp/sim/checkers.hpp"
 #include "utcp/sim/datagram.hpp"
+#include "utcp/sim/world.hpp"
 
 namespace utcp::sim {
 namespace {
@@ -24,7 +25,8 @@ const FourTuple ba{eb, ea};
 std::vector<std::byte> seg(Endpoint from, Endpoint to, std::uint32_t seq, std::uint32_t ack,
                            std::uint16_t flags, std::uint16_t window, std::size_t len = 0,
                            std::optional<std::uint8_t> ws = std::nullopt,
-                           std::vector<std::pair<std::uint32_t, std::uint32_t>> sack = {}) {
+                           std::vector<std::pair<std::uint32_t, std::uint32_t>> sack = {},
+                           bool sack_permitted = false) {
   TcpSegmentSpec s;
   s.src = from;
   s.dst = to;
@@ -33,6 +35,7 @@ std::vector<std::byte> seg(Endpoint from, Endpoint to, std::uint32_t seq, std::u
   s.flags = flags;
   s.window = window;
   s.opt.wscale = ws;
+  s.opt.sack_permitted = sack_permitted;
   for (const auto& [b, e] : sack) {
     s.opt.sack[s.opt.sack_count++] = {Seq32(b), Seq32(e)};
   }
@@ -51,11 +54,11 @@ constexpr std::uint32_t iss_a = 1000, iss_b = 900'000;
 // the other node.
 void handshake(InFlightChecker& c, std::optional<std::uint8_t> wa, std::optional<std::uint8_t> wb,
                std::uint16_t synack_window = 1000, std::uint32_t ia = iss_a,
-               std::uint32_t ib = iss_b) {
-  const auto s1 = seg(ea, eb, ia, 0, syn, 65535, 0, wa);
+               std::uint32_t ib = iss_b, bool own_sack = false, bool peer_sack = false) {
+  const auto s1 = seg(ea, eb, ia, 0, syn, 65535, 0, wa, {}, own_sack);
   ASSERT_FALSE(c.on_egress(0, s1));
   c.on_ingress(1, s1);
-  const auto s2 = seg(eb, ea, ib, ia + 1, syn | ack, synack_window, 0, wb);
+  const auto s2 = seg(eb, ea, ib, ia + 1, syn | ack, synack_window, 0, wb, {}, peer_sack);
   ASSERT_FALSE(c.on_egress(1, s2));
   c.on_ingress(0, s2);
 }
@@ -305,7 +308,10 @@ TEST(SimCheckersInFlight, FastRexmitRtoRexmitTlpExempt) {
   EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::fast_rexmit, 20, 10)));
   EXPECT_FALSE(c.on_trace(0, rto_expiry()));
   EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::rto_rexmit, 20, 1)));
-  EXPECT_FALSE(c.on_trace(0, tx_event(TxKind::tlp, 20, 10)));
+  handshake(c, 0, 0, 1000, iss_a, iss_b, true, true);
+  TraceEvent probe = tx_event(TxKind::tlp, 11, 10);
+  probe.ca = CaState::open;
+  EXPECT_FALSE(c.on_trace(0, probe));
   // Segments without data are not data transmissions.
   TraceEvent pure_ack = tx_event(TxKind::ack, 20, 10);
   pure_ack.len = 0;
@@ -314,6 +320,322 @@ TEST(SimCheckersInFlight, FastRexmitRtoRexmitTlpExempt) {
   TraceEvent rx = tx_event(TxKind::data, 20, 10);
   rx.kind = TraceKind::rx;
   EXPECT_FALSE(c.on_trace(0, rx));
+}
+
+TEST(SimCheckersInFlight, StrictFastRetransmissionUsesSenderReduction) {
+  InFlightChecker c;
+  const auto tx = tx_event(TxKind::fast_rexmit, 5, 4);
+  c.set_reduction(0, RecoveryReduction::prr);
+  c.set_reduction(1, RecoveryReduction::rfc6675);
+  EXPECT_FALSE(c.on_trace(0, tx));
+  c.set_strict_fast_rexmit(true);
+  EXPECT_TRUE(c.on_trace(0, tx));
+  EXPECT_FALSE(c.on_trace(1, tx));
+}
+
+// Trace callbacks precede egress; accepted ACK traces follow ingress.
+struct ProbeFixture {
+  InFlightChecker checker;
+  TraceEvent probe = tx_event(TxKind::tlp, 1, 10);
+
+  explicit ProbeFixture(bool retrans, bool fin = false, unsigned shift = 0) {
+    handshake(checker, 0, shift, 4000, iss_a, iss_b, true, true);
+    probe.ca = CaState::open;
+    probe.seq = iss_a + 1;
+    probe.flags = ack | (fin ? wire::tcp_fin : 0);
+    probe.snd_nxt_off = 1000;
+    if (retrans) {
+      auto original = probe;
+      original.tx = TxKind::data;
+      EXPECT_FALSE(checker.on_trace(0, original));
+    }
+    EXPECT_FALSE(checker.on_trace(0, probe));
+  }
+
+  void input(unsigned offset, std::uint16_t window, std::size_t len = 0,
+             std::vector<std::pair<std::uint32_t, std::uint32_t>> sack = {},
+             bool accepted = true, unsigned peer_off = 1,
+             std::optional<std::pair<unsigned, unsigned>> sack_counts = {}) {
+    const auto seq = iss_b + peer_off;
+    const auto number = iss_a + 1 + offset;
+    checker.on_ingress(0, seg(eb, ea, seq, number, ack, window, len, {}, sack));
+    if (accepted) {
+      TraceEvent event;
+      event.kind = TraceKind::ack;
+      event.tuple = ab;
+      event.seq = seq;
+      event.ack = number;
+      event.snd_una_off = offset;
+      event.mss = 1000;
+      if (sack_counts) {
+        auto rx = event;
+        rx.kind = TraceKind::rx;
+        rx.sacked_out = sack_counts->first;
+        EXPECT_FALSE(checker.on_trace(0, rx));
+        event.sacked_out = sack_counts->second;
+      }
+      EXPECT_FALSE(checker.on_trace(0, event));
+    }
+  }
+
+  bool second_rejected() { return checker.on_trace(0, probe).has_value(); }
+};
+
+TEST(SimCheckersInFlight, RetransmittedProbeRequiresMarkerAndMatchingEvidence) {
+  for (bool fin : {false, true}) {
+    const unsigned marker = fin ? 1001 : 1000;
+    for (unsigned ending = 0; ending < 6; ++ending) {
+      SCOPED_TRACE(::testing::Message() << "fin=" << fin << " ending=" << ending);
+      ProbeFixture f(true, fin);
+      EXPECT_TRUE(f.second_rejected());
+      f.input(0, 4000);  // pure duplicate below marker, window from SYN-ACK
+      EXPECT_TRUE(f.second_rejected());
+      f.input(100, 4000, 0, {{iss_a + 1, iss_a + 1 + marker},
+                              {iss_a, iss_a + 2 + marker}});
+      EXPECT_TRUE(f.second_rejected());  // nested D-SACK below marker
+      if (fin) {
+        f.input(1000, 4000);
+        EXPECT_TRUE(f.second_rejected());  // FIN occupies one sequence number
+      }
+      if (ending == 0) {
+        f.input(marker, 4000, 0, {{iss_a + 1 + marker - 1000, iss_a + 1 + marker}});
+      } else {
+        f.input(marker, 4000);
+        EXPECT_TRUE(f.second_rejected());  // first advancing ACK at equality
+        if (ending == 1) {
+          f.input(marker, 3900);
+          EXPECT_TRUE(f.second_rejected());  // actual window update
+          f.input(marker, 3900, 1);
+          EXPECT_TRUE(f.second_rejected());  // data-bearing ACK
+          f.input(marker, 3900);
+        } else if (ending == 2) {
+          auto later = f.probe;
+          later.tx = TxKind::data;
+          later.seq = iss_a + 1 + marker;
+          later.len = 1;
+          later.snd_nxt_off += 1;
+          EXPECT_FALSE(f.checker.on_trace(0, later));
+          f.input(marker + 1, 4000);
+        } else if (ending == 3) {
+          (void)f.checker.on_trace(0, rto_expiry());
+        } else {
+          TraceEvent state;
+          state.kind = TraceKind::recovery;
+          state.tuple = ab;
+          state.ca = ending == 4 ? CaState::recovery : CaState::loss;
+          (void)f.checker.on_trace(0, state);
+        }
+      }
+      EXPECT_FALSE(f.second_rejected());
+    }
+  }
+}
+
+TEST(SimCheckersInFlight, NewDataProbeEndsAtWireMarker) {
+  for (bool fin : {false, true}) {
+    ProbeFixture f(false, fin);
+    const unsigned marker = fin ? 1001 : 1000;
+    f.input(marker - 1, 4000);
+    EXPECT_TRUE(f.second_rejected());
+    f.input(marker, 4000);
+    EXPECT_FALSE(f.second_rejected());
+  }
+}
+
+TEST(SimCheckersInFlight, DuplicateAtMarkerDistinguishesNewAndRedundantSack) {
+  ProbeFixture f(true);
+  // New data after the retransmitted probe leaves a hole and a segment
+  // beyond it. The first ACK of the marker advances; neither packet's
+  // receipt can yet be inferred.
+  auto later = f.probe;
+  later.tx = TxKind::data;
+  for (unsigned i = 1; i <= 2; ++i) {
+    later.seq = iss_a + 1 + 1000 * i;
+    later.snd_nxt_off += 1000;
+    EXPECT_FALSE(f.checker.on_trace(0, later));
+  }
+  f.input(1000, 4000);
+  EXPECT_TRUE(f.second_rejected());
+  const std::vector<std::pair<std::uint32_t, std::uint32_t>> block{
+      {iss_a + 2001, iss_a + 3001}};
+  f.input(1000, 4000, 0, block, true, 1, {{0, 1}});
+  EXPECT_TRUE(f.second_rejected());  // FLAG_DATA_SACKED
+  f.input(1000, 4000, 0, block, true, 1, {{1, 1}});
+  EXPECT_FALSE(f.second_rejected());  // same wire option, no new segment SACKed
+}
+
+TEST(SimCheckersInFlight, RejectedIngressCannotChangeDuplicateAckWindow) {
+  for (unsigned stale : {0u, 1000u}) {
+    ProbeFixture f(true, false, 2);
+    f.input(1000, 1000);  // effective window 4000, as on the unscaled SYN
+    EXPECT_TRUE(f.second_rejected());
+    f.input(stale, 900, 0, {}, false);  // no accepted ACK trace
+    f.input(1000, 1000);
+    EXPECT_FALSE(f.second_rejected());
+  }
+}
+
+TEST(SimCheckersInFlight, ProbeRequiresBilateralSack) {
+  for (bool client : {false, true}) {
+    for (bool server : {false, true}) {
+      InFlightChecker c;
+      handshake(c, 0, 0, 1000, iss_a, iss_b, client, server);
+      auto p = tx_event(TxKind::tlp, 1, 10);
+      p.ca = CaState::open;
+      const auto v = c.on_trace(0, p);
+      if (client && server) {
+        EXPECT_FALSE(v);
+      } else {
+        ASSERT_TRUE(v);
+        EXPECT_NE(v->find("negotiated SACK"), std::string::npos);
+      }
+    }
+  }
+}
+
+TEST(SimCheckersInFlight, DisabledRackForbidsProbesForEitherReduction) {
+  for (auto reduction : {RecoveryReduction::rfc6675, RecoveryReduction::prr}) {
+    InFlightChecker c;
+    handshake(c, 0, 0, 1000, iss_a, iss_b, true, true);
+    TcpConfig config;
+    config.recovery_reduction = reduction;
+    config.rack_tlp = false;
+    c.set_config(0, config);
+    auto p = tx_event(TxKind::tlp, 1, 10);
+    p.ca = CaState::open;
+    auto v = c.on_trace(0, p);
+    ASSERT_TRUE(v);
+    EXPECT_NE(v->find("RACK-TLP disabled"), std::string::npos);
+  }
+}
+
+TEST(SimCheckersInFlight, ProbeRequiresEligibleStateAndOnePacketAllowance) {
+  for (auto state : {CaState::open, CaState::disorder, CaState::cwr, CaState::recovery, CaState::loss}) {
+    InFlightChecker c;
+    handshake(c, 0, 0, 1000, iss_a, iss_b, true, true);
+    auto p = tx_event(TxKind::tlp, 12, 10);
+    p.ca = state;
+    EXPECT_TRUE(c.on_trace(0, p));
+    p.in_flight = 11;
+    EXPECT_EQ(c.on_trace(0, p).has_value(), state == CaState::recovery || state == CaState::loss);
+  }
+}
+
+TraceEvent paced(unsigned time_us, bool start, unsigned id = 1) {
+  TraceEvent e;
+  e.conn_id = id;
+  e.kind = TraceKind::tx;
+  e.tx = TxKind::data;
+  e.t = Time{static_cast<std::int64_t>(time_us) * 1000};
+  e.len = 1000;
+  e.gate_rate = 1'000'000;  // 1000 us per packet
+  e.burst_start = start;
+  return e;
+}
+
+TEST(SimCheckersPacing, StartupCrossingChargesWholeBurstAndCreditsLateness) {
+  for (const bool early : {false, true}) {
+    PacingChecker c;
+    for (unsigned i = 0; i < 8; ++i) {
+      ASSERT_FALSE(c.on_trace(0, paced(1000, i == 0)));
+    }
+    // Two packets together reach ten. The previous eight only stamped t=1000.
+    ASSERT_FALSE(c.on_trace(0, paced(1000, true)));
+    ASSERT_FALSE(c.on_trace(0, paced(1000, false)));
+    EXPECT_FALSE(c.on_trace(1, paced(1000, true)));  // independent sender
+    EXPECT_FALSE(c.on_trace(0, paced(1000, true, 2)));  // independent connection
+    if (early) {
+      EXPECT_TRUE(c.on_trace(0, paced(2998, true)));  // >1 us early
+    } else {
+      ASSERT_FALSE(c.on_trace(0, paced(3500, true)));  // 500 us late
+      EXPECT_FALSE(c.on_trace(0, paced(4000, true)));  // 1000 us minus 500 us credit
+    }
+  }
+}
+
+TEST(SimCheckersPacing, ExactlyOneMicrosecondSlack) {
+  for (const auto early_ns : {1000, 1001}) {
+    PacingChecker c;
+    for (unsigned i = 0; i < 8; ++i) ASSERT_FALSE(c.on_trace(0, paced(1000, i == 0)));
+    ASSERT_FALSE(c.on_trace(0, paced(1000, true)));
+    ASSERT_FALSE(c.on_trace(0, paced(1000, false)));
+    auto e = paced(3000, true);
+    e.t.ns -= early_ns;
+    EXPECT_EQ(c.on_trace(0, e).has_value(), early_ns > 1000);
+  }
+}
+
+TEST(SimCheckersPacing, KnownRateValidatesOrdinarySendsWithEitherStartupFormat) {
+  for (bool fixed : {false, true}) {
+    for (bool tagged_startup : {false, true}) {
+      for (auto invalid_rate : {0u, 100'000'000u}) {
+        PacingChecker c;
+        TcpConfig config;
+        config.pacing = Pacing::always;
+        if (fixed) config.test_fixed_pacing_rate = 1'000'000;
+        c.set_config(0, config);
+        auto data = paced(1000, true);
+        data.pacing_rate = fixed ? 7'000'000 : 1'000'000;
+        for (unsigned i = 0; i < 10; ++i) {
+          data.burst_start = tagged_startup && i == 0;
+          data.gate_rate = tagged_startup ? 1'000'000 : 0;
+          ASSERT_FALSE(c.on_trace(0, data));
+        }
+        data.t = Time{10'000'000};  // exactly the tagged startup burst's EDT
+        data.burst_start = true;
+        data.gate_rate = invalid_rate;
+        EXPECT_TRUE(c.on_trace(0, data)) << fixed << tagged_startup << invalid_rate;
+      }
+    }
+  }
+}
+
+TEST(SimCheckersPacing, UntaggedStartupAndTimerExemptions) {
+  for (const auto kind : {TxKind::rto_rexmit, TxKind::tlp}) {
+    PacingChecker c;
+    for (unsigned i = 0; i < 10; ++i) {
+      auto e = paced(100, false);
+      e.gate_rate = 0;
+      e.snd_nxt_off = i + 1;
+      ASSERT_FALSE(c.on_trace(0, e));
+    }
+    auto data = paced(1000, true);
+    data.snd_nxt_off = 1010;
+    ASSERT_FALSE(c.on_trace(0, data));  // next EDT is 1500us (lateness credit)
+    if (kind == TxKind::rto_rexmit) {
+      auto rto = rto_expiry();
+      rto.conn_id = 1;
+      (void)c.on_trace(0, rto);
+    }
+    auto timer = paced(1200, true);
+    timer.tx = kind;
+    timer.snd_nxt_off = 1010;
+    EXPECT_FALSE(c.on_trace(0, timer));  // exempt, but advances EDT by 1000us
+    timer.tx = TxKind::tlp;
+    timer.snd_nxt_off += 1000;
+    timer.t = Time{2'498'000};
+    EXPECT_TRUE(c.on_trace(0, timer));  // new-data probe
+  }
+}
+
+TEST(SimCheckersPacing, EngineGateFaultIsReportedByWorld) {
+  LinkParams link;
+  link.delay = 10ms;
+  link.rate_bps = 100'000'000;
+  link.queue_bytes = 500'000;
+  auto s = two_node_scenario(42, link, link);
+  s.gen_version = 4;
+  s.node[0].pacing = Pacing::always;
+  ConnSpec c;
+  c.bytes_c2s = 512 * 1024;
+  s.conn.push_back(c);
+  auto good = run_scenario(s);
+  ASSERT_EQ(good.verdict, Verdict::ok);
+  s.node[0].test_fault = TestFault::ignore_pacing_gate;
+  const auto bad = run_scenario(s);
+  ASSERT_EQ(bad.verdict, Verdict::pacing);
+  ASSERT_FALSE(bad.violations.empty());
+  EXPECT_NE(bad.violations.front().message.find("before EDT"), std::string::npos);
 }
 
 TEST(SimCheckersInFlight, OnlyTheHeadRtoRexmitIsExempt) {

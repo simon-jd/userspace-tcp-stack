@@ -34,6 +34,73 @@ TEST(SimScenario, RoundTripTenThousandSeeds) {
   }
 }
 
+TEST(SimScenario, CongestionVersionsRoundTripAndDrawValidConfigurations) {
+  bool cubic = false, gap = false, immediate = false, burst = false, bernoulli = false, clean = false;
+  std::set<Pacing> pacing;
+  std::set<RecoveryReduction> reduction;
+  std::set<Hystart> hystart;
+  for (unsigned seed = 0; seed < 512; ++seed) {
+    const auto v4 = generate_scenario(seed, NodeKind::stack, {.version = 4});
+    auto v5 = generate_scenario(seed, NodeKind::stack, {.version = 5});
+    for (const Scenario* s : {&v4, static_cast<const Scenario*>(&v5)}) {
+      const auto parsed = parse_kv(to_kv(*s));
+      ASSERT_TRUE(parsed.has_value()) << parsed.error();
+      ASSERT_EQ(*parsed, *s);
+      for (const auto& n : s->node) {
+        EXPECT_FALSE(n.rack_tlp && n.recovery_reduction == RecoveryReduction::rfc6675);
+        pacing.insert(n.pacing);
+        hystart.insert(n.hystart);
+        reduction.insert(n.recovery_reduction);
+      }
+      for (const auto& l : s->link) {
+        const auto& p = l.params;
+        EXPECT_GE(p.rate_bps, 1'000'000u);
+        EXPECT_LE(p.rate_bps, 100'000'000u);
+        EXPECT_GE(p.delay, 500us);
+        EXPECT_LE(p.delay, 100ms);
+        const auto bdp = p.rate_bps * static_cast<std::uint64_t>(p.delay.count()) / 4'000'000'000;
+        EXPECT_GE(std::uint64_t{p.queue_bytes} * 4 + 3, bdp);
+        EXPECT_LE(p.queue_bytes, bdp * 4);
+        EXPECT_GE(p.queue_bytes, 1500u);
+        EXPECT_LE(p.loss_ppm, 50'000u);
+        EXPECT_LE(std::uint64_t{p.burst.p_ppm} * 19, p.burst.r_ppm);
+        EXPECT_FALSE(p.loss_ppm && p.burst.p_ppm);
+        burst |= p.burst.p_ppm != 0;
+        bernoulli |= p.loss_ppm != 0;
+        clean |= !p.loss_ppm && !p.burst.p_ppm;
+      }
+      gap |= s->conn.front().write_interval > Duration::zero();
+      immediate |= s->conn.front().write_interval == Duration::zero();
+    }
+    // Introducing CUBIC changes exactly the separate gen-5 CC draw.
+    for (auto& n : v5.node) {
+      cubic |= n.cc == CcAlgo::cubic;
+      n.cc = CcAlgo::newreno;
+    }
+    v5.gen_version = 4;
+    ASSERT_EQ(v4, v5);
+  }
+  EXPECT_TRUE(cubic && gap && immediate && burst && bernoulli && clean);
+  EXPECT_EQ(pacing.size(), 3u);
+  EXPECT_EQ(reduction.size(), 2u);
+  EXPECT_EQ(hystart.size(), 2u);
+}
+
+TEST(SimScenario, FaultNamesRoundTripAndInvalidRackPairIsRejected) {
+  auto s = generate_scenario(12, NodeKind::stack, {.version = 4});
+  for (const auto name : {"prr_skip_force", "double_tlp", "ignore_pacing_gate"}) {
+    auto fault = test_fault_from_string(name);
+    ASSERT_TRUE(fault);
+    s.node[0].test_fault = *fault;
+    const auto text = to_kv(s);
+    EXPECT_NE(text.find(std::string("node.0.test_fault=") + name), std::string::npos);
+    EXPECT_EQ(parse_kv(text).value(), s);
+  }
+  s.node[0].rack_tlp = true;
+  s.node[0].recovery_reduction = RecoveryReduction::rfc6675;
+  EXPECT_FALSE(parse_kv(to_kv(s)).has_value());
+}
+
 TEST(SimScenario, RoundTripSyntheticAndPlanted) {
   Scenario s = generate_scenario(77, NodeKind::synthetic);
   s.plant = Plant::hang;
@@ -59,7 +126,7 @@ TEST(SimScenario, ParseRejectsBadInput) {
   // A newer generator's scenario.
   std::string newer = good;
   const std::string ours = "gen_version=" + std::to_string(gen_version);
-  newer.replace(newer.find(ours), ours.size(), "gen_version=" + std::to_string(gen_version + 1));
+  newer.replace(newer.find(ours), ours.size(), "gen_version=" + std::to_string(max_gen_version + 1));
   EXPECT_FALSE(parse_kv(newer).has_value());
   EXPECT_FALSE(parse_kv(good + "no_such_key=1\n").has_value());
   EXPECT_FALSE(parse_kv(good + "seed=1\n").has_value());  // duplicate
