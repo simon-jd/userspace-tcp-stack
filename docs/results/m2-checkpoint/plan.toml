@@ -1,0 +1,22 @@
+# Seconds follow the runner default: 30 at 20 ms RTT, 60 at 100 ms.
+# The runner's "linux" stack profile selects linux_compat. Kernel NewReno selects reno.
+campaign = "m2-checkpoint"
+seed = 20261119
+reps = 5
+trace = true
+
+cell = [
+  { bw = 10,  rtt = 20,  loss = 0, queue_bdp = 2 },
+  { bw = 10,  rtt = 20,  loss = 1, queue_bdp = 2 },
+  { bw = 10,  rtt = 100, loss = 0, queue_bdp = 2 },
+  { bw = 10,  rtt = 100, loss = 1, queue_bdp = 2 },
+  { bw = 100, rtt = 20,  loss = 0, queue_bdp = 2 },
+  { bw = 100, rtt = 20,  loss = 1, queue_bdp = 2 },
+  { bw = 100, rtt = 100, loss = 0, queue_bdp = 2 },
+  { bw = 100, rtt = 100, loss = 1, queue_bdp = 2 },
+]
+
+algo = [
+  { cc = "newreno", profile = "linux", impls = ["utcp", "linux"] },
+  { cc = "cubic",   profile = "linux", impls = ["utcp", "linux"] },
+]
