@@ -51,12 +51,29 @@ def bounds(rd):
         ends += [start[0]+s["duration_us"]*1000 for s in final] + sample + start
     return (min(starts),max(ends)) if starts else None
 
+def kernel_netem(rd,meta):
+    """Read the configured delay, loss and seed from the kernel before and after transfer."""
+    expected = int(meta["bw_mbit"] * 1e6 * meta["rtt_ms"] / 1000 / 8 * meta["queue_bdp"])
+    assert meta["queue_bytes"] == expected, (rd,meta["queue_bytes"],expected)
+    values = []
+    for phase in ("pre","post"):
+        lines = (rd/phase/"record.txt").read_text().splitlines()
+        netem, = [line for line in lines if line.startswith("qdisc netem ")]
+        assert f" dev {meta['ifaces']['r1_b']} " in netem
+        seeds = re.findall(r"\bseed (\d+)\b",netem)
+        delays = re.findall(r"\bdelay ([0-9.]+)ms\b",netem)
+        losses = re.findall(r"\bloss ([0-9.]+)%",netem)
+        assert seeds == [str(meta["seed"])] and list(map(float,delays)) == [meta["rtt_ms"]],(rd,phase,netem)
+        assert list(map(float,losses)) == ([meta["loss_pct"]] if meta["loss_pct"] else []),(rd,phase,netem)
+        values.append(int(seeds[0]))
+    return values
+
 def main(camp,evidence,out):
     with evidence.open() as f:
         rows=list(csv.DictReader(f))
     out.mkdir(parents=True,exist_ok=False)
     counted={r["run"]:r for r in rows if r["counted"]=="1"}
-    accepted=defaultdict(list); spans=[]; missing=[]
+    accepted=defaultdict(list); kernel_seeds={}; spans=[]; missing=[]
     for p in sorted(camp.rglob("meta.json")):
         rd=p.parent; rel=rd.relative_to(camp).as_posix(); ts=bounds(rd)
         if ts: spans.append((*ts,rel))
@@ -67,6 +84,7 @@ def main(camp,evidence,out):
     for name,row in sorted(counted.items()):
         path=camp/name; meta=read(path/"meta.json")
         assert name in positions
+        kernel_seeds[name]=kernel_netem(path,meta)
         assert meta["group"]==int(row["group"]) and meta["rerun"]==int(row["rerun"])
         accepted[(meta["group"],meta["rerun"])].append((meta["in_group"],name,meta["seed"],meta["impl"]))
         capture=read(path/"capture.json")
@@ -90,10 +108,10 @@ def main(camp,evidence,out):
         i,j=positions[a[1]],positions[b[1]]
         assert j==i+1,(a,b,spans[i:j+1])
         assert spans[i][1]<=spans[j][0],(a,b,spans[i],spans[j])
-        timelines.append((group,retry,a[2],a[1],b[1],spans[i][0],spans[i][1],spans[j][0],spans[j][1]))
+        timelines.append((group,retry,a[2],a[1],b[1],spans[i][0],spans[i][1],spans[j][0],spans[j][1],*kernel_seeds[a[1]],*kernel_seeds[b[1]]))
     for filename,columns,table in (
         ("capture-audit.csv",("run","interface","physical_packets","bytes","sha256","received_by_filter","kernel_dropped"),records),
-        ("pair-order.csv",("group","retry","netem_seed","first","second","first_start_ns","first_end_ns","second_start_ns","second_end_ns"),timelines)):
+        ("pair-order.csv",("group","retry","netem_seed","first","second","first_start_ns","first_end_ns","second_start_ns","second_end_ns","first_kernel_seed_pre","first_kernel_seed_post","second_kernel_seed_pre","second_kernel_seed_post"),timelines)):
         with (out/filename).open("x",newline="") as f:
             w=csv.writer(f,lineterminator="\n"); w.writerow(columns); w.writerows(table)
     result={"observed_transfer_intervals":len(spans),"attempts_without_endpoint_start":missing,
