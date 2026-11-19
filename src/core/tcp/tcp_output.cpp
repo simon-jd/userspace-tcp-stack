@@ -146,6 +146,9 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
       t.lsndtime = now;
     }
     rate_on_send(t.rate, k.packets_out, now);
+    // A new transmission epoch resets delivered_mstamp. BBR reads it on
+    // loss timer expiry even when no ACK has refreshed the CC view since.
+    t.cc_conn.delivered_time = t.rate.delivered_time;
     // A loss probe that resends a sent segment goes through Linux
     // __tcp_retransmit_skb only (tcp_send_loss_probe): no retrans_out, no
     // retrans_stamp (M2-DESIGN §1.7).
