@@ -1,0 +1,72 @@
+{
+  "10-100-1-2/compat": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "10-100-1-2/rfc": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "10-100-1-2/rfc-all": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "10-100-1-2/rfc-hystart": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "10-100-1-2/rfc-iw": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "10-100-1-2/rfc-prr": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "10-100-1-2/rfc-rto": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "100-20-1-2/compat": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "100-20-1-2/rfc": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "100-20-1-2/rfc-all": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "100-20-1-2/rfc-hystart": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "100-20-1-2/rfc-iw": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "100-20-1-2/rfc-prr": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  },
+  "100-20-1-2/rfc-rto": {
+    "bad_pairs": [],
+    "counted": 10,
+    "status": "ok"
+  }
+}
