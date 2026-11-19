@@ -23,7 +23,9 @@ class FilteredTrace(unittest.TestCase):
             trace_events=0, trace_blocks=1, **dict.fromkeys(audit.ELIGIBLE_COUNTERS, 0)
         )
         self.summary = dict(
-            trace_events=0, sender_counters=dict.fromkeys(audit.ELIGIBLE_COUNTERS, 0)
+            capture={"r1-in": {"retrans_segs": 0}},
+            trace_events=0,
+            sender_counters=dict.fromkeys(audit.ELIGIBLE_COUNTERS, 0),
         )
 
     def check(self):
@@ -60,6 +62,11 @@ class FilteredTrace(unittest.TestCase):
 
     def test_bytes_with_zero_count(self):
         self.path.write_text("{}\n")
+        with self.assertRaises(AssertionError):
+            self.check()
+
+    def test_empty_trace_contradicts_ingress_capture(self):
+        self.summary["capture"]["r1-in"]["retrans_segs"] = 1
         with self.assertRaises(AssertionError):
             self.check()
 

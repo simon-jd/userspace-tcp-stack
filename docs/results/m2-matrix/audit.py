@@ -247,6 +247,10 @@ def verified_trace(path, meta, conn, stats, summary):
     if n:
         return verify_profile_trace.check_trace(path, meta, conn, n)
     assert path.stat().st_size == 0, (path, "bytes with zero emitted events")
+    assert summary["capture"]["r1-in"]["retrans_segs"] == 0, (
+        path,
+        "ingress capture includes retransmissions",
+    )
     for k in ELIGIBLE_COUNTERS:
         assert stats[k] == 0 and summary["sender_counters"][k] == 0, (path, k)
     return Counter(), hashlib.sha256(b"").hexdigest()
