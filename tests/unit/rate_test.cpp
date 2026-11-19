@@ -72,6 +72,42 @@ TEST(Rate, SendResetsTheIntervalOnlyWithNothingOutstanding) {
   EXPECT_EQ(r2.first_tx_time, at(700ms));
 }
 
+TEST(Rate, AppWriteAtWrappedDeliveredPlusFlightMarksOneMoreSample) {
+  constexpr std::uint64_t wrap = std::uint64_t{1} << 32;
+  for (auto edge : {wrap - 1, wrap, wrap + 1}) {
+    SCOPED_TRACE(edge);
+    RateState rate;
+    rate.delivered = edge - 1;
+    rate.app_limited = 0;
+    utcp::ChunkPool pool(4);
+    utcp::SendQueue queue(pool, 8192);
+    const std::vector<std::byte> packet(1000);
+    Time now = at(10ms);
+    for (unsigned i = 0; i < 3; ++i) {
+      ASSERT_EQ(queue.write(packet), packet.size());
+      const auto off = queue.nxt();
+      utcp::rate_on_send(rate, queue.counters().packets_out, now);
+      queue.on_transmit(off, 1000, false, now, rate);
+      if (i == 0) {
+        // The next app write finds this packet in flight and no unsent data.
+        utcp::rate_check_app_limited(rate, queue.end() - queue.nxt(), 1000, false,
+                                     utcp::packets_in_flight(queue.counters()), 10, 0, 0);
+        EXPECT_EQ(rate.app_limited, edge + (edge == wrap));
+      }
+      now += 20ms;
+      RateAck newest;
+      queue.on_cumulative_ack(off + 1000, now, [&](const TxSeg& s, bool) {
+        utcp::rate_on_delivered(rate, newest, s, now);
+      });
+      ++rate.delivered;
+      const auto sample = utcp::rate_gen(rate, newest, 1, 0, 1, false, 20ms, 20ms, false, now);
+      ASSERT_TRUE(sample.valid);
+      EXPECT_EQ(sample.is_app_limited, i == 1 || (i == 2 && edge == wrap));
+    }
+    EXPECT_EQ(rate.app_limited, 0u);
+  }
+}
+
 TEST(Rate, AppLimitedMarkerNeedsAllFourConditions) {
   struct Row {
     std::uint64_t unsent;

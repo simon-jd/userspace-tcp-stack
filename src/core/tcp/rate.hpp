@@ -101,6 +101,14 @@ RateSample rate_gen(RateState& rs, const RateAck& ack, std::uint32_t acked_sacke
 // without a record; the interval in whole microseconds as Linux keeps it.
 [[nodiscard]] std::uint64_t rate_delivery_rate(const RateState& rs, std::uint32_t mss);
 
+// Linux v7.0 tcp.c:1125 and tcp_bbr.c:966 reserve zero as "no bubble".
+// Lift the nonzero u32 sum into the stack's absolute delivered-packet space.
+[[nodiscard]] constexpr std::uint64_t rate_app_limited_marker(std::uint64_t delivered,
+                                                              std::uint32_t in_flight) {
+  const auto marker = delivered + in_flight;
+  return static_cast<std::uint32_t>(marker) == 0 ? marker + 1 : marker;
+}
+
 // tcp_rate_check_app_limited, from tcp_send (§5.4): marks the connection
 // application-limited when less than one MSS is unsent, no packet of the
 // connection waits in the stack transmit queue, in flight < cwnd and
