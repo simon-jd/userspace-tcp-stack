@@ -12,6 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import audit
+import gap_windows
 
 PRIMARY = ("goodput_bps", "retrans_pct", "qdelay_p50_ms", "qdelay_p99_ms")
 LABELS = ("goodput", "retransmissions", "p50 delay", "p99 delay")
@@ -247,6 +248,9 @@ def render(campaign, native, evidence, plot_log, out):
             "overlay",
         ),
         gaps,
+    )
+    gap_windows.write(
+        campaign, evidence / "evidence.csv", gaps, out / "gap-windows.csv"
     )
     (out / "tables.md").write_text("\n".join(tables) + "\n")
     print(
