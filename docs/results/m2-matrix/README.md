@@ -78,6 +78,7 @@ full="$work/full/m2-matrix"
 (cd "$full" && sha256sum --quiet -c ../manifest/raw.sha256)
 python3 -IB /utcp/docs/results/m2-checkpoint/verify/physical_checkpoint.py \
   "$full" "$res/evidence.csv" "$work/fresh-physical"
+python3 -IB "$res/replay_captures.py" "$full" "$work/fresh-physical/capture-replay.csv" --jobs 4
 diff -qr "$work/fresh-physical" "$camp/physical-replay"
 python3 -IB "$res/loss_replay.py" extract "$full" "$res/evidence.csv" "$work/fresh-wire-inputs"
 diff -qr "$work/fresh-wire-inputs" "$camp/wire-loss-inputs"

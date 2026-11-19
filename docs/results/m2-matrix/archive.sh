@@ -13,6 +13,7 @@ echo "working in $stage"
 python3 -IB "$tools/analyze.py" tables "$stage/native" --campaign "$camp"
 python3 -IB "$docs/audit.py" "$camp" "$stage/observed"
 python3 -IB "$verify/physical_checkpoint.py" "$camp" "$stage/observed/evidence.csv" "$stage/physical"
+python3 -IB "$docs/replay_captures.py" "$camp" "$stage/physical/capture-replay.csv" --jobs 4
 python3 -IB "$docs/loss_replay.py" extract "$camp" "$stage/observed/evidence.csv" "$stage/wire-loss-inputs"
 python3 -IB "$docs/loss_replay.py" report "$camp" "$stage/wire-loss-inputs" "$stage/wire-report"
 python3 -IB "$tools/plot.py" "$camp" "$stage/plots" >"$stage/plot-selection.log"
@@ -24,6 +25,7 @@ tar xzf "$raw" -C "$stage/full-restore"
 full="$stage/full-restore/m2-matrix"
 (cd "$full" && sha256sum --quiet -c ../manifest/raw.sha256)
 python3 -IB "$verify/physical_checkpoint.py" "$full" "$stage/observed/evidence.csv" "$stage/full-physical"
+python3 -IB "$docs/replay_captures.py" "$full" "$stage/full-physical/capture-replay.csv" --jobs 4
 diff -qr "$stage/physical" "$stage/full-physical"
 python3 -IB "$docs/loss_replay.py" extract "$full" "$stage/observed/evidence.csv" "$stage/full-loss-inputs"
 diff -qr "$stage/wire-loss-inputs" "$stage/full-loss-inputs"
