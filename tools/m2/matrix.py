@@ -25,13 +25,14 @@ the analysis in a helper container on CPUs 16-31.
                                             is rerun as a whole
   matrix.py expand PLAN.toml [--slots K]    the run list of a plan, no runs
   matrix.py plot --campaign C [--out DIR]   overlay plots (tools/m2/plot.py)
-  matrix.py proof --campaign C [--phase serial|parallel|report|all] [--reps 5] [--stack-cc newreno|cubic]
+  matrix.py proof --campaign C [--phase serial|parallel|report|all] [--reps 5] [--stack-cc newreno|cubic | --cubic-only]
                                             the parallel-mode proof (§6) and the trace
                                             overhead (§5.6): proof.json, proof.md
 
 A partial calibration, or a proof with fewer than five reps or a subset of
 pairs, reports diagnostic measurements. For a live proof use a separate
-campaign per configuration. Historical reports predate proof-config.json,
+campaign per configuration. --cubic-only runs the five serial CUBIC transfers
+and five pairs assigned to m2-integrate, with the stack criteria of §6. Historical reports predate proof-config.json,
 identified ping records, sender CC observations, metadata digests and boot
 IDs for comparing measured CLOCK_MONOTONIC windows across the two slots.
 
@@ -109,8 +110,38 @@ def dexec_bg(c, script):
     sh(["docker", "exec", "-d", c, "bash", "-c", script])
 
 
+def publish_script(path):
+    target = shlex.quote(path)
+    return f"set -e; tmp=$(mktemp {target}.tmp.XXXXXXXX); cat > \"$tmp\"; mv -f \"$tmp\" {target}"
+
+
 def vol_write(c, path, text):
-    sh(["docker", "exec", "-i", c, "bash", "-c", f"cat > {shlex.quote(path)}"], input=text)
+    sh(["docker", "exec", "-i", c, "bash", "-c", publish_script(path)], input=text)
+
+
+def prepare_trial(slot, campaign, run):
+    """Keep every interrupted or replaced attempt, including its partial raw files."""
+    base = shlex.quote(f"/data/m2/{campaign}")
+    rd = shlex.quote(f"/data/m2/{campaign}/{run}")
+    prefix = shlex.quote(f"/data/m2/{campaign}/aside/{run}.XXXXXXXX")
+    dexec(slot.snd, f"set -e; if [ -e {rd} ]; then mkdir -p {base}/aside; "
+                    f"saved=$(mktemp -d {prefix}); mv {rd} \"$saved/raw\"; fi; mkdir -p {rd}")
+
+
+def timing_cpu_names(slot):
+    first = 8 + 4 * slot
+    return (",".join(str(c) for c in range(first, first + 4)), f"{first}-{first + 3}")
+
+
+def timing_placement(slot, cpusets):
+    if slot not in (0, 1) or not isinstance(cpusets, dict) or len(cpusets) != 4:
+        return False
+    first = 8 + 4 * slot
+    expected = {"snd": [first, first + 1], "rcv": [first + 2], "r1": [first + 3], "r2": [first + 3]}
+    try:
+        return {name.rsplit("-", 1)[-1]: sorted(A.cpu_list(cpus)) for name, cpus in cpusets.items()} == expected
+    except (ValueError, AttributeError):
+        return False
 
 
 class Slot:
@@ -176,9 +207,7 @@ class Slot:
 
     @property
     def timing(self):
-        """A timing slot (M2 design §6): every container on CPUs 8-15."""
-        cpus = A.cpu_list(self.slot_cpus())
-        return bool(cpus) and all(8 <= c <= 15 for c in cpus)
+        return timing_placement(self.n, self.cpus)
 
 
 def stack_sets(gso_ipv4_max_size):
@@ -292,8 +321,8 @@ def one_run(slot, campaign, run, spec, smeta=None, sender_barrier=None):
     rd = f"{base}/{run}"
     S = float(spec["duration"])
     slot.cleanup()
-    dexec(slot.snd, f"if [ -e {rd} ]; then mkdir -p {base}/aside && mv {rd} {base}/aside/{run}-$(date +%s); fi;"
-                    f" mkdir -p {rd}/pre {rd}/post")
+    prepare_trial(slot, campaign, run)
+    dexec(slot.snd, f"mkdir -p {rd}/pre {rd}/post")
     shape = tb("shape.sh", "--slot", slot.n, "--bw", spec["bw"], "--rtt", spec["rtt"],
                "--queue-bdp", spec["queue_bdp"], *(["--loss", spec["loss"]] if spec.get("loss") else []),
                *(["--seed", spec["seed"]] if spec.get("seed") is not None else []))
@@ -331,7 +360,7 @@ def one_run(slot, campaign, run, spec, smeta=None, sender_barrier=None):
     rec = A.parse_record(pre)
     meta["uptime"] = " ".join(rec.get(("host", "uptime"), [])).strip()
     meta["top_cpu"] = rec.get(("host", "top"), [])[1:8]
-    meta["threads_on_8_15"] = rec.get(("host", "threads on 8-15"), [])
+    meta["threads_on_8_15"] = rec.get(("host", "threads on 8-15"))
     meta["module_parameters"] = rec.get(("host", "module parameters"), [])
     vol_write(slot.snd, f"{rd}/meta.json", json.dumps(meta, indent=1, sort_keys=True) + "\n")
 
@@ -431,7 +460,7 @@ def capture_stop(c):
              timeout=30)
 
 
-def ping_only(slot, campaign, run, spec, src="snd", target=None, count=200):
+def ping_only(slot, campaign, run, spec, src="snd", target=None, count=200, sender_barrier=None, prepared=False):
     """Gate item 1 (and 6's ping): `count` pings at 50 ms with no load. The
     RTTs come from a capture next to the pinging end, where each request
     enters the path and its reply leaves it (ns timestamps): r1's sender side
@@ -442,7 +471,8 @@ def ping_only(slot, campaign, run, spec, src="snd", target=None, count=200):
     "text"."""
     base = f"/data/m2/{campaign}"
     rd = f"{base}/{run}"
-    dexec(slot.snd, f"mkdir -p {rd}")
+    if not prepared:
+        prepare_trial(slot, campaign, run)
     if spec:
         tb("shape.sh", "--slot", slot.n, "--bw", spec["bw"], "--rtt", spec["rtt"], "--queue-bdp", spec["queue_bdp"])
     c = slot.snd if src == "snd" else slot.rcv
@@ -452,10 +482,18 @@ def ping_only(slot, campaign, run, spec, src="snd", target=None, count=200):
                           else (slot.r2, slot.ifs["r2_c"], "r2, receiver side"))
     capture_start(router, dev, f"{rd}/ping.pcap", "icmp")
     try:
+        if sender_barrier is not None:
+            sender_barrier.wait(timeout=180)
+        # tcpdump timestamps are realtime on this host. Relate the actual
+        # observed request interval to the transfers' CLOCK_MONOTONIC epoch.
+        offset = time.monotonic_ns() - time.time_ns()
         out = dexec(c, f"ping -D -i 0.05 -s 56 -c {count} {target} | tee {rd}/ping.txt")
     finally:
         capture_stop(router)
     st = json.loads(run_analysis(["pings", f"{rd}/ping.pcap", src_ip, target, str(count)]).strip().splitlines()[-1])
+    if "first_request_rt_ns" in st and "last_request_rt_ns" in st:
+        st["ping_start_ns"] = st["first_request_rt_ns"] + offset
+        st["ping_end_ns"] = st["last_request_rt_ns"] + offset
     st["source"] = f"capture {where}"
     st["text"] = A.ping_stats(A.parse_ping(out), count)
     return st
@@ -466,21 +504,26 @@ def ping_only(slot, campaign, run, spec, src="snd", target=None, count=200):
 # functions gate_item1 .. gate_item6_run, unit-tested at their bounds.
 
 
+def ping_sample(p, minimum):
+    n, lost = p.get("n"), p.get("lost")
+    return (p.get("requests_seen") == 200 and type(n) is int and type(lost) is int
+            and minimum <= n <= 200 and n + lost == 200
+            and finite(p.get("median_ms")) and finite(p.get("p99_ms")) and 0 < p["median_ms"] <= p["p99_ms"])
+
+
 def gate_item1(p, rtt):
-    """Idle ping: at least 190 of 200 replies, median in [RTT, RTT + 1 ms],
-    p99 <= RTT + 2 ms."""
-    med, p99 = p.get("median_ms"), p.get("p99_ms")
-    return bool(p.get("n", 0) >= 190 and med is not None and p99 is not None
-                and rtt <= med <= rtt + 1 and p99 <= rtt + 2)
+    """Idle ping: at least 190 of 200 replies, median in [RTT, RTT + 1 ms], p99 <= RTT + 2 ms."""
+    return ping_sample(p, 190) and rtt <= p["median_ms"] <= rtt + 1 and p["p99_ms"] <= rtt + 2
 
 
 def gate_item2(goodput_bps, bw, queue_bdp):
-    """Rate: goodput >= 0.98 x BW x 1448/1514, gated with the 2xBDP queue only."""
+    """At 0.5xBDP the measured goodput is reported without a rate threshold."""
     thr = RATE_FRACTION * bw * 1e6
     gated = float(queue_bdp) == 2.0
-    g = goodput_bps or 0
-    return {"ok": (g >= thr) if gated else True, "gated": gated, "goodput_bps": g, "threshold_bps": thr,
-            "fraction_of_bw": g / (bw * 1e6)}
+    measured = finite(goodput_bps) and goodput_bps >= 0
+    return {"ok": measured and (not gated or goodput_bps >= thr), "gated": gated,
+            "goodput_bps": goodput_bps, "threshold_bps": thr,
+            "fraction_of_bw": goodput_bps / (bw * 1e6) if measured else None}
 
 
 def loss_alpha(n_tests):
@@ -491,7 +534,7 @@ def loss_alpha(n_tests):
 def capture_complete(c):
     """A capture with tcpdump's counts, nothing dropped by the kernel and every
     packet the filter received written."""
-    return bool(c) and c.get("kernel_dropped") == 0 and c.get("captured") is not None \
+    return isinstance(c, dict) and c.get("kernel_dropped") == 0 and type(c.get("captured")) is int and c["captured"] > 0 \
         and c.get("received_by_filter") == c.get("captured")
 
 
@@ -502,13 +545,13 @@ def gate_item3(cap, tbf_dropped, loss_pct, alpha, ack_path, local_drops):
     n_in = (cap.get("r1-in") or {}).get("data_segs")
     n_out1 = (cap.get("r1-out") or {}).get("data_segs")
     n_out2 = (cap.get("r2-out") or {}).get("data_segs")
-    if None in (n_in, n_out1, n_out2, tbf_dropped) or not n_in:
+    if not all(type(n) is int and n >= 0 for n in (n_in, n_out1, n_out2, tbf_dropped)) or not n_in:
         return {"ok": False, "error": "missing captures or tbf counters"}
     complete = {n: capture_complete(cap.get(n)) for n in ("r1-in", "r1-out")}
     lost = n_in - n_out1
     lo, hi = A.binom_interval(n_in, loss_pct / 100, alpha)
-    ack_ok = all((v or {}).get("dropped", 0) == 0 for v in (ack_path or {}).values())
-    return {"ok": bool(lo <= lost <= hi and ack_ok and not local_drops and all(complete.values())),
+    ack_ok = ack_path_clear(ack_path)
+    return {"ok": bool(lo <= lost <= hi and ack_ok and local_drops == {} and all(complete.values())),
             "offered": n_in, "lost": lost, "measured_pct": 100 * lost / n_in, "interval": [lo, hi],
             "alpha": alpha, "captures_complete": complete, "lost_by_design_formula": n_in - n_out2 - tbf_dropped,
             "ack_path_ok": ack_ok}
@@ -527,25 +570,33 @@ def gate_item4(qc, q_bytes, bw, ping_max_ms, ping_base_ms):
     cannot test are reported, not passed as tested), and ping max - base
     within 10 % of ping_target_ms."""
     qc = qc or {}
-    target = ping_target_ms(q_bytes, bw)
-    dmax = ping_max_ms - ping_base_ms if ping_max_ms is not None and ping_base_ms is not None else None
-    ok = bool(qc.get("reaches")) and qc.get("drop_intervals_low", 1) == 0 and dmax is not None \
-        and abs(dmax - target) <= 0.1 * target
+    target = ping_target_ms(q_bytes, bw) if finite(q_bytes) and q_bytes > 0 else None
+    dmax = ping_max_ms - ping_base_ms if finite(ping_max_ms) and finite(ping_base_ms) else None
+    backlog = qc.get("backlog_max")
+    ok = (target is not None and finite(backlog) and 0.9 * q_bytes <= backlog <= q_bytes
+          and qc.get("reaches") is True and qc.get("drop_intervals_low") == 0
+          and dmax is not None and abs(dmax - target) <= 0.1 * target)
     return {"ok": ok, "queue_bytes": q_bytes, "backlog_max": qc.get("backlog_max"),
-            "backlog_frac": (qc.get("backlog_max") or 0) / q_bytes, "drop_intervals": qc.get("drop_intervals"),
+            "backlog_frac": backlog / q_bytes if target is not None and finite(backlog) else None, "drop_intervals": qc.get("drop_intervals"),
             "drop_intervals_low": qc.get("drop_intervals_low"),
             "drop_intervals_untestable": qc.get("drop_intervals_untestable"), "drop_check": qc.get("drop_check"),
             "drop_intervals_below_frac": qc.get("drop_intervals_below_frac"), "min_level": qc.get("min_level"),
             "ping_max_minus_base_ms": dmax, "target_ms": target}
 
 
-def gate_item5(s):
+def ack_path_clear(ack):
+    return isinstance(ack, dict) and all(isinstance(ack.get(k), dict) and ack[k].get("dropped") == 0
+                                         for k in ("r1_a", "r2_b"))
+
+
+def gate_item5(s, loss=False):
     """No local drops (§5.2), no time_squeeze, no capture drop by the kernel,
     in a run of items 2-3 (RESULTS.md "Calibration" item 5)."""
     caps = {k: v for k, v in (s.get("capture") or {}).items() if isinstance(v, dict)}
-    cap_ok = bool(caps) and all(v.get("kernel_dropped") == 0 for v in caps.values())
-    ok = not s.get("local_drops") and "ACK-path qdisc drops" not in s.get("invalid", []) \
-        and not s.get("time_squeeze") and cap_ok
+    required = {"r1-in", "r2-out"} | ({"r1-out"} if loss else set())
+    cap_ok = required <= caps.keys() and all(v.get("kernel_dropped") == 0 for v in caps.values())
+    ok = (s.get("local_drops") == {} and s.get("time_squeeze") == 0
+          and ack_path_clear(s.get("ack_path")) and cap_ok)
     return {"ok": bool(ok), "local_drops": s.get("local_drops"), "time_squeeze": s.get("time_squeeze"),
             "captures": {k: v.get("kernel_dropped") for k, v in caps.items()}}
 
@@ -553,60 +604,93 @@ def gate_item5(s):
 def gate_item6_ping(p_stack, p_kernel):
     """Stack path: the idle ping median to the stack within 0.2 ms of the kernel's."""
     a, b = p_stack.get("median_ms"), p_kernel.get("median_ms")
-    d = None if a is None or b is None else a - b
-    return {"ok": d is not None and abs(d) <= 0.2, "diff_ms": d}
+    d = a - b if finite(a) and finite(b) else None
+    return {"ok": ping_sample(p_stack, 1) and ping_sample(p_kernel, 1) and abs(d) <= 0.2, "diff_ms": d}
 
 
 def gate_item6_run(s):
     """Stack path: one stack NewReno run at 100 Mbit/s, 20 ms, 0 %, 2xBDP at
     item 2's threshold, valid, no local drops, no device errors."""
     thr = RATE_FRACTION * 100e6
-    g = s.get("goodput_bps") or 0
-    return {"ok": bool(g >= thr and not s.get("local_drops") and not s.get("stack_device") and s.get("valid")),
+    g = s.get("goodput_bps")
+    return {"ok": bool(finite(g) and g >= thr and s.get("local_drops") == {} and s.get("stack_device") == {}
+                       and s.get("stack_local_drops") == {} and s.get("valid") is True),
             "goodput_bps": g, "threshold_bps": thr}
+
+
+def calibration_transfer(slot, campaign, run, spec, smeta, expected_key, sources):
+    meta, summary = one_run(slot, campaign, run, spec, smeta)
+    for leaf, data in (("meta", meta), ("summary", summary)):
+        sources[f"{run}/{leaf}.json"] = A.proof_meta_digest(data)
+    expected = dict(spec, campaign=campaign, run=run, slot=slot.n, reuse_key=expected_key,
+                    timing=True, cpusets=slot.cpus, duration_s=spec["duration"], sender_exit=0)
+    errors = [f"wrong {k}" for k, v in expected.items()
+              if meta.get(k) != v or isinstance(v, bool) != isinstance(meta.get(k), bool)]
+    if (not timing_placement(slot.n, meta.get("cpusets")) or
+            meta.get("slot_cpus") not in timing_cpu_names(slot.n)):
+        errors.append("wrong timing placement")
+    if summary.get("run") != run or summary.get("proof_meta_sha256") != A.proof_meta_digest(meta):
+        errors.append("summary does not match run metadata")
+    if summary.get("sender_ccs") != [spec["cc"]]:
+        errors.append(f"sender reported {summary.get('sender_ccs')}, expected {spec['cc']}")
+    if summary.get("valid") is not True or summary.get("invalid") != []:
+        errors.append(f"invalid transfer: {summary.get('invalid')}")
+    return meta, summary, errors
 
 
 def calibrate(slot, campaign, pairs, skip_stack=False, seed=1):
     smeta = static_meta()
+    directory = shlex.quote(f"/data/m2/{campaign}")
+    if dexec(slot.snd, f"test ! -d {directory} || ls -A {directory}").strip():
+        raise RuntimeError("calibration directory contains evidence; use a new campaign for the whole gate")
     rng = random.Random(seed)
     results = {"campaign": campaign, "slot": slot.n, "cpusets": slot.cpus, "seed": seed,
-               "static": smeta, "items": []}
+               "static": smeta, "items": [], "sources": {}, "schema": 2}
     loss_tests = [(bw, rtt, q, p) for bw, rtt in pairs for q in QUEUES for p in LOSSES]
     alpha = loss_alpha(len(loss_tests))
     expected_key = current_key(slot, smeta)
     keys = set()
 
     def add(item, ok, **kw):
-        kw.update(item=item, ok=ok, slot=slot.n)
+        kw.update(item=item, ok=ok and not kw.get("source_errors"), slot=slot.n)
         kw.setdefault("reuse_key", expected_key)
         results["items"].append(kw)
-        log(f"item {item}: {'pass' if ok else 'FAIL'} {json.dumps(kw, sort_keys=True)}")
+        log(f"item {item}: {'pass' if kw['ok'] else 'FAIL'} {json.dumps(kw, sort_keys=True)}")
+
+    def observe_ping(run, spec, **kwargs):
+        data = ping_only(slot, campaign, run, spec, **kwargs)
+        data.update(campaign=campaign, run=run, slot=slot.n, reuse_key=expected_key, cpusets=slot.cpus)
+        path = f"{run}/ping.json"
+        vol_write(slot.snd, f"/data/m2/{campaign}/{path}", json.dumps(data, sort_keys=True))
+        results["sources"][path] = A.proof_meta_digest(data)
+        return data
+
+    def transfer(run, spec):
+        return calibration_transfer(slot, campaign, run, spec, smeta, expected_key, results["sources"])
 
     for bw, rtt in pairs:
         dur = 30 if rtt == 20 else 60
         for q in QUEUES:
             spec = {"bw": bw, "rtt": rtt, "queue_bdp": q}
-            p = ping_only(slot, campaign, f"ping-{bw}-{rtt}-{q:g}", spec)
-            add(1, gate_item1(p, rtt), bw=bw, rtt=rtt, queue_bdp=q, **p)
+            p = observe_ping(f"ping-{bw}-{rtt}-{q:g}", spec)
+            add(1, gate_item1(p, rtt), **spec, **p)
             run = f"rate-{bw}-{rtt}-{q:g}"
-            meta, s = one_run(slot, campaign, run, dict(spec, loss=0, seed=rng.randrange(1, 2**31),
-                                                         impl="linux", cc="cubic", duration=dur,
-                                                         cell=f"{bw}-{rtt}-0-{q:g}", rep=0, order=0,
-                                                         gate="rate"), smeta)
+            rate_spec = dict(spec, loss=0, seed=rng.randrange(1, 2**31), impl="linux", cc="cubic",
+                             duration=dur, cell=f"{bw}-{rtt}-0-{q:g}", rep=0, order=0, gate="rate")
+            meta, s, errors = transfer(run, rate_spec)
             keys.add(meta.get("reuse_key"))
-            source = dict(bw=bw, rtt=rtt, queue_bdp=q, run=run, reuse_key=meta.get("reuse_key"))
+            source = dict(bw=bw, rtt=rtt, queue_bdp=q, run=run, reuse_key=meta.get("reuse_key"), source_errors=errors)
             r2 = gate_item2(s.get("goodput_bps"), bw, q)
             add(2, r2.pop("ok"), **source, **r2)
-            r4 = gate_item4(s.get("queue"), meta["queue_bytes"], bw, s.get("ping_max_ms"), s.get("ping_base_ms"))
+            r4 = gate_item4(s.get("queue"), meta.get("queue_bytes"), bw, s.get("ping_max_ms"), s.get("ping_base_ms"))
             add(4, r4.pop("ok"), **source, ping_source=s.get("ping_source"), **r4)
             r5 = gate_item5(s)
             add(5, r5.pop("ok"), **source, **r5)
             for p_loss in LOSSES:
                 run = f"loss-{bw}-{rtt}-{q:g}-{p_loss:g}"
-                meta, s = one_run(slot, campaign, run, dict(spec, loss=p_loss, seed=rng.randrange(1, 2**31),
-                                                             impl="linux", cc="cubic", duration=dur,
-                                                             cell=f"{bw}-{rtt}-{p_loss:g}-{q:g}", rep=0,
-                                                             order=0, gate="loss", extra_capture=True), smeta)
+                loss_spec = dict(rate_spec, loss=p_loss, seed=rng.randrange(1, 2**31),
+                                 cell=f"{bw}-{rtt}-{p_loss:g}-{q:g}", gate="loss", extra_capture=True)
+                meta, s, errors = transfer(run, loss_spec)
                 keys.add(meta.get("reuse_key"))
                 # Lost in netem = data segments into r1 minus those leaving r1's
                 # b side (r1-out is captured after the netem qdisc). §5.4's
@@ -614,15 +698,15 @@ def calibrate(slot, campaign, pairs, skip_stack=False, seed=1):
                 # of ping packets as data (DESIGN §14.4).
                 r3 = gate_item3(s.get("capture") or {}, (s.get("tbf") or {}).get("dropped"), p_loss, alpha,
                                 s.get("ack_path"), s.get("local_drops"))
-                loss_source = dict(source, run=run, loss_pct=p_loss, reuse_key=meta.get("reuse_key"))
+                loss_source = dict(source, run=run, loss_pct=p_loss, reuse_key=meta.get("reuse_key"), source_errors=errors)
                 add(3, r3.pop("ok"), **loss_source,
                     netem_dropped_counter=(s.get("netem") or {}).get("dropped"),
                     tbf_dropped=(s.get("tbf") or {}).get("dropped"), ack_path=s.get("ack_path"),
                     local_drops=s.get("local_drops"), **r3)
-                r5 = gate_item5(s)
+                r5 = gate_item5(s, loss=True)
                 add(5, r5.pop("ok"), **loss_source, **r5)
     if not skip_stack:
-        keys |= stack_item(slot, campaign, results, smeta, rng, add)
+        keys |= stack_item(slot, campaign, rng, add, observe_ping, transfer)
     results["passed"] = all(i["ok"] for i in results["items"])
     results["passed_linux_items_1_5"] = (sorted(pairs) == sorted(PAIRS)
                                            and all(i["ok"] for i in results["items"] if i["item"] <= 5))
@@ -638,7 +722,7 @@ def calibrate(slot, campaign, pairs, skip_stack=False, seed=1):
     return results
 
 
-def stack_item(slot, campaign, results, smeta, rng, add):
+def stack_item(slot, campaign, rng, add, observe_ping, transfer):
     """Gate item 6: ping the stack from the receiver (stack idle, listening)
     against item 1's median; one stack NewReno run at 100 Mbit/s, 20 ms, 0 %,
     2xBDP against item 2's threshold, no utcp* or DeviceStats drops. Returns
@@ -646,15 +730,15 @@ def stack_item(slot, campaign, results, smeta, rng, add):
     rd = f"/data/m2/{campaign}/stack-ping"
     spec = {"bw": 100, "rtt": 20, "queue_bdp": 2}
     tb("shape.sh", "--slot", slot.n, "--bw", 100, "--rtt", 20, "--queue-bdp", 2)
-    dexec(slot.snd, f"mkdir -p {rd}")
+    prepare_trial(slot, campaign, "stack-ping")
     dexec_bg(slot.snd, f"exec {BULK} --backend utcp --tun utcp0 --addr {slot.stack_ip} --listen {PORT} "
                        f"--recv --sample-ms 0 > {rd}/stack.out 2>&1")
     time.sleep(1.0)
     try:
-        p_stack = ping_only(slot, campaign, "stack-ping", None, src="rcv", target=slot.stack_ip)
+        p_stack = observe_ping("stack-ping", None, src="rcv", target=slot.stack_ip, prepared=True)
     finally:
         dexec(slot.snd, "pkill -x utcp-bulk", check=False)
-    p_kernel = ping_only(slot, campaign, "stack-ping-kernel", spec)
+    p_kernel = observe_ping("stack-ping-kernel", spec)
     r = gate_item6_ping(p_stack, p_kernel)
     add(6, r["ok"], part="ping", stack=p_stack, kernel=p_kernel, diff_ms=r["diff_ms"])
     keys = set()
@@ -664,13 +748,12 @@ def stack_item(slot, campaign, results, smeta, rng, add):
     # without loss recovery in play.
     for part, extra in (("run", ""), ("path", "--snd-buf 400000")):
         run = f"stack-100-20-2-{part}"
-        meta, s = one_run(slot, campaign, run, dict(spec, loss=0, seed=rng.randrange(1, 2**31), impl="utcp",
-                                                     profile="linux", cc="newreno", duration=30,
-                                                     cell="100-20-0-2", rep=0, order=0, gate="stack",
-                                                     stack_args=extra), smeta)
+        run_spec = dict(spec, loss=0, seed=rng.randrange(1, 2**31), impl="utcp", profile="linux", cc="newreno",
+                        duration=30, cell="100-20-0-2", rep=0, order=0, gate="stack", stack_args=extra)
+        meta, s, errors = transfer(run, run_spec)
         keys.add(meta.get("reuse_key"))
         r = gate_item6_run(s)
-        add(6, r["ok"], part=part, run=run, reuse_key=meta.get("reuse_key"), stack_args=extra,
+        add(6, r["ok"], part=part, run=run, reuse_key=meta.get("reuse_key"), source_errors=errors, stack_args=extra,
             goodput_bps=r["goodput_bps"], threshold_bps=r["threshold_bps"], local_drops=s.get("local_drops"), stack_device=s.get("stack_device"),
             invalid=s.get("invalid"), flags=s.get("flags"), retrans_pct=s.get("retrans_pct"),
             tbf_dropped=(s.get("tbf") or {}).get("dropped"), sndbuf_limited_frac=s.get("sndbuf_limited_frac"),
@@ -694,9 +777,9 @@ def gate_markdown(r):
             f", {i['queue_bdp']:g}xBDP" if "queue_bdp" in i else "") + (
             f", {i['loss_pct']:g} %" if "loss_pct" in i else "")
         if it == 1:
-            res = f"median {_f(i['median_ms'], nd=3)} ms, p99 {_f(i['p99_ms'], nd=3)} ms, n {i['n']}"
+            res = f"median {_f(i.get('median_ms'), nd=3)} ms, p99 {_f(i.get('p99_ms'), nd=3)} ms, n {i.get('n')}"
         elif it == 2:
-            res = (f"goodput {i['goodput_bps'] / 1e6:.3f} Mbit/s = {100 * i['fraction_of_bw']:.2f} % of BW"
+            res = (f"goodput {_f(i['goodput_bps'], 1e6, 3)} Mbit/s = {_f(i['fraction_of_bw'], 0.01)} % of BW"
                    f" (threshold {i['threshold_bps'] / 1e6:.3f}){'' if i['gated'] else ', not gated'}")
         elif it == 3:
             if "error" in i:
@@ -707,28 +790,30 @@ def gate_markdown(r):
                        f"netem counter {i['netem_dropped_counter']}, tbf drops {i['tbf_dropped']}; captures complete "
                        f"{i.get('captures_complete')}")
         elif it == 4:
-            res = (f"backlog max {i['backlog_max']} B = {100 * i['backlog_frac']:.1f} % of Q {i['queue_bytes']};"
+            res = (f"backlog max {i['backlog_max']} B = {_f(i['backlog_frac'], 0.01, 1)} % of Q {i['queue_bytes']};"
                    f" drop intervals {i['drop_intervals']}, below the tail-drop bound"
-                   f" (lowest {i['min_level'] if i['min_level'] is None else round(i['min_level'])} B):"
+                   f" (lowest {i['min_level'] if not finite(i['min_level']) else round(i['min_level'])} B):"
                    f" {i['drop_intervals_low']} (below 0.9Q: {i['drop_intervals_below_frac']};"
                    f" {i.get('drop_check', 'tested')}, {i.get('drop_intervals_untestable', 0)} not testable);"
                    f" ping max - base {i['ping_max_minus_base_ms'] if i['ping_max_minus_base_ms'] is None else round(i['ping_max_minus_base_ms'], 2)}"
-                   f" ms vs {i['target_ms']:.2f} ms")
+                   f" ms vs {_f(i['target_ms'])} ms")
         elif it == 5:
             res = f"local drops {i['local_drops'] or 'none'}, time_squeeze {i['time_squeeze']}, capture drops {i['captures']}"
         else:
             if i.get("part") == "ping":
-                res = (f"stack ping median {i['stack']['median_ms']} ms vs kernel {i['kernel']['median_ms']}"
+                res = (f"stack ping median {i['stack'].get('median_ms')} ms vs kernel {i['kernel'].get('median_ms')}"
                        f" ms, diff {i['diff_ms'] if i['diff_ms'] is None else round(i['diff_ms'], 3)} ms")
                 cell = "100 Mbit/s, 20 ms (idle)"
             else:
                 cell = f"100 Mbit/s, 20 ms, 2xBDP, stack {i['part']}" + (f" ({i['stack_args']})" if i["stack_args"] else "")
-                res = (f"stack NewReno goodput {i['goodput_bps'] / 1e6:.3f} Mbit/s (threshold "
+                res = (f"stack NewReno goodput {_f(i['goodput_bps'], 1e6, 3)} Mbit/s (threshold "
                        f"{i['threshold_bps'] / 1e6:.3f}); drops {i['local_drops'] or 'none'}, device "
                        f"{i['stack_device'] or 'none'}; lateness p99 {i['lateness_p99_ns']} ns max "
                        f"{i['lateness_max_ns']} ns; retransmitted {i['retrans_pct']} %, tbf drops "
                        f"{i['tbf_dropped']}; sndbuf-limited {i['sndbuf_limited_frac']}, rwnd-limited "
                        f"{i['rwnd_limited_frac']}")
+        if i.get("source_errors"):
+            res += "; " + ", ".join(i["source_errors"])
         lines.append(f"| {it} | {cell} | {res} | {'yes' if i['ok'] else 'NO'} |")
     return "\n".join(lines) + "\n"
 
@@ -752,14 +837,13 @@ def gate_table(gates):
             l3 = " / ".join(f"{i['measured_pct']:.3f} ({i['lost']} in [{i['interval'][0]}, {i['interval'][1]}])"
                             if "measured_pct" in i else i.get("error", "?")
                             for i in sorted(by.get(3, []), key=lambda i: i["loss_pct"]))
-            bad5 = [i for i in by.get(5, []) if i["local_drops"] or i["time_squeeze"]
-                    or any(v for v in (i["captures"] or {}).values())]
+            bad5 = [i for i in by.get(5, []) if not i["ok"]]
             ok = all(i["ok"] for i in items)
             dmax = i4["ping_max_minus_base_ms"]
             out.append(
-                f"| {g['slot']} | {bw} Mbit/s, {rtt} ms, {q:g}xBDP | {i1['median_ms']:.2f} / {i1['p99_ms']:.2f} "
-                f"| {100 * i2['fraction_of_bw']:.2f}{'' if i2['gated'] else ' (not gated)'} "
-                f"| {100 * i4['backlog_frac']:.1f}; {'-' if dmax is None else f'{dmax:.1f}'} / {i4['target_ms']:.1f} "
+                f"| {g['slot']} | {bw} Mbit/s, {rtt} ms, {q:g}xBDP | {_f(i1.get('median_ms'))} / {_f(i1.get('p99_ms'))} "
+                f"| {_f(i2['fraction_of_bw'], 0.01)}{'' if i2['gated'] else ' (not gated)'} "
+                f"| {_f(i4['backlog_frac'], 0.01, 1)}; {'-' if dmax is None else f'{dmax:.1f}'} / {_f(i4['target_ms'], nd=1)} "
                 f"| {l3} | {len(bad5)} of {len(by.get(5, []))} runs "
                 f"| {'yes' if ok else 'NO'} |")
     out += ["", "| Slot | Item 6 part | Result | Pass |", "|---|---|---|---|"]
@@ -768,13 +852,13 @@ def gate_table(gates):
             if i["item"] != 6:
                 continue
             if i.get("part") == "ping":
-                res = (f"idle ping median rcv to stack {i['stack']['median_ms']} ms, snd kernel to rcv "
-                       f"{i['kernel']['median_ms']} ms")
+                res = (f"idle ping median rcv to stack {i['stack'].get('median_ms')} ms, snd kernel to rcv "
+                       f"{i['kernel'].get('median_ms')} ms")
             else:
                 res = (f"stack NewReno 100 Mbit/s, 20 ms, 0 %, 2xBDP{', ' + i['stack_args'] if i['stack_args'] else ''}: "
-                       f"{i['goodput_bps'] / 1e6:.2f} Mbit/s (threshold {i['threshold_bps'] / 1e6:.2f}); "
-                       f"retransmitted {i['retrans_pct']:.2f} %; rwnd-limited {100 * (i['rwnd_limited_frac'] or 0):.1f} %, "
-                       f"sndbuf-limited {100 * (i['sndbuf_limited_frac'] or 0):.1f} %; loop lateness p99 bucket "
+                       f"{_f(i['goodput_bps'], 1e6)} Mbit/s (threshold {i['threshold_bps'] / 1e6:.2f}); "
+                       f"retransmitted {_f(i['retrans_pct'])} %; rwnd-limited {_f(i['rwnd_limited_frac'], 0.01, 1)} %, "
+                       f"sndbuf-limited {_f(i['sndbuf_limited_frac'], 0.01, 1)} %; loop lateness p99 bucket "
                        f"<= {i['lateness_p99_ns']} ns; drops {i['local_drops'] or 'none'}")
             out.append(f"| {g['slot']} | {i.get('part')} | {res} | {'yes' if i['ok'] else 'NO'} |")
     return "\n".join(out) + "\n"
@@ -901,6 +985,14 @@ def read_volume(slot, path):
     return r.stdout if r.returncode == 0 else None
 
 
+def parse_json_object(text):
+    try:
+        value = json.loads(text) if text else None
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 def run_done(slot, campaign, run):
     """A run is done when its summary.json exists (analysis finished)."""
     t = read_volume(slot, f"/data/m2/{campaign}/{run}/summary.json")
@@ -951,7 +1043,7 @@ def gate_cells():
         for q in QUEUES:
             rate = f"rate-{bw}-{rtt}-{q:g}"
             for item in (1, 2, 4, 5):
-                expected[item, bw, rtt, q, 0, None] = None if item == 1 else rate
+                expected[item, bw, rtt, q, 0, None] = f"ping-{bw}-{rtt}-{q:g}" if item == 1 else rate
             for loss in LOSSES:
                 for item in (3, 5):
                     expected[item, bw, rtt, q, loss, None] = f"loss-{bw}-{rtt}-{q:g}-{loss:g}"
@@ -968,6 +1060,8 @@ def gate_rejects(gate, slot_n, key):
         return f"wrong gate slot {gate.get('slot')}, expected {slot_n}"
     if not isinstance(key, str) or not key or gate.get("reuse_keys") != [key]:
         return f"gate reuse keys {gate.get('reuse_keys')} do not match {key}"
+    if gate.get("schema") != 2 or not timing_placement(slot_n, gate.get("cpusets")):
+        return "missing verified timing calibration sources or wrong role CPU placement"
     rows = gate.get("items")
     if not isinstance(rows, list) or not rows:
         return "missing calibration items"
@@ -988,13 +1082,21 @@ def gate_rejects(gate, slot_n, key):
             return f"unexpected calibration item {cell}"
         if row.get("run") != remaining.pop(cell):
             return f"wrong source run {row.get('run')} for calibration item {cell}"
-        if type(row.get("slot", slot_n)) is not int or row.get("slot", slot_n) != slot_n or row.get("reuse_key", key) != key:
+        if type(row.get("slot")) is not int or row.get("slot") != slot_n or row.get("reuse_key") != key:
             return f"wrong slot or reuse key in calibration item {cell}"
-        if row.get("ok") is not True:
+        if row.get("ok") is not True or row.get("source_errors"):
             return f"failed calibration item {cell}"
         seen.add(cell)
     if remaining:
         return f"missing {len(remaining)} calibration items, first {next(iter(remaining))}"
+    expected_paths = {"stack-ping/ping.json", "stack-ping-kernel/ping.json"}
+    for cell, name in gate_cells().items():
+        if name is not None:
+            leaves = ("ping.json",) if cell[0] == 1 else ("meta.json", "summary.json")
+            expected_paths.update(f"{name}/{leaf}" for leaf in leaves)
+    sources = gate.get("sources")
+    if not isinstance(sources, dict) or sources.keys() != expected_paths:
+        return "missing calibration source inventory"
     if gate.get("passed") is not True:
         return "gate marked not passed"
     return None
@@ -1020,7 +1122,16 @@ def check_gate(slot, gates, key):
     why = []
     for g in gates:
         t = read_volume(slot, f"/data/m2/{g}/gate.json")
-        reason = gate_rejects(json.loads(t) if t else None, slot.n, key)
+        gate = parse_json_object(t)
+        reason = gate_rejects(gate, slot.n, key)
+        if reason is None and (gate.get("campaign") != g or not timing_placement(slot.n, slot.cpus)):
+            reason = "wrong campaign or current CPU placement"
+        if reason is None:
+            for path, digest in gate["sources"].items():
+                source = parse_json_object(read_volume(slot, f"/data/m2/{g}/{path}"))
+                if source is None or A.proof_meta_digest(source) != digest:
+                    reason = f"missing or changed calibration source {path}"
+                    break
         if reason is None:
             return g
         why.append(f"{g}: {reason}")
@@ -1162,13 +1273,14 @@ def proof_list(reps, pairs, with_trace_off, stack_cc="newreno"):
         stack = {"bw": 100, "rtt": 20, "queue_bdp": 2.0, "loss": 0.0, "rep": rep, "impl": "utcp",
                  "cc": stack_cc, "profile": "linux", "duration": 30, "cell": "100-20-0-2", "order": rep}
         out.append(("run", f"stack-trace-r{rep}", dict(stack, trace=True, gate="proof-stack")))
-        if with_trace_off:
+        if with_trace_off and pairs:
             out.append(("run", f"stack-notrace-r{rep}", dict(stack, trace=False, gate="proof-notrace")))
     return out
 
 
 def proof_config(reps, pairs, stack_cc):
-    return {"reps": reps, "pairs": [list(p) for p in pairs], "stack_cc": stack_cc}
+    return {"schema": 2, "scope": "full" if pairs else "cubic-only", "reps": reps,
+            "pairs": [list(p) for p in pairs], "stack_cc": stack_cc}
 
 
 def proof_phase(campaign, phase, slots, reps, pairs, stack_cc="newreno"):
@@ -1189,49 +1301,50 @@ def proof_phase(campaign, phase, slots, reps, pairs, stack_cc="newreno"):
             raise RuntimeError("proof directory already has evidence without a configuration; use a new campaign")
         dexec(slots[0].snd, f"mkdir -p {shlex.quote(rd)}")
         vol_write(slots[0].snd, path, json.dumps(config, sort_keys=True) + "\n")
-    elif json.loads(old) != config:
+    elif parse_json_object(old) != config:
         raise RuntimeError("proof configuration or reuse key differs; use a new campaign")
 
     jobs = proof_list(reps, pairs, with_trace_off=(phase == "serial"), stack_cc=stack_cc)
+    pending = []
     barriers = {}
-    if phase == "parallel":
-        # A single surviving side cannot be paired with a fresh trial. Recollect
-        # both sides; one_run moves the previous evidence to aside/.
-        for _, name, spec in jobs:
-            if spec.get("gate") == "proof-stack" and not all(
-                    run_done(s, f"{campaign}/{phase}-s{s.n}", name) is not None for s in slots):
-                barriers[name] = threading.Barrier(len(slots))
+    for kind, name, spec in jobs:
+        trials = []
+        for slot in slots:
+            sub = f"{campaign}/{phase}-s{slot.n}"
+            rd = f"/data/m2/{sub}/{name}"
+            leaf = "ping.json" if kind == "ping" else "summary.json"
+            row = parse_json_object(read_volume(slot, f"{rd}/{leaf}"))
+            meta = row if kind == "ping" else parse_json_object(read_volume(slot, f"{rd}/meta.json"))
+            expected = dict(spec, campaign=sub, run=name, slot=slot.n, reuse_key=key)
+            if proof_row_error(row, meta, expected, kind) is None:
+                trials.append((meta["boot_id"], measured_window(row, spec)))
+        if len(trials) == len(slots) and (phase == "serial" or overlap_info(trials)["ok"]):
+            continue
+        pending.append((kind, name, spec))
+        if phase == "parallel":
+            barriers[name] = threading.Barrier(len(slots))
 
     stopped = threading.Event()
 
     def worker(slot):
         sub = f"{campaign}/{phase}-s{slot.n}"
         try:
-            for kind, name, spec in jobs:
+            for kind, name, spec in pending:
                 if stopped.is_set():
                     return
-                if kind == "ping":
-                    path = f"/data/m2/{sub}/{name}/ping.json"
-                    if read_volume(slot, path):
-                        continue
-                    slot.cleanup()
-                    ping = ping_only(slot, sub, name, spec)
-                    ping.update(spec, campaign=sub, run=name, slot=slot.n, reuse_key=key)
-                    vol_write(slot.snd, path, json.dumps(ping, sort_keys=True) + "\n")
-                    log(f"{phase} slot {slot.n} {name}: median {ping['median_ms']} p99 {ping['p99_ms']}")
-                    continue
-                paired = phase == "parallel" and spec.get("gate") == "proof-stack"
-                if paired and name not in barriers:
-                    continue
-                if not paired and run_done(slot, sub, name) is not None:
-                    continue
                 barrier = barriers.get(name)
                 if barrier is not None:
-                    # Wait before starting captures/pings; a resumed peer may
-                    # still have a full repetition of Linux controls to run.
-                    barrier.wait()
-                _, summary = one_run(slot, sub, name, spec, smeta, sender_barrier=barrier)
-                log(f"{phase} slot {slot.n} {name}: goodput {summary.get('goodput_bps')} valid {summary.get('valid')}")
+                    barrier.wait(timeout=180)
+                if kind == "ping":
+                    slot.cleanup()
+                    ping = ping_only(slot, sub, name, spec, sender_barrier=barrier)
+                    ping.update(spec, campaign=sub, run=name, slot=slot.n, reuse_key=key, timing=slot.timing,
+                                cpusets=slot.cpus, slot_cpus=slot.slot_cpus(), boot_id=smeta["boot_id"])
+                    vol_write(slot.snd, f"/data/m2/{sub}/{name}/ping.json", json.dumps(ping, sort_keys=True) + "\n")
+                    log(f"{phase} slot {slot.n} {name}: median {ping.get('median_ms')} p99 {ping.get('p99_ms')}")
+                else:
+                    _, summary = one_run(slot, sub, name, spec, smeta, sender_barrier=barrier)
+                    log(f"{phase} slot {slot.n} {name}: goodput {summary.get('goodput_bps')} valid {summary.get('valid')}")
         except BaseException:
             stopped.set()
             for barrier in barriers.values():
@@ -1329,7 +1442,7 @@ def proof_files(campaign):
     lines = dump.splitlines()
     for i, line in enumerate(lines):
         if line.startswith("### ") and i + 1 < len(lines):
-            files[line[4:]] = json.loads(lines[i + 1])
+            files[line[4:]] = parse_json_object(lines[i + 1])
     return files
 
 
@@ -1347,21 +1460,20 @@ def proof_row_error(summary, meta, expected, kind):
         actual = meta.get(k)
         if actual != want or isinstance(actual, bool) != isinstance(want, bool):
             return f"{k}={meta.get(k)!r}, expected {want!r}"
-    if kind == "ping":
-        n, lost = summary.get("n"), summary.get("lost")
-        if not (type(n) is int and type(lost) is int and n > 0 and lost >= 0 and n + lost == 200
-                and finite(summary.get("median_ms")) and summary["median_ms"] > 0):
-            return "incomplete idle ping"
-        return None
-    if summary.get("proof_meta_sha256") != A.proof_meta_digest(meta):
-        return "summary does not match this run metadata"
-    if summary.get("run") != expected["run"] or summary.get("valid") is not True or summary.get("invalid"):
-        return f"invalid or mismatched summary ({summary.get('invalid')})"
     start_cpu = 8 + 4 * expected["slot"]
     cpus = [str(c) for c in range(start_cpu, start_cpu + 4)]
-    if meta.get("timing") is not True or meta.get("slot_cpus") not in (",".join(cpus), f"{cpus[0]}-{cpus[-1]}"):
+    if (meta.get("timing") is not True or not timing_placement(expected["slot"], meta.get("cpusets"))
+            or meta.get("slot_cpus") not in timing_cpu_names(expected["slot"])):
         return "wrong timing slot CPUs"
-    if meta.get("sender_exit") != 0 or meta.get("duration_s") != expected["duration"]:
+    if not isinstance(meta.get("boot_id"), str) or not meta["boot_id"] or not measured_window(summary, expected):
+        return "missing boot ID or inconsistent measured window"
+    if kind == "ping":
+        return None if ping_sample(summary, 190) else "incomplete idle ping"
+    if summary.get("proof_meta_sha256") != A.proof_meta_digest(meta):
+        return "summary does not match this run metadata"
+    if summary.get("run") != expected["run"] or summary.get("valid") is not True or summary.get("invalid") != []:
+        return f"invalid or mismatched summary ({summary.get('invalid')})"
+    if type(meta.get("sender_exit")) is not int or meta["sender_exit"] != 0 or meta.get("duration_s") != expected["duration"]:
         return "sender failure or wrong measured duration"
     if summary.get("sender_ccs") != [expected["cc"]]:
         return f"sender samples report {summary.get('sender_ccs')}, expected {expected['cc']}"
@@ -1377,10 +1489,10 @@ def proof_row_error(summary, meta, expected, kind):
         return None
     cpu = summary.get("cpu") or {}
     softirqs = summary.get("softirqs") or {}
-    if not (isinstance(cpu, dict) and all(isinstance(cpu.get(c), dict) and finite(cpu[c].get("softirq"))
-                                          and finite(cpu[c].get("irq")) for c in cpus)
+    if not (isinstance(cpu, dict) and all(isinstance(cpu.get(c), dict) and all(finite(cpu[c].get(k)) for k in
+                                          ("busy", "total", "softirq", "irq")) for c in cpus)
             and isinstance(softirqs, dict) and all(finite(softirqs.get(k)) for k in A.SOFTIRQ_KINDS)
-            and finite(summary.get("foreign_cpu_frac")) and meta.get("uptime")
+            and finite(summary.get("foreign_cpu_frac")) and meta.get("uptime") and meta.get("top_cpu")
             and isinstance(meta.get("threads_on_8_15"), list)):
         return "incomplete stack CPU or external load evidence"
     for k in ("sender_lateness_p99_ns", "sender_lateness_max_ns"):
@@ -1406,26 +1518,41 @@ def proof_row_error(summary, meta, expected, kind):
 HIST_BUCKETS = {str(i) for i in range(64)}
 
 
-def stack_window(s):
+def measured_window(s, spec):
     """Measured monotonic window, bounded by both endpoint starts (run_window)."""
+    if "impl" not in spec:
+        lo, hi = s.get("ping_start_ns"), s.get("ping_end_ns")
+        return (lo, hi) if type(lo) is int and type(hi) is int and lo < hi else None
     t0, sender, end = (s.get(k) for k in ("t0_ns", "sender_start_ns", "window_end_ns"))
     if not all(type(t) is int for t in (t0, sender, end)):
         return None
     lo = t0 + int(A.WARMUP_S * A.NS)
-    if end != min(t0, sender) + 30 * A.NS or end <= lo:
+    if end != min(t0, sender) + spec["duration"] * A.NS or end <= lo:
         return None
     return lo, end
+
+
+def overlap_info(trials):
+    windows = [window for _, window in trials]
+    overlap = fraction = None
+    if len(trials) == 2 and trials[0][0] == trials[1][0] and all(windows):
+        overlap = max(0, min(hi for lo, hi in windows) - max(lo for lo, hi in windows))
+        fraction = overlap / max(hi - lo for lo, hi in windows)
+    return {"windows_mono_ns": windows, "overlap_ns": overlap, "fraction_of_longer_window": fraction,
+            "ok": bool(overlap)}
 
 
 def proof_evaluate(files, campaign, reps, pairs, stack_cc="newreno"):
     """Decide the §6 proof from the individual runs and their observed evidence."""
     phases = {"serial": ["serial-s0"], "parallel": ["parallel-s0", "parallel-s1"]}
-    result = {"campaign": campaign, "reps": reps, "stack_cc": stack_cc, "items": [], "notes": [],
+    result = {"campaign": campaign, "reps": reps, "idle_ping": {}, "stack_cc": stack_cc, "items": [], "notes": [],
               "limits": PROOF_LIMITS, "valid_runs": {}, "evidence_errors": {}, "stack_overlap": [],
-              "stack_load": {}}
-    if reps != A.RUNS_PER_SIDE or sorted(pairs) != sorted(PROOF_PAIRS):
-        result["notes"].append("full proof requires five repetitions of all four bandwidth/RTT pairs")
-    data, boots, keys = {}, {}, set()
+              "control_overlap": [], "stack_load": {}, "scope": "full" if pairs else "cubic-only"}
+    if reps != A.RUNS_PER_SIDE:
+        result["notes"].append("proof requires five repetitions")
+    if (pairs and sorted(pairs) != sorted(PROOF_PAIRS)) or (not pairs and stack_cc != "cubic"):
+        result["notes"].append("full proof requires all four bandwidth/RTT pairs; the stack-only proof requires CUBIC")
+    data, trials, keys = {}, {}, set()
     slot_windows = {}
     for ph, subs in phases.items():
         for sub in subs:
@@ -1436,6 +1563,12 @@ def proof_evaluate(files, campaign, reps, pairs, stack_cc="newreno"):
                 meta = row if kind == "ping" else files.get(f"{path}/meta.json")
                 expected = dict(spec, campaign=f"{campaign}/{sub}", run=name, slot=int(sub[-1]))
                 why = proof_row_error(row, meta, expected, kind)
+                if kind == "ping" and isinstance(row, dict):
+                    result["idle_ping"][path] = {k: row.get(k) for k in ("requests_seen", "n", "lost", "median_ms", "p99_ms")}
+                for leaf in ([f] if kind == "ping" else [f, "meta.json"]):
+                    filename = f"{path}/{leaf}"
+                    if filename in files and files[filename] is None:
+                        why = f"unreadable JSON in {filename}"
                 if not why:
                     key = meta.get("reuse_key")
                     if isinstance(key, str) and key:
@@ -1444,16 +1577,13 @@ def proof_evaluate(files, campaign, reps, pairs, stack_cc="newreno"):
                         why = "missing reuse key"
                 if kind != "ping":
                     result["valid_runs"][path] = (row or {}).get("valid") if isinstance(row, dict) else None
+                if not why:
+                    window = measured_window(row, spec)
+                    trials[sub, name] = (meta["boot_id"], window)
+                    slot_windows.setdefault((meta["slot"], meta["boot_id"]), []).append((*window, path))
                 if not why and spec.get("impl") == "utcp":
-                    window = stack_window(row)
-                    boot = meta.get("boot_id")
-                    if not isinstance(boot, str) or not boot or not window:
-                        why = "missing boot ID or inconsistent measured window"
-                    else:
-                        slot_windows.setdefault((meta["slot"], boot), []).append((*window, path))
-                    boots[sub, name] = boot
                     result["stack_load"][path] = {k: row.get(k) for k in ("cpu", "softirqs", "foreign_cpu_frac")}
-                    result["stack_load"][path].update({k: meta.get(k) for k in ("uptime", "threads_on_8_15")})
+                    result["stack_load"][path].update({k: meta.get(k) for k in ("uptime", "top_cpu", "threads_on_8_15")})
                 if why:
                     result["evidence_errors"][path] = why
                 data[sub, name] = None if why else row
@@ -1463,22 +1593,16 @@ def proof_evaluate(files, campaign, reps, pairs, stack_cc="newreno"):
         for (_, hi, old_path), (lo, _, path) in zip(intervals, intervals[1:]):
             if lo < hi:
                 result["evidence_errors"][path] = f"measured window overlaps {old_path} on the same slot"
-    config = files.get("proof-config.json", {})
-    if config and any(config.get(k) != v for k, v in proof_config(reps, pairs, stack_cc).items()):
+    config = files.get("proof-config.json") or {}
+    if any(config.get(k) != v for k, v in proof_config(reps, pairs, stack_cc).items()):
         result["notes"].append("proof configuration differs from request")
     if len(keys) != 1 or (config and config.get("reuse_key") not in keys):
         result["notes"].append("missing or mixed proof reuse keys")
-    for rep in range(reps):
-        name = f"stack-trace-r{rep}"
-        subs = phases["parallel"]
-        windows = [stack_window(data[sub, name] or {}) for sub in subs]
-        same_boot = boots.get((subs[0], name)) and boots.get((subs[0], name)) == boots.get((subs[1], name))
-        overlap, fraction = None, None
-        if same_boot and all(windows):
-            overlap = max(0, min(hi for lo, hi in windows) - max(lo for lo, hi in windows))
-            fraction = overlap / max(hi - lo for lo, hi in windows)
-        result["stack_overlap"].append({"rep": rep, "windows_mono_ns": windows, "overlap_ns": overlap,
-                                        "fraction_of_longer_window": fraction, "ok": bool(overlap)})
+    for _, name, spec in proof_list(reps, pairs, False, stack_cc):
+        pair = [trials.get((sub, name), (None, None)) for sub in phases["parallel"]]
+        overlap = dict(overlap_info(pair), rep=spec["rep"], run=name)
+        group = "stack_overlap" if spec.get("impl") == "utcp" else "control_overlap"
+        result[group].append(overlap)
 
     def vals(sub, prefix, key, sub_key=None):
         out = []
@@ -1542,26 +1666,28 @@ def proof_evaluate(files, campaign, reps, pairs, stack_cc="newreno"):
     lim = {}
     for sub in ["serial-s0"] + phases["parallel"]:
         lim[sub] = {"stack": vals(sub, "stack-trace", "sndbuf_limited_frac"),
-                    "linux_100_20": vals(sub, "rate-100-20-2", "sndbuf_limited_frac"),
-                    "stack_rwnd": vals(sub, "stack-trace", "rwnd_limited_frac"),
-                    "linux_100_20_rwnd": vals(sub, "rate-100-20-2", "rwnd_limited_frac")}
+                    "stack_rwnd": vals(sub, "stack-trace", "rwnd_limited_frac")}
+        if pairs:
+            lim[sub].update(linux_100_20=vals(sub, "rate-100-20-2", "sndbuf_limited_frac"),
+                            linux_100_20_rwnd=vals(sub, "rate-100-20-2", "rwnd_limited_frac"))
     result["sndbuf_limited"] = lim
-    # Trace overhead (§5.6): serial, trace on vs off.
-    on = [data.get(("serial-s0", f"stack-trace-r{r}")) for r in range(reps)]
-    off = [data.get(("serial-s0", f"stack-notrace-r{r}")) for r in range(reps)]
-    result["trace_overhead"] = {
-        "goodput_on": [(x or {}).get("goodput_bps") for x in on],
-        "goodput_off": [(x or {}).get("goodput_bps") for x in off],
-        "lateness_p99_on": [(x or {}).get("sender_lateness_p99_ns") for x in on],
-        "lateness_p99_off": [(x or {}).get("sender_lateness_p99_ns") for x in off],
-        "lateness_max_on": [(x or {}).get("sender_lateness_max_ns") for x in on],
-        "lateness_max_off": [(x or {}).get("sender_lateness_max_ns") for x in off],
-        "trace_events": [(x or {}).get("trace_events") for x in on],
-        "hist_p99_on": pooled(on),
-        "hist_p99_off": pooled(off),
-    }
+    if pairs:
+        # Trace overhead (§5.6): serial, trace on vs off.
+        on = [data.get(("serial-s0", f"stack-trace-r{r}")) for r in range(reps)]
+        off = [data.get(("serial-s0", f"stack-notrace-r{r}")) for r in range(reps)]
+        result["trace_overhead"] = {
+            "goodput_on": [(x or {}).get("goodput_bps") for x in on],
+            "goodput_off": [(x or {}).get("goodput_bps") for x in off],
+            "lateness_p99_on": [(x or {}).get("sender_lateness_p99_ns") for x in on],
+            "lateness_p99_off": [(x or {}).get("sender_lateness_p99_ns") for x in off],
+            "lateness_max_on": [(x or {}).get("sender_lateness_max_ns") for x in on],
+            "lateness_max_off": [(x or {}).get("sender_lateness_max_ns") for x in off],
+            "trace_events": [(x or {}).get("trace_events") for x in on],
+            "hist_p99_on": pooled(on),
+            "hist_p99_off": pooled(off),
+        }
     result["passed"] = (not result["notes"] and not result["evidence_errors"]
-                        and all(i["ok"] for i in result["stack_overlap"]) and all(i["ok"] for i in result["items"]))
+                        and all(i["ok"] for i in result["stack_overlap"] + result["control_overlap"]) and all(i["ok"] for i in result["items"]))
     return result
 
 
@@ -1575,15 +1701,15 @@ def proof_report(campaign, reps, pairs, stack_cc="newreno"):
     text = json.dumps(result, indent=1, sort_keys=True) + "\n"
     helper = f"{JOB}-wr-{os.getpid()}"
     sh(["docker", "run", "--rm", "-i", "--name", helper, "-v", f"{VOLUME}:/data", IMAGE, "bash", "-c",
-        f"cat > /data/m2/{campaign}/proof.json"], input=text)
+        publish_script(f"/data/m2/{campaign}/proof.json")], input=text)
     md = proof_markdown(result)
     sh(["docker", "run", "--rm", "-i", "--name", helper, "-v", f"{VOLUME}:/data", IMAGE, "bash", "-c",
-        f"cat > /data/m2/{campaign}/proof.md"], input=md)
+        publish_script(f"/data/m2/{campaign}/proof.md")], input=md)
     return result, md
 
 
 def _f(x, scale=1.0, nd=2):
-    return "-" if x is None else f"{x / scale:.{nd}f}"
+    return f"{x / scale:.{nd}f}" if finite(x) else "-"
 
 
 def proof_markdown(r):
@@ -1604,24 +1730,29 @@ def proof_markdown(r):
         unit = {"goodput_bps": "goodput (Mbit/s)", "median_ms": "ping median (ms)", "backlog_max": "backlog max (B)"}.get(m, m)
         ok = "info" if i.get("informational") else ("yes" if i["ok"] else "NO")
         lines.append(f"| {i['item']} | {i.get('cell', '100 Mbit/s, 20 ms, 0 %, 2xBDP')} | {unit} | {i['parallel_slot']} | {s} | {p} | {ok} |")
-    t = r["trace_overhead"]
-    lines += ["", f"Trace overhead (stack {cc_label}, 100 Mbit/s, 20 ms, 0 %, 2xBDP, serial):",
-              f"- goodput on (Mbit/s): {[_f(x, 1e6) for x in t['goodput_on']]}",
-              f"- goodput off (Mbit/s): {[_f(x, 1e6) for x in t['goodput_off']]}",
-              f"- lateness p99 on/off (ns, per run): {t['lateness_p99_on']} / {t['lateness_p99_off']}",
-              f"- lateness max on/off (ns, per run): {t['lateness_max_on']} / {t['lateness_max_off']}",
-              f"- pooled lateness p99 on/off (ns): {t['hist_p99_on']} / {t['hist_p99_off']}",
-              f"- trace events per run: {t['trace_events']}", "",
-              "sndbuf-limited and rwnd-limited fractions of the window:"]
+    if "trace_overhead" in r:
+        t = r["trace_overhead"]
+        lines += ["", f"Trace overhead (stack {cc_label}, 100 Mbit/s, 20 ms, 0 %, 2xBDP, serial):",
+                  f"- goodput on (Mbit/s): {[_f(x, 1e6) for x in t['goodput_on']]}",
+                  f"- goodput off (Mbit/s): {[_f(x, 1e6) for x in t['goodput_off']]}",
+                  f"- lateness p99 on/off (ns, per run): {t['lateness_p99_on']} / {t['lateness_p99_off']}",
+                  f"- lateness max on/off (ns, per run): {t['lateness_max_on']} / {t['lateness_max_off']}",
+                  f"- pooled lateness p99 on/off (ns): {t['hist_p99_on']} / {t['hist_p99_off']}",
+                  f"- trace events per run: {t['trace_events']}"]
+    lines += ["", "sndbuf-limited and rwnd-limited fractions of the window:"]
     for sub, v in r["sndbuf_limited"].items():
         lines.append(f"- {sub}: {json.dumps(v)}")
     bad = [k for k, v in r["valid_runs"].items() if v is not True]
     lines += ["", f"Runs not valid: {bad if bad else 'none'}"]
-    for row in r["stack_overlap"]:
+    if "stack_overlap" not in r:
+        lines.append("Historical report: paired windows and sampled sender identity were not recorded.")
+    for row in r.get("stack_overlap", []):
         lines.append(f"- Parallel stack r{row['rep']}: measured overlap {row['overlap_ns']} ns "
                      f"(fraction of the longer window {row['fraction_of_longer_window']})")
+    for row in r.get("control_overlap", []):
+        lines.append(f"- Parallel {row['run']}: measured overlap {row['overlap_ns']} ns")
     lines.extend(r["notes"])
-    lines.extend(f"- {path}: {reason}" for path, reason in r["evidence_errors"].items())
+    lines.extend(f"- {path}: {reason}" for path, reason in r.get("evidence_errors", {}).items())
     return "\n".join(lines) + "\n"
 
 
@@ -1706,9 +1837,11 @@ def main(argv):
     p.add_argument("--campaign", required=True)
     p.add_argument("--phase", choices=("serial", "parallel", "report", "all"), default="all")
     p.add_argument("--reps", type=int, default=5)
-    p.add_argument("--stack-cc", choices=("newreno", "cubic"), default="newreno",
+    cc = p.add_mutually_exclusive_group()
+    cc.add_argument("--cubic-only", action="store_true", help="only the 15 trace-on m2-integrate CUBIC transfers")
+    cc.add_argument("--stack-cc", choices=("newreno", "cubic"), default="newreno",
                    help="stack sender congestion control (use a separate campaign per configuration)")
-    p.add_argument("--pairs", default=",".join(f"{b}x{r}" for b, r in PROOF_PAIRS))
+    p.add_argument("--pairs", help="full-proof control cells (default: all four)")
     a = ap.parse_args(argv[1:])
     if a.cmd == "up":
         print(tb("up.sh", "--slot", a.slot, *(["--nontiming"] if a.nontiming else [])), end="")
@@ -1752,7 +1885,11 @@ def main(argv):
     elif a.cmd == "plot":
         print(run_plot(a.campaign, a.out), end="")
     elif a.cmd == "proof":
-        pairs = [tuple(int(x) for x in p.split("x")) for p in a.pairs.split(",")]
+        if a.cubic_only and a.pairs:
+            ap.error("--pairs selects full-proof controls and cannot be combined with --cubic-only")
+        pairs = [tuple(map(int, p.split("x"))) for p in a.pairs.split(",")] if a.pairs else PROOF_PAIRS
+        if a.cubic_only:
+            pairs, a.stack_cc = (), "cubic"
         if a.reps <= 0:
             ap.error("proof --reps must be positive")
         if a.phase in ("serial", "all"):

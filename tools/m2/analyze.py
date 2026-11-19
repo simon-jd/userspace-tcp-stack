@@ -470,6 +470,24 @@ def local_drops(pre, post, roles, slot_cpus):
     return bad, squeeze
 
 
+def missing_gate_counters(record, roles, ifaces, cpus):
+    """Every path in the two-slot topology needs observed link and qdisc counters."""
+    missing = []
+    for role, keys in (("snd", ("snd",)), ("r1", ("r1_a", "r1_b")),
+                       ("r2", ("r2_b", "r2_c")), ("rcv", ("rcv",))):
+        container = roles[role]
+        devices = [ifaces.get(key) for key in keys]
+        if role == "snd":
+            devices.extend(f"utcp{i}" for i in range(8))
+        for dev in devices:
+            link = record["link"][container].get(dev, {})
+            qdisc = record["qdisc"][container].get(dev, {})
+            if not {"rx_dropped", "tx_dropped"} <= link.keys() or "dropped" not in qdisc:
+                missing.append(f"{role}/{dev}")
+    missing.extend(f"softnet/cpu{cpu}" for cpu in cpus if cpu not in record["softnet"])
+    return missing
+
+
 def cpu_deltas(pre, post, cpus):
     out = {}
     for cpu in cpus:
@@ -517,8 +535,8 @@ def softirq_deltas(pre, post, cpus):
     out = {}
     for k in SOFTIRQ_KINDS:
         a, b = pre.get("softirqs", {}).get(k), post.get("softirqs", {}).get(k)
-        if a and b:
-            out[k] = sum(b.get(c, 0) - a.get(c, 0) for c in cpus)
+        if a and b and all(c in a and c in b for c in cpus):
+            out[k] = sum(b[c] - a[c] for c in cpus)
     return out
 
 
@@ -979,14 +997,16 @@ def summarize_run(rundir):
     # observed in the measured window; an absent name remains visible.
     out["sender_ccs"] = sorted({(row.get("cc_name") or "") if row.get("role") == "sender" else ""
                                 for row in snd if row.get("ev") == "sample" and lo <= row["t"] <= hi})
-    if meta.get("gate") in ("proof-rate", "proof-stack", "proof-notrace"):
+    calibration = meta.get("gate") in ("rate", "loss", "stack")
+    if calibration or meta.get("gate") in ("proof-rate", "proof-stack", "proof-notrace"):
         out["proof_meta_sha256"] = proof_meta_digest(meta)
-        if not (rsum and ssum and rsum.get("bytes") and rsum["bytes"] == ssum.get("bytes")
+        if not (rsum and ssum and rsum.get("ok") is True and ssum.get("ok") is True
+                and type(rsum.get("bytes")) is int and rsum["bytes"] > 0 and rsum["bytes"] == ssum.get("bytes")
                 and rsum.get("sha256") and rsum["sha256"] == ssum.get("sha256")
                 and rsum.get("role") == "receiver" and rsum.get("backend") == "kernel"
                 and ssum.get("role") == "sender"
                 and ssum.get("backend") == ("utcp" if meta["impl"] == "utcp" else "kernel")):
-            invalid("incomplete or mismatched proof endpoints")
+            invalid("incomplete or mismatched transfer endpoints")
     # Sender counters over the window.
     dsegs = delta(series(snd, "data_segs_out"), lo, hi)
     dret = delta(series(snd, "total_retrans"), lo, hi)
@@ -1031,6 +1051,11 @@ def summarize_run(rundir):
         pre = record_counters(parse_record(pre_t), roles.values())
         post = record_counters(parse_record(post_t), roles.values())
         cpus = cpu_list(meta.get("slot_cpus", ""))
+        if calibration:
+            for label, record in (("pre", pre), ("post", post)):
+                missing = missing_gate_counters(record, roles, meta.get("ifaces", {}), cpus)
+                if missing:
+                    invalid(f"{label} missing counters: {', '.join(missing)}")
         bad, squeeze = local_drops(pre, post, roles, cpus)
         out["local_drops"] = bad
         out["time_squeeze"] = squeeze
@@ -1048,7 +1073,7 @@ def summarize_run(rundir):
         if meta.get("impl") != "utcp":
             out["sender_counters"] = nstat_deltas(pre, post, roles["snd"])
         ifs = meta.get("ifaces", {})
-        if ifs:
+        if all(ifs.get(k) for k in ("r1_a", "r1_b", "r2_b", "r2_c")):
             out["netem"] = qdisc_delta(pre, post, roles["r1"], ifs["r1_b"])
             out["tbf"] = qdisc_delta(pre, post, roles["r2"], ifs["r2_c"])
             # The ACK path's interfaces are noqueue (m2_testbed.sh checks it);
@@ -1070,6 +1095,9 @@ def summarize_run(rundir):
         bw = meta.get("bw_mbit", meta.get("bw"))
         rate = float(bw) * 1e6 if bw else None
         out["queue"] = queue_check(samples, q, rate, int(meta.get("burst_bytes", 0)), lo_rt, hi_rt) if q else None
+        if calibration and meta.get("gate") == "rate" and any(
+                drops is None for t, _, drops in samples if lo_rt <= t <= hi_rt):
+            invalid("missing tbf sample drop counter")
     # Captures (capture.json, made by `analyze.py captures`).
     if cap:
         out["capture"] = {k: ({kk: vv for kk, vv in v.items() if kk not in ("bins", "pings")}
@@ -1110,6 +1138,10 @@ def summarize_run(rundir):
     st = read_text(rd / "stats.json")
     if st:
         s = json.loads(st.strip().splitlines()[-1])
+        if calibration and (any(type(s.get(k)) is not int for k in
+                                ("dev_tx_errors", "dev_rx_errors", *STACK_LOCAL_DROPS))
+                            or type(s.get("dev_device_failed")) is not bool):
+            invalid("incomplete stack drop counters")
         devbad = {k: s[k] for k in ("dev_tx_errors", "dev_rx_errors") if s.get(k)}
         if s.get("dev_device_failed"):
             devbad["dev_device_failed"] = 1
@@ -1433,6 +1465,13 @@ def tables_from_archive(archive_file, outdir):
 # --------------------------------------------------------------------------
 
 
+def write_run_json(directory, name, data):
+    with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as tmp:
+        json.dump(data, tmp, indent=1, sort_keys=True)
+        tmp.write("\n")
+    Path(tmp.name).replace(Path(directory) / name)
+
+
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="analyze.py", description=__doc__.split("\n")[0])
@@ -1457,11 +1496,11 @@ def main(argv):
     a = ap.parse_args(argv[1:])
     if a.cmd == "run":
         s = summarize_run(a.rundir)
-        Path(a.rundir, "summary.json").write_text(json.dumps(s, indent=1, sort_keys=True) + "\n")
+        write_run_json(a.rundir, "summary.json", s)
         print(json.dumps(s, sort_keys=True))
     elif a.cmd == "captures":
         c = captures_of_run(a.rundir)
-        Path(a.rundir, "capture.json").write_text(json.dumps(c, indent=1, sort_keys=True) + "\n")
+        write_run_json(a.rundir, "capture.json", c)
         print(json.dumps(c, sort_keys=True))
     elif a.cmd == "tables":
         if a.archive:
@@ -1471,7 +1510,12 @@ def main(argv):
     elif a.cmd == "archive":
         print(f"{archive(a.campaign, a.file)} files in {a.file}")
     elif a.cmd == "pings":
-        print(json.dumps(ping_stats(icmp_echoes(a.pcap, a.src, a.dst), a.count), sort_keys=True))
+        pings = icmp_echoes(a.pcap, a.src, a.dst)
+        stats = ping_stats(pings, a.count)
+        stats["requests_seen"] = len(pings)
+        if pings:
+            stats.update(first_request_rt_ns=pings[0].send_rt_ns, last_request_rt_ns=pings[-1].send_rt_ns)
+        print(json.dumps(stats, sort_keys=True))
     return 0
 
 
