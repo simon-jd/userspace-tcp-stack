@@ -135,11 +135,20 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
       if (packets_in_flight(k) == 0) {
         refresh_cc(t, now);
         t.algo().cwnd_event(t.cc_conn, CaEvent::tx_start);
+        t.rate.app_limited = t.cc_conn.app_limited;
+        // tcp_event_data_sent precedes tcp_update_skb_after_send. An idle
+        // BBR sender can select a new rate for the very burst now leaving.
+        if (t.tx_gate_rate != 0) {
+          t.tx_gate_rate = t.txp.gate_rate(t.cc_conn);
+        }
         t.recovery.observe_cc_event(t.cc_conn, CaEvent::tx_start);  // test seam
       }
       t.lsndtime = now;
     }
     rate_on_send(t.rate, k.packets_out, now);
+    // A new transmission epoch resets delivered_mstamp. BBR reads it on
+    // loss timer expiry even when no ACK has refreshed the CC view since.
+    t.cc_conn.delivered_time = t.rate.delivered_time;
     // A loss probe that resends a sent segment goes through Linux
     // __tcp_retransmit_skb only (tcp_send_loss_probe): no retrans_out, no
     // retrans_stamp (M2-DESIGN §1.7).
@@ -371,12 +380,11 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     // retransmission, to the lost segments; every paced send moves
     // pacing_next (tcp_update_skb_after_send).
     const bool pacing = cc.paced && t.txp.gate_rate(cc) != 0;
-    const std::uint64_t rate = pacing ? t.txp.gate_rate(cc) : 0;
     // Linux sets the departure stamp of every skb to at least now; after
     // incrementing data_segs_out it charges the full skb reaching ten.
     const auto finish_burst = [&](std::uint64_t bytes) {
       if (t.txp.pacing_applies(cc, t.ctr.data_segs_out)) {
-        t.pacing_next = pacing_next_after_send(t.pacing_next, now, bytes, rate);
+        t.pacing_next = pacing_next_after_send(t.pacing_next, now, bytes, t.txp.gate_rate(cc));
       } else {
         t.pacing_next = std::max(t.pacing_next, now);
       }
@@ -393,7 +401,7 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     const auto paced_retransmit = [&](const TxSeg& seg, TxKind kind,
                                       bool burst_start) -> std::optional<std::uint32_t> {
       if (pacing) {
-        t.tx_gate_rate = rate;
+        t.tx_gate_rate = t.txp.gate_rate(cc);
         t.tx_burst_start = burst_start;
       }
       if (!core_.can_transmit() || !retransmit_seg(t, now, seg, kind)) {
@@ -462,7 +470,7 @@ void TcpEngine::transmit(Tcb& t, Time now) {
                           : t.pmtu_rexmit_end && seg.off < *t.pmtu_rexmit_end ? TxKind::pmtu_rexmit
                                                                               : TxKind::rexmit;
       if (pacing && !in_burst) {
-        rtx_left = pacing_burst_segments(rate, t.rtt.min_rtt(), cfg_.gso_max_size, mss,
+        rtx_left = pacing_burst_segments(t.txp.gate_rate(cc), t.rtt.min_rtt(), cfg_.gso_max_size, mss,
                                          t.algo().min_tso_segs(cc));
       }
       const std::optional<std::uint32_t> len = paced_retransmit(seg, kind, !in_burst);
@@ -519,13 +527,13 @@ void TcpEngine::transmit(Tcb& t, Time now) {
           hold_for_pacing();
           break;
         }
-        burst_left = pacing_burst_segments(rate, t.rtt.min_rtt(), cfg_.gso_max_size, mss,
+        burst_left = pacing_burst_segments(t.txp.gate_rate(cc), t.rtt.min_rtt(), cfg_.gso_max_size, mss,
                                            t.algo().min_tso_segs(cc));
         burst_bytes = 0;
         burst_start = true;
       }
       if (pacing) {
-        t.tx_gate_rate = rate;
+        t.tx_gate_rate = t.txp.gate_rate(cc);
         t.tx_burst_start = burst_start;
       }
       if (!core_.can_transmit() || !send_new_data(t, now, len, fin)) {

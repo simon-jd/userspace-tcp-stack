@@ -1397,6 +1397,37 @@ TEST(TcpTimer, PacedRtoRetransmissionAdvancesPacingNext) {
   EXPECT_EQ(o[0].v.h.seq, x.seg(1));
 }
 
+TEST(TcpTimer, BbrRtoUsesTheDeliveryEpochOfTheIdleRestart) {
+  auto cfg = m1_recovery(config(Side::b));
+  cfg.tcp.cc = utcp::CcAlgo::bbr;
+  Sender x(cfg);
+  ASSERT_TRUE(x.open(1));
+  ASSERT_EQ(x.data_count(x.out()), 1u);
+  x.d().run_for(20ms);
+  x.ack(1);
+  static_cast<void>(x.out());
+  ASSERT_EQ(x.stack().tcp_info(x.s->h)->unacked, 0u);
+  const Time previous_ack = x.d().now();
+  x.d().run_for(3s);
+  const Time restart = x.d().now();
+  ASSERT_TRUE(x.stack().tcp_send(x.s->h, t::pattern(Sender::mss)));
+  ASSERT_EQ(x.data_count(x.out()), 1u);
+
+  // Inspect the recovery timer's CC view after the real RTO. No ACK has
+  // arrived since the idle send. Linux tcp_rate_skb_sent started the fresh
+  // delivered_mstamp then; the RTO head retransmission does not restart it.
+  std::optional<Time> loss_epoch;
+  x.script.timer = [&](const RecoveryCtx& c) -> std::optional<std::pair<XmitTimer, Time>> {
+    if (c.cc.ca_state == CaState::loss) loss_epoch = c.cc.delivered_time;
+    return std::nullopt;
+  };
+  x.d().run_for(x.stack().next_deadline() - restart);
+  ASSERT_EQ(x.log.tx(TxKind::rto_rexmit).size(), 1u);
+  ASSERT_TRUE(loss_epoch);
+  EXPECT_GT(*loss_epoch, previous_ack);
+  EXPECT_EQ(*loss_epoch, restart);
+}
+
 // M2-DESIGN §2.1 item 8, Linux tcp_event_data_sent (tcp_output.c:185, for
 // skbs with payload only): tx_start for a data transmission that finds
 // nothing in flight, the RTO retransmission after everything was marked lost

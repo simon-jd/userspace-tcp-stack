@@ -1,0 +1,9 @@
+# Five adjacent pairs on slot 0; order and netem seeds from matrix.py expand.
+# The kernel receiver samples TCP_INFO; the stack sender uses linux_compat.
+campaign = "m2c-bbr/smoke-769311e-a1"
+seed = 2026111903
+reps = 5
+duration = 30
+trace = true
+cell = [{ bw = 100, rtt = 20, loss = 0, queue_bdp = 2 }]
+algo = [{ cc = "bbr", profile = "linux", impls = ["utcp", "linux"] }]

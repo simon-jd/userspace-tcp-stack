@@ -1,0 +1,73 @@
+{
+  "archive": "utcp-data:/m2/archive/m2c-bbr-769311e-calib-a1-s1-audit-a1",
+  "by_item": {
+    "1": 8,
+    "2": 8,
+    "3": 16,
+    "4": 8,
+    "5": 24,
+    "6": 3
+  },
+  "capture_bytes": 1036915332,
+  "capture_count": 68,
+  "cpu_flags": {
+    "foreign_cpu": 16,
+    "sndbuf_limited_frac": 1
+  },
+  "failed": [],
+  "filter_packets": 8420356,
+  "foreign_cpu_lower_range": [
+    0.0028763157894736843,
+    0.1886145932042778
+  ],
+  "gate_sha256": "cd5aeb63a0f48fa2f78c5289ebd741846a36abe166de646759c101ac3e477e5a",
+  "hashes": {
+    "MANIFEST.sha256": "d5a4be0f28caaa443c3233d06f1c5855e486f17494a97d7cfee9a31db7318c91",
+    "analysis/analysis-inputs.tar.gz": "b89a0bf4ac1193b0ca3ab880b7ec1edc0e9e53642a53014d467a7bc2225f14b8",
+    "analysis/audit.json": "953eba7f6b71bcad9cad64a452690fbe2d776112cb7154fc7709387767fbd1b8",
+    "analysis/source-index.json": "20714affe448f32797ff9e5535662e6bbd4000444ce95115867873b8d86ada10",
+    "wire/physical-replay.json": "fbd0059eaaef0ec0e289108f7b96f86642777d1f78a8e0645e9f274dc9000bfe"
+  },
+  "idle_lost": 0,
+  "idle_replies": 2000,
+  "items": 67,
+  "kernel_drops": 0,
+  "newreno": [
+    {
+      "flags": [],
+      "goodput_bps": 95625492.97536495,
+      "lateness_max_ns": 1271179,
+      "lateness_p99_ns": 16383,
+      "part": "run",
+      "retrans_pct": 0.0019392724962161286,
+      "run": "stack-100-20-2-run",
+      "rwnd_limited_frac": 0.0,
+      "sndbuf_limited_frac": 0.0,
+      "tbf_dropped": 501,
+      "threshold_bps": 93727873.18361954
+    },
+    {
+      "flags": [
+        "sndbuf_limited_frac"
+      ],
+      "goodput_bps": 95617740.91642275,
+      "lateness_max_ns": 2476471,
+      "lateness_p99_ns": 262143,
+      "part": "path",
+      "retrans_pct": 0.0,
+      "run": "stack-100-20-2-path",
+      "rwnd_limited_frac": 0.0,
+      "sndbuf_limited_frac": 0.04037655594053973,
+      "tbf_dropped": 0,
+      "threshold_bps": 93727873.18361954
+    }
+  ],
+  "nidle": 10,
+  "nsources": 495,
+  "ntransfers": 26,
+  "passed": true,
+  "raw": "utcp-data:/m2/m2c-bbr/769311e-calib-a1-s1",
+  "source_bytes": 1288190940,
+  "source_fingerprints": 62,
+  "wire_packets": 8420356
+}

@@ -198,26 +198,29 @@ TEST(Hystart, PlusPlusBelowThresholdRollbackAndLoss) {
 TEST(Hystart, PublicCcOptionsAndListenerInheritance) {
   using namespace utcp::test;
   for (const ProfileId profile : {ProfileId::rfc, ProfileId::linux_compat}) {
-    for (const bool explicit_cc : {false, true}) {
-      auto a = tcpt::config(Side::a, profile);
-      auto b = tcpt::config(Side::b, profile);
-      if (!explicit_cc) a.tcp.cc = b.tcp.cc = CcAlgo::cubic;
-      TcpHarness h(a,b);
-      TcpSocketOptions opts;
-      if (explicit_cc) opts.cc = CcAlgo::cubic;
-      const auto p = tcpt::open(h, 100ms, opts);
-      ASSERT_TRUE(p);
-      for (const auto& info : {h.a().tcp_info(p->client), h.b().tcp_info(p->server)}) {
-        ASSERT_TRUE(info);
-        EXPECT_EQ(info->cc_name_view(), "cubic");
+    for (const auto algorithm : {CcAlgo::cubic, CcAlgo::bbr}) {
+      for (const bool explicit_cc : {false, true}) {
+        auto a = tcpt::config(Side::a, profile);
+        auto b = tcpt::config(Side::b, profile);
+        if (!explicit_cc) a.tcp.cc = b.tcp.cc = algorithm;
+        TcpHarness h(a,b);
+        TcpSocketOptions opts;
+        if (explicit_cc) opts.cc = algorithm;
+        const auto p = tcpt::open(h, 100ms, opts);
+        ASSERT_TRUE(p);
+        for (const auto& info : {h.a().tcp_info(p->client), h.b().tcp_info(p->server)}) {
+          ASSERT_TRUE(info);
+          EXPECT_EQ(info->cc_name_view(), to_string(algorithm));
+        }
+        opts.cc = algorithm;
+        EXPECT_TRUE(h.a().tcp_set_options(p->client, opts));
+        opts.cc = CcAlgo::newreno;
+        EXPECT_EQ(h.a().tcp_set_options(p->client, opts).error(), Error::invalid_argument);
       }
-      opts.cc = CcAlgo::cubic;
-      EXPECT_TRUE(h.a().tcp_set_options(p->client, opts));
-      opts.cc = CcAlgo::newreno;
-      EXPECT_EQ(h.a().tcp_set_options(p->client, opts).error(), Error::invalid_argument);
     }
   }
-  for (const auto bad : {CcAlgo::bbr, static_cast<CcAlgo>(255)}) {
+  {
+    constexpr auto bad = static_cast<CcAlgo>(255);
     for (const bool explicit_cc : {false, true}) {
       auto a = tcpt::config(Side::a);
       if (!explicit_cc) a.tcp.cc = bad;

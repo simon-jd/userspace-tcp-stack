@@ -296,7 +296,7 @@ def main():
                    help="utcp-sim to run (default: the gcc-sweep build, Release with UTCP_DCHECK)")
     p.add_argument("--asan-sim", help="utcp-sim of an ASan/UBSan build to replay failing seeds")
     p.add_argument("--timeout", type=float, default=120.0, help="wall-clock seconds per seed")
-    p.add_argument("--gen-version", type=int, choices=(3, 4, 5), default=5)
+    p.add_argument("--gen-version", type=int, choices=(3, 4, 5, 6), default=6)
     strict = p.add_mutually_exclusive_group()
     strict.add_argument("--strict-fast-rexmit", action="store_true", default=True)
     strict.add_argument("--no-strict-fast-rexmit", dest="strict_fast_rexmit", action="store_false")

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/buffer/chunk_pool.hpp"
+#include "core/tcp/cc_bbr.hpp"
 #include "core/tcp/cc_newreno.hpp"
 #include "core/tcp/rate.hpp"
 #include "recovery_rig.hpp"
@@ -33,7 +34,8 @@ constexpr std::uint32_t seg_len = 1000;
 // of process_ack (SACK tagging, cumulative cleanup, then on_ack), written out
 // here so that recovery is tested on its own.
 struct Rig {
-  explicit Rig(bool sack_ok) : sack(sack_ok) {
+  explicit Rig(bool sack_ok, utcp::CongestionControl* cc_override = nullptr)
+      : sack(sack_ok), active_cc(cc_override ? *cc_override : algo) {
     q.set_sack_ok(sack_ok);
     cc.flavor = cfg.cc_flavor;
     cc.cwnd = 10;
@@ -42,7 +44,7 @@ struct Rig {
   }
 
   utcp::RecoveryCtx ctx() {
-    return utcp::RecoveryCtx{q,   cc,      algo,  rtt,  cfg,      now,
+    return utcp::RecoveryCtx{q,   cc,      active_cc,  rtt,  cfg,      now,
                              wnd, stats, sack, backoff, rto_count};
   }
 
@@ -117,6 +119,7 @@ struct Rig {
   utcp::SendQueue q{pool, 1 << 20};
   utcp::RttEstimator rtt{cfg};
   utcp::NewReno algo;
+  utcp::CongestionControl& active_cc;
   utcp::CcConn cc;
   utcp::StackStats stats;
   utcp::RateState rate;
@@ -171,6 +174,28 @@ TEST(Recovery, RenoThreeDupacksPartialAndFullAck) {
   EXPECT_EQ(r.cc.cwnd, 5u);
   EXPECT_FALSE(r.rec.recover().has_value());
   r.q.check_invariants();
+}
+
+TEST(Recovery, BbrOwnsWindowAtRfc6675EntryWhileRtoSetsFlightPlusOne) {
+  utcp::Bbr bbr;
+  Rig r(true, &bbr);
+  bbr.init(r.cc);
+  r.send(10);
+  for (std::uint32_t i = 2; i <= 4; ++i) {
+    r.ack(0, {{seg_len, i * seg_len}}, true);
+  }
+  ASSERT_EQ(r.rec.state(), CaState::recovery);
+  EXPECT_EQ(r.cc.ssthresh, utcp::cwnd_infinite);
+  EXPECT_EQ(r.cc.cwnd, 10u);  // recover without the generic ssthresh assignment
+  utcp::RateSample rs;
+  rs.acked_sacked = 1;
+  rs.losses = 1;
+  bbr.cong_control(r.cc, {}, rs);  // first recovery ACK conserves packets
+  EXPECT_EQ(r.cc.cwnd, r.cc.in_flight + 1);
+  r.resend(0, TxKind::fast_rexmit);
+  r.rto();
+  ASSERT_EQ(r.rec.state(), CaState::loss);
+  EXPECT_EQ(r.cc.cwnd, r.cc.in_flight + 1);  // timer, before TX_START or an ACK
 }
 
 TEST(Recovery, SackThreeSackedSegmentsEnterRecovery) {

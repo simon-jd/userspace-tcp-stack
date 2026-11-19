@@ -404,6 +404,11 @@ TraceEvent TcpEngine::trace_base(const Tcb& t, TraceKind k) const {
   e.rto_ns = t.rtt.rto_backed_off(t.backoff).count();
   e.delivered = t.rate.delivered;
   e.pacing_rate = t.cc_conn.pacing_rate;
+  if (t.opts.cc != cfg_.cc) e.cc_override = t.opts.cc;
+  if (const auto* bbr = std::get_if<Bbr>(&t.cc)) {
+    e.bbr = bbr->info();
+    e.delivery_rate = rate_delivery_rate(t.rate, t.mss_cache);
+  }
   e.snd_una_off = t.sndq.una();
   e.snd_nxt_off = t.sndq.nxt();
   return e;

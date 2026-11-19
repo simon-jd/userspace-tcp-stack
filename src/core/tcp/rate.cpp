@@ -134,8 +134,7 @@ void rate_check_app_limited(RateState& rs, std::uint64_t unsent_bytes, std::uint
       !queued_in_stack &&             // nothing waiting in the stack's transmit queue
       in_flight < cwnd &&             // not cwnd-limited
       lost_out <= retrans_out) {      // all lost packets retransmitted
-    const std::uint64_t marker = rs.delivered + in_flight;
-    rs.app_limited = marker != 0 ? marker : 1;
+    rs.app_limited = rate_app_limited_marker(rs.delivered, in_flight);
   }
 }
 

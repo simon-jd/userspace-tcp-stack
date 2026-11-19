@@ -1,0 +1,268 @@
+{
+  "archive": "utcp-data:/m2/archive/m2c-bbr-769311e-proof-a1-cubic-audit-a1",
+  "capture_bytes": 1378588520,
+  "capture_count": 30,
+  "cpu_flags": {
+    "foreign_cpu": 4
+  },
+  "evidence_errors": {},
+  "filter_packets": 11170199,
+  "foreign_cpu_lower_range": [
+    0.0036089306545690216,
+    0.06776660739235361
+  ],
+  "hashes": {
+    "MANIFEST.sha256": "d981e049a709d14d83709892d33ea4c628170b4415b8171b96c104b8083248ae",
+    "analysis/analysis-inputs.tar.gz": "7c41c0214bedd736a5373dc7c3c5eb93643474ba9250f760c7c4de68386283cd",
+    "analysis/audit.json": "c9d2a7743fe1c4edeacfd3b08bcfbbaa4a86045c39b5ec2aaf52aed4a303a862",
+    "analysis/source-index.json": "fd61885f9796a068ecdcac84a5e2c9942c672fb1849290bfc8781272b6863bc9",
+    "wire/physical-replay.json": "dd7b37f723321aa2270f9e7eb03886ed11f419a6fab8e3f1e749ddf382f859f8"
+  },
+  "items": [
+    {
+      "cell": "100 Mbit/s, 20 ms, 0 %, 2xBDP",
+      "diff": 208.5330686569214,
+      "item": "stack",
+      "metric": "goodput_bps",
+      "n_parallel": 5,
+      "n_serial": 5,
+      "ok": true,
+      "overlap": true,
+      "parallel_median": 95625954.47970858,
+      "parallel_range": [
+        95625511.00412813,
+        95625979.4596359
+      ],
+      "parallel_slot": 0,
+      "serial_median": 95625745.94663993,
+      "serial_range": [
+        95625616.11437586,
+        95625966.90702893
+      ],
+      "within": true
+    },
+    {
+      "item": "stack",
+      "metric": "lateness_p99_ns",
+      "ok": true,
+      "parallel": 32767,
+      "parallel_per_run": [
+        16383,
+        32767,
+        16383,
+        32767,
+        262143
+      ],
+      "parallel_slot": 0,
+      "serial": 16383,
+      "serial_per_run": [
+        32767,
+        32767,
+        16383,
+        16383,
+        16383
+      ]
+    },
+    {
+      "item": "stack",
+      "metric": "lateness_max_ns",
+      "ok": true,
+      "parallel": 4022165,
+      "parallel_per_run": [
+        2017389,
+        1872769,
+        1543956,
+        1779821,
+        4022165
+      ],
+      "parallel_slot": 0,
+      "serial": 2618527,
+      "serial_per_run": [
+        1591114,
+        2618527,
+        2012018,
+        753696,
+        2022002
+      ]
+    },
+    {
+      "diff": 0.040611180000006186,
+      "informational": true,
+      "item": "stack",
+      "metric": "ping_p99_ms",
+      "n_parallel": 5,
+      "n_serial": 5,
+      "ok": true,
+      "overlap": true,
+      "parallel_median": 39.76192204000001,
+      "parallel_range": [
+        39.715404619999994,
+        39.86812818
+      ],
+      "parallel_slot": 0,
+      "serial_median": 39.72131086,
+      "serial_range": [
+        39.70847966,
+        39.797797040000006
+      ],
+      "within": true
+    },
+    {
+      "cell": "100 Mbit/s, 20 ms, 0 %, 2xBDP",
+      "diff": 207.48161254823208,
+      "item": "stack",
+      "metric": "goodput_bps",
+      "n_parallel": 5,
+      "n_serial": 5,
+      "ok": true,
+      "overlap": true,
+      "parallel_median": 95625953.42825247,
+      "parallel_range": [
+        95624102.76830558,
+        95626313.31629527
+      ],
+      "parallel_slot": 1,
+      "serial_median": 95625745.94663993,
+      "serial_range": [
+        95625616.11437586,
+        95625966.90702893
+      ],
+      "within": true
+    },
+    {
+      "item": "stack",
+      "metric": "lateness_p99_ns",
+      "ok": true,
+      "parallel": 32767,
+      "parallel_per_run": [
+        16383,
+        32767,
+        32767,
+        32767,
+        262143
+      ],
+      "parallel_slot": 1,
+      "serial": 16383,
+      "serial_per_run": [
+        32767,
+        32767,
+        16383,
+        16383,
+        16383
+      ]
+    },
+    {
+      "item": "stack",
+      "metric": "lateness_max_ns",
+      "ok": true,
+      "parallel": 4058306,
+      "parallel_per_run": [
+        2005518,
+        2975068,
+        2024740,
+        2602539,
+        4058306
+      ],
+      "parallel_slot": 1,
+      "serial": 2618527,
+      "serial_per_run": [
+        1591114,
+        2618527,
+        2012018,
+        753696,
+        2022002
+      ]
+    },
+    {
+      "diff": 0.05188002999999952,
+      "informational": true,
+      "item": "stack",
+      "metric": "ping_p99_ms",
+      "n_parallel": 5,
+      "n_serial": 5,
+      "ok": true,
+      "overlap": true,
+      "parallel_median": 39.77319089,
+      "parallel_range": [
+        39.71397210999999,
+        39.78257308
+      ],
+      "parallel_slot": 1,
+      "serial_median": 39.72131086,
+      "serial_range": [
+        39.70847966,
+        39.797797040000006
+      ],
+      "within": true
+    }
+  ],
+  "kernel_drops": 0,
+  "nidle": 0,
+  "notes": [],
+  "nsources": 273,
+  "ntransfers": 15,
+  "overlaps": [
+    {
+      "fraction": 0.9999848922593797,
+      "ns": 24979532544,
+      "rep": 0
+    },
+    {
+      "fraction": 0.9999932346269369,
+      "ns": 24979680365,
+      "rep": 1
+    },
+    {
+      "fraction": 0.9999912676161238,
+      "ns": 24979673164,
+      "rep": 2
+    },
+    {
+      "fraction": 0.999993511062673,
+      "ns": 24979737054,
+      "rep": 3
+    },
+    {
+      "fraction": 0.9993772774038172,
+      "ns": 24964315275,
+      "rep": 4
+    }
+  ],
+  "passed": true,
+  "phases": {
+    "parallel-s0": {
+      "exact_max_ns": 4022165,
+      "histogram_count": 20780,
+      "max_rwnd_frac": 0.0,
+      "max_sndbuf_frac": 0.0,
+      "median_goodput_bps": 95625954.47970858,
+      "median_qdelay_p99_ms": 39.76192204000001,
+      "median_rtt_p99_ms": 59.811542540000005,
+      "pooled_p99_ns": 32767
+    },
+    "parallel-s1": {
+      "exact_max_ns": 4058306,
+      "histogram_count": 20759,
+      "max_rwnd_frac": 0.0,
+      "max_sndbuf_frac": 0.0,
+      "median_goodput_bps": 95625953.42825247,
+      "median_qdelay_p99_ms": 39.77319089,
+      "median_rtt_p99_ms": 59.81662508,
+      "pooled_p99_ns": 32767
+    },
+    "serial-s0": {
+      "exact_max_ns": 2618527,
+      "histogram_count": 20730,
+      "max_rwnd_frac": 0.0,
+      "max_sndbuf_frac": 0.0,
+      "median_goodput_bps": 95625745.94663993,
+      "median_qdelay_p99_ms": 39.72131086,
+      "median_rtt_p99_ms": 59.77982566,
+      "pooled_p99_ns": 16383
+    }
+  },
+  "proof_sha256": "b2dfb4b9f8dc76d697065d26ac22b826426002bbb7cac03f8b9a0abfd25d8d4e",
+  "raw": "utcp-data:/m2/m2c-bbr/769311e-proof-a1-cubic",
+  "source_bytes": 1477144015,
+  "wire_packets": 11170199
+}
