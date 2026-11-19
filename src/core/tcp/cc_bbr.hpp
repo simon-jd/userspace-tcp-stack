@@ -6,19 +6,14 @@
 
 #include "core/tcp/cc.hpp"
 #include "core/tcp/minmax.hpp"
+#include "utcp/trace.hpp"
 
 namespace utcp {
 
 class Bbr final : public CongestionControl {
  public:
-  enum class Mode : std::uint8_t { startup, drain, probe_bw, probe_rtt };
-  struct Info {
-    Mode mode;
-    bool lt_use_bw;
-    std::uint32_t bandwidth_q24;  // packets per microsecond, scaled by 2^24
-    std::uint32_t min_rtt_us;     // UINT32_MAX until measured
-    std::uint32_t pacing_gain_q8, cwnd_gain_q8;
-  };
+  using Mode = BbrMode;
+  using Info = BbrInfo;
 
   [[nodiscard]] Info info() const;
   [[nodiscard]] std::string_view name() const override { return "bbr"; }

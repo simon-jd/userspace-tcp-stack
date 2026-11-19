@@ -1106,7 +1106,13 @@ When `has_cong_control()` is true the engine skips `cong_avoid` and PRR and call
 sampling (Linux `tcp_cong_control`). CUBIC (M2b) uses integer cube root and the fixed-point constants of
 `tcp_cubic.c`; HyStart++ follows RFC 9406 §4 with its constants (MIN_RTT_THRESH 4 ms, MAX_RTT_THRESH 16 ms,
 N_RTT_SAMPLE 8, CSS_GROWTH_DIVISOR 4, CSS_ROUNDS 5). BBRv1 (M2c) follows `tcp_bbr.c` of the server kernel,
-including `lt_bw` sampling and ACK aggregation (`extra_acked`).
+including `lt_bw` sampling and ACK aggregation (`extra_acked`). Both socket opens and listeners can
+select BBR, which accepted sockets inherit. BBR owns the pacing rate and congestion window during
+RFC 6675 or PRR recovery. The RTO sets cwnd to the remaining flight plus one before retransmitting
+the head. A subsequent TX_START may finish an expired PROBE_RTT and restore its saved window.
+An app-limited restart in PROBE_BW uses the unity-gain rate to charge the departing burst. BBR
+connection traces expose the mode, long-term bandwidth selection, effective bandwidth (Q24 packets
+per microsecond), minimum RTT (microseconds), and pacing/window gains (Q8).
 
 NewReno grows only while cwnd limits sending. Its additive increase carries unused packet credits across
 ACKs. CUBIC enters through the same `cc_select` and recovery hooks. Both CUBIC flavours use β=717/1024,

@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory() as tmp:
     work = Path(tmp)
     for seed, fault in [(4, "prr_skip_force"), (13729, "double_tlp")]:
         scenario = work / f"{seed}.scenario"
-        scenario.write_bytes(subprocess.check_output([sim, "--seed", str(seed), "--dump-scenario"]))
+        scenario.write_bytes(subprocess.check_output([sim, "--seed", str(seed), "--gen-version", "5", "--dump-scenario"]))
         for extra in [(), ("--strict-fast-rexmit",)]:
             rc, row, trace = run(scenario, fault, work / "on.trace", *extra)
             assert rc == 1 and row["verdict"] == "inflight", row

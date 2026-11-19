@@ -181,7 +181,8 @@ void generate_congestion(Scenario& s, const Seed& master) {
     n.pacing = static_cast<Pacing>(conf.below(3));
     if (s.gen_version >= 5) {
       Rng cc = Rng::derive(master, label("gen/m2/cc/", node_name(i)));
-      n.cc = cc.below(2) ? CcAlgo::cubic : CcAlgo::newreno;
+      constexpr std::array choices{CcAlgo::newreno, CcAlgo::cubic, CcAlgo::bbr};
+      n.cc = choices[cc.below(s.gen_version == 5 ? 2 : 3)];
     }
     const std::string name = i == 0 ? "a>b" : "b>a";
     Rng link = Rng::derive(master, label("gen/m2/link/", name));
@@ -439,7 +440,8 @@ constexpr std::array<EnumName<CloseMode>, 5> close_modes{{{CloseMode::close, "cl
                                                           {CloseMode::simultaneous, "simultaneous"}}};
 constexpr std::array<EnumName<ProfileId>, 2> profiles{
     {{ProfileId::rfc, "rfc"}, {ProfileId::linux_compat, "linux_compat"}}};
-constexpr std::array<EnumName<CcAlgo>, 2> cc_names{{{CcAlgo::newreno, "newreno"}, {CcAlgo::cubic, "cubic"}}};
+constexpr std::array<EnumName<CcAlgo>, 3> cc_names{{
+    {CcAlgo::newreno, "newreno"}, {CcAlgo::cubic, "cubic"}, {CcAlgo::bbr, "bbr"}}};
 constexpr std::array<EnumName<Hystart>, 2> hystarts{{{Hystart::hystart_pp, "hystart_pp"}, {Hystart::hystart_classic, "hystart_classic"}}};
 constexpr std::array<EnumName<RecoveryReduction>, 2> reductions{{{RecoveryReduction::prr, "prr"}, {RecoveryReduction::rfc6675, "rfc6675"}}};
 constexpr std::array<EnumName<Pacing>, 3> pacings{{{Pacing::cc_requested, "cc_requested"}, {Pacing::always, "always"}, {Pacing::never, "never"}}};
@@ -792,6 +794,9 @@ std::optional<std::string> validate(const Scenario& s) {
     for (const NodeSpec& n : s.node) {
       if (n.rack_tlp && n.recovery_reduction == RecoveryReduction::rfc6675) {
         return "rack_tlp requires PRR";
+      }
+      if (s.gen_version < 6 && n.cc == CcAlgo::bbr) {
+        return "BBR requires gen 6";
       }
       if (s.gen_version == 4 && n.cc != CcAlgo::newreno) {
         return "gen 4 requires NewReno";

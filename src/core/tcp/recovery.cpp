@@ -329,8 +329,8 @@ void LossRecovery::enter_recovery(RecoveryCtx& c) {
   }
   set_state(c, CaState::recovery);
   const bool rfc6675 = c.cfg.recovery_reduction == RecoveryReduction::rfc6675;
-  if (rfc6675) {
-    // RFC 6675 §5 (4.2): cwnd = ssthresh at once. With PRR the CC step of
+  if (rfc6675 && !c.algo.has_cong_control()) {
+    // RFC 6675 §5 (4.2), for algorithms using generic cwnd reduction: cwnd = ssthresh at once. With PRR the CC step of
     // this ACK (or the REO timer) sets cwnd (§1.8).
     c.cc.cwnd = c.cc.ssthresh;
   }

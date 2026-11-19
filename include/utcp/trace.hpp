@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 #include "utcp/time.hpp"
@@ -87,6 +88,27 @@ inline constexpr int trace_timer_count = 11;
 enum class TimerOp : std::uint8_t { none, armed, cancelled, fired };
 inline constexpr int timer_op_count = 4;
 
+enum class BbrMode : std::uint8_t { startup, drain, probe_bw, probe_rtt };
+
+[[nodiscard]] constexpr std::string_view to_string(BbrMode m) noexcept {
+  switch (m) {
+    case BbrMode::startup: return "STARTUP";
+    case BbrMode::drain: return "DRAIN";
+    case BbrMode::probe_bw: return "PROBE_BW";
+    case BbrMode::probe_rtt: return "PROBE_RTT";
+  }
+  return "unknown";
+}
+
+struct BbrInfo {
+  BbrMode mode;
+  bool lt_use_bw;
+  std::uint32_t bandwidth_q24;  // packets per microsecond, scaled by 2^24
+  std::uint32_t min_rtt_us;     // UINT32_MAX until measured
+  std::uint32_t pacing_gain_q8, cwnd_gain_q8;
+  bool operator==(const BbrInfo&) const = default;
+};
+
 // One event. Plain data, no strings. Fields that do not apply to a kind are
 // zero. Sequence fields are raw 32-bit sequence numbers, *_off fields are
 // 64-bit stream offsets. Every connection event (TIME-WAIT entries included)
@@ -118,6 +140,7 @@ struct TraceEvent {
   // (the gate was checked against pacing_next before it).
   std::uint64_t gate_rate = 0;
   bool burst_start = false;
+  std::optional<BbrInfo> bbr;  // only for connections using BBR
 
   bool operator==(const TraceEvent&) const = default;
 };
@@ -252,6 +275,14 @@ void for_each_field(const TraceEvent& e, F&& f) {
   f(std::string_view{"snd_nxt_off"}, e.snd_nxt_off);
   f(std::string_view{"gate_rate"}, e.gate_rate);
   f(std::string_view{"burst_start"}, e.burst_start);
+  if (e.bbr) {
+    f(std::string_view{"bbr_mode"}, e.bbr->mode);
+    f(std::string_view{"bbr_lt_use_bw"}, e.bbr->lt_use_bw);
+    f(std::string_view{"bbr_bandwidth_q24"}, e.bbr->bandwidth_q24);
+    f(std::string_view{"bbr_min_rtt_us"}, e.bbr->min_rtt_us);
+    f(std::string_view{"bbr_pacing_gain_q8"}, e.bbr->pacing_gain_q8);
+    f(std::string_view{"bbr_cwnd_gain_q8"}, e.bbr->cwnd_gain_q8);
+  }
 }
 
 }  // namespace utcp

@@ -28,8 +28,8 @@ namespace utcp::sim {
 // Bumped whenever generate_scenario() changes what a seed produces.
 // 2: shared listeners (backlog limits).
 // 3: a small ChunkPool (NodeSpec::chunk_limit) in half of the small-queue seeds.
-inline constexpr std::uint32_t gen_version = 5;  // current seed generator
-inline constexpr std::uint32_t max_gen_version = 5;
+inline constexpr std::uint32_t gen_version = 6;  // current seed generator
+inline constexpr std::uint32_t max_gen_version = 6;
 
 enum class NodeKind : std::uint8_t {
   stack,      // StackNode: a Stack running the scripted workload

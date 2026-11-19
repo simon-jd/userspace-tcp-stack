@@ -13,7 +13,7 @@ namespace {
 
 [[nodiscard]] bool valid_options(const TcpSocketOptions& o, CcAlgo fallback) {
   const auto cc = o.cc.value_or(fallback);
-  if (cc != CcAlgo::newreno && cc != CcAlgo::cubic) {
+  if (cc != CcAlgo::newreno && cc != CcAlgo::cubic && cc != CcAlgo::bbr) {
     return false;
   }
   if (o.rcv_buf && *o.rcv_buf == 0) {

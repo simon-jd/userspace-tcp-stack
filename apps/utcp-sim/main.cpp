@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
       .option("seed-range", "A:B", "run seeds A..B-1")
       .option("scenario", "FILE", "run a key=value scenario file")
       .option("corpus", "DIR", "run every DIR/*.scenario")
-      .option("gen-version", "N", "generator version for --seed and --seed-range (3, 4, 5)")
+      .option("gen-version", "N", "generator version for --seed and --seed-range (3, 4, 5, 6)")
       .flag("strict-fast-rexmit", "check PRR first retransmissions against cwnd (default)")
       .flag("no-strict-fast-rexmit", "exempt PRR first retransmissions for comparison")
       .option("nodes", "KIND", "stack or synthetic (generated scenarios)", "stack")
@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
   if (args->flag("no-strict-fast-rexmit")) o.strict_fast_rexmit = false;
   if (const auto v = args->get("gen-version")) {
     const auto n = app::parse_u64(*v);
-    if (!n || *n < 3 || *n > max_gen_version) return usage_error("--gen-version: expected 3, 4 or 5");
+    if (!n || *n < 3 || *n > max_gen_version) return usage_error("--gen-version: expected 3, 4, 5 or 6");
     if (args->get("scenario") || args->get("corpus")) return usage_error("--gen-version requires generated seeds");
     o.generator.version = static_cast<std::uint32_t>(*n);
   }

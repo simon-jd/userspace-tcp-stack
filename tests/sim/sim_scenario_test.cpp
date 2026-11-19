@@ -86,6 +86,28 @@ TEST(SimScenario, CongestionVersionsRoundTripAndDrawValidConfigurations) {
   EXPECT_EQ(hystart.size(), 2u);
 }
 
+TEST(SimScenario, BbrDrawOnBothEndpointsRetainsEarlierScenarioInputs) {
+  std::array<std::set<CcAlgo>, 2> roles;
+  for (unsigned seed = 0; seed < 128; ++seed) {
+    auto s = generate_scenario(seed, NodeKind::stack, {.version = 6});
+    auto old = generate_scenario(seed, NodeKind::stack, {.version = 5});
+    const auto parsed = parse_kv(to_kv(s));
+    ASSERT_TRUE(parsed) << parsed.error();
+    ASSERT_EQ(*parsed, s);
+    for (unsigned n = 0; n < 2; ++n) {
+      roles[n == s.conn.front().client ? 0 : 1].insert(s.node[n].cc);
+      s.node[n].cc = old.node[n].cc;
+    }
+    s.gen_version = 5;
+    EXPECT_EQ(s, old);
+    old.node[0].cc = CcAlgo::bbr;
+    EXPECT_FALSE(parse_kv(to_kv(old)));
+  }
+  for (const auto& role : roles) {
+    EXPECT_EQ(role, (std::set<CcAlgo>{CcAlgo::newreno, CcAlgo::cubic, CcAlgo::bbr}));
+  }
+}
+
 TEST(SimScenario, FaultNamesRoundTripAndInvalidRackPairIsRejected) {
   auto s = generate_scenario(12, NodeKind::stack, {.version = 4});
   for (const auto name : {"prr_skip_force", "double_tlp", "ignore_pacing_gate"}) {
@@ -135,7 +157,7 @@ TEST(SimScenario, ParseRejectsBadInput) {
 }
 
 TEST(SimScenario, GeneratorDefaultAndUnversionedFileAreIndependent) {
-  EXPECT_EQ(generate_scenario(42), generate_scenario(42, NodeKind::stack, {.version = 5}));
+  EXPECT_EQ(generate_scenario(42), generate_scenario(42, NodeKind::stack, {.version = 6}));
   const auto old = generate_scenario(42, NodeKind::stack, {.version = 3});
   std::string text = to_kv(old);
   text.erase(0, text.find('\n') + 1);

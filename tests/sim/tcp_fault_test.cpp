@@ -11,7 +11,7 @@ namespace utcp::sim {
 namespace {
 
 TEST(TcpFaultSim, DefaultWorldChecksFirstPrrRetransmission) {
-  Scenario s = generate_scenario(4);
+  Scenario s = generate_scenario(4, NodeKind::stack, {.version = 5});
   ASSERT_EQ(s.gen_version, 5u);
   const auto good = run_scenario(s);
   ASSERT_EQ(good.verdict, Verdict::ok);
