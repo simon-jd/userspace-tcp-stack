@@ -1,0 +1,17 @@
+campaign = "m2d-ablation"
+seed = 20261120
+reps = 5
+trace = true
+cell = [
+  {bw=100,rtt=20,loss=1,queue_bdp=2},
+  {bw=10,rtt=100,loss=1,queue_bdp=2}
+]
+algo = [
+  {cc="cubic",name="rfc",profile="rfc",impls=["utcp","linux"]},
+  {cc="cubic",name="rfc-rto",profile="rfc",impls=["utcp","linux"],stack_set=["rto_min=200ms","rtt_estimator=linux"]},
+  {cc="cubic",name="rfc-prr",profile="rfc",impls=["utcp","linux"],stack_set=["recovery_reduction=prr"]},
+  {cc="cubic",name="rfc-iw",profile="rfc",impls=["utcp","linux"],stack_set=["initial_cwnd=10"]},
+  {cc="cubic",name="rfc-hystart",profile="rfc",impls=["utcp","linux"],stack_set=["hystart=hystart_classic"]},
+  {cc="cubic",name="rfc-all",profile="rfc",impls=["utcp","linux"],stack_set=["rto_min=200ms","rtt_estimator=linux","recovery_reduction=prr","initial_cwnd=10","hystart=hystart_classic"]},
+  {cc="cubic",name="compat",profile="linux",impls=["utcp","linux"]}
+]
