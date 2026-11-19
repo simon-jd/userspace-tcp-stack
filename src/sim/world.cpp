@@ -20,14 +20,6 @@ namespace {
 constexpr std::uint32_t no_path = std::numeric_limits<std::uint32_t>::max();
 constexpr std::uint32_t world_node = std::numeric_limits<std::uint32_t>::max();
 
-Duration bound_of(const Scenario& s) {
-  Duration b{};
-  for (std::uint32_t i = 0; i < s.node.size(); ++i) {
-    b = std::max(b, progress_bound(stack_config(s, i).tcp));
-  }
-  return b;
-}
-
 // Planted hang: a loop with a side effect, so it is not undefined behaviour.
 volatile std::uint64_t hang_counter = 0;
 
@@ -61,26 +53,28 @@ World::World(const Scenario& s, std::vector<std::unique_ptr<Node>> nodes, WorldO
       opt_(std::move(opt)),
       master_(Seed::from_u64(s.seed)),
       stream_(master_),
-      progress_(bound_of(s)),
+      progress_(Duration{}),
       now_(s.start),
       instant_(s.start) {
   inflight_.set_strict_fast_rexmit(opt_.strict_fast_rexmit);
-  for (std::uint32_t i = 0; i < s.node.size(); ++i) {
-    const auto conf = stack_config(s, i).tcp;
-    inflight_.set_config(i, conf);
-    pacing_.set_config(i, conf);
-  }
   if (nodes.empty()) {
     for (std::uint32_t i = 0; i < s_.node.size(); ++i) {
       nodes.push_back(make_node(s_, i));
     }
   }
   UTCP_CHECK(nodes.size() == s_.node.size());
-  for (auto& n : nodes) {
+  Duration bound{};
+  for (std::uint32_t i = 0; i < nodes.size(); ++i) {
+    const TcpConfig* effective = nodes[i]->effective_tcp_config();
+    const TcpConfig conf = effective ? *effective : stack_config(s, i).tcp;
+    inflight_.set_config(i, conf);
+    pacing_.set_config(i, conf);
+    bound = std::max(bound, progress_bound(conf));
     NodeState ns;
-    ns.node = std::move(n);
+    ns.node = std::move(nodes[i]);
     nodes_.push_back(std::move(ns));
   }
+  progress_ = ProgressChecker(bound);
   links_.reserve(s_.link.size());
   for (const LinkSpec& l : s_.link) {
     links_.emplace_back(l.params, master_, l.name);

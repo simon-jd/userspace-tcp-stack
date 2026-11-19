@@ -123,7 +123,9 @@ Outcome paced_bulk(std::uint64_t seed, std::uint64_t total,
     return n;
   };
   Outcome o = run_sim(s, spec);
-  EXPECT_EQ(cl.sent, total);
+  if (o.ok()) {
+    EXPECT_EQ(cl.sent, total);
+  }
   return o;
 }
 
@@ -192,6 +194,7 @@ struct Replay {
   // Per burst: sent within 1 us of the modelled departure, i.e. held by the
   // gate until then.
   std::vector<bool> on_time;
+  std::optional<Time> first_early_at;
   std::string first_early;
 };
 
@@ -209,6 +212,7 @@ Replay replay(const std::vector<Burst>& bs) {
       ++r.checked;
       if (t + slack_ns < *next) {
         if (r.early++ == 0) {
+          r.first_early_at = b.t;
           r.first_early = "burst at " + std::to_string(t) + " ns, modelled departure " +
                           std::to_string(*next) + " ns";
         }
@@ -284,9 +288,56 @@ TEST(TcpPacingSim, ReplayCatchesAnIgnoredGate) {
     c.tcp.test_fault = TestFault::ignore_pacing_gate;
   };
   const Outcome o = paced_bulk(9101, 2'000'000, tweak, true, false);
-  ASSERT_TRUE(o.ok()) << o.violations();
+  // World stops on the first violation. The independent replay must flag
+  // the same departure in the captured trace prefix.
+  ASSERT_EQ(o.result.verdict, Verdict::pacing) << o.violations();
+  ASSERT_FALSE(o.result.violations.empty());
+  const Violation& violation = o.result.violations.front();
+  EXPECT_NE(violation.message.find("paced burst before EDT"), std::string::npos)
+      << violation.message;
   const Replay r = replay(bursts(o, 0));
-  EXPECT_GT(r.early, 10u);
+  ASSERT_TRUE(r.first_early_at.has_value());
+  EXPECT_EQ(*r.first_early_at, violation.t) << r.first_early;
+  RecordProperty("first_early", r.first_early);
+}
+
+// Node 1 has a fixed rate even though its scenario profile defaults to
+// unpaced NewReno. A trace reporting the CC rate as the gate rate is false.
+TEST(TcpPacingSim, FixedRateNodeChecksGateAgainstItsOwnConfiguration) {
+  const Scenario s = two_node_scenario(9103, bottleneck(), bottleneck());
+  for (const bool forged : {false, true}) {
+    RunSpec spec;
+    spec.make = [forged](const Scenario& sc, std::uint32_t i) -> std::unique_ptr<Node> {
+      if (i != 1) {
+        return nullptr;
+      }
+      auto n = std::make_unique<AppNode>(sc, i, [](StackConfig& c) {
+        c.tcp.test_fixed_pacing_rate = 1'000'000;
+      });
+      n->script = [forged](AppNode& node, Time now) {
+        if (node.done) return;
+        TraceEvent e;
+        e.kind = TraceKind::tx;
+        e.tx = TxKind::data;
+        e.t = now;
+        e.len = 1000;
+        e.burst_start = true;
+        e.pacing_rate = 7'000'000;
+        e.gate_rate = forged ? e.pacing_rate : 1'000'000;
+        node.on_event(e);
+        node.done = true;
+      };
+      return n;
+    };
+    const Outcome o = run_sim(s, spec);
+    if (forged) {
+      ASSERT_EQ(o.result.verdict, Verdict::pacing) << o.violations();
+      ASSERT_FALSE(o.result.violations.empty());
+      EXPECT_NE(o.result.violations.front().message.find("gate rate disagrees"), std::string::npos);
+    } else {
+      EXPECT_TRUE(o.ok()) << o.violations();
+    }
+  }
 }
 
 bool covers_window(Time end, Time first) {

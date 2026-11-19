@@ -87,6 +87,8 @@ public:
   [[nodiscard]] virtual bool finished() const { return true; }
   // SelfCheck: Stack::debug_check() after every call.
   virtual void debug_check() const {}
+  // Effective settings for the World's checkers; nodes without a Stack use the scenario.
+  [[nodiscard]] virtual const TcpConfig* effective_tcp_config() const { return nullptr; }
   // QuiescenceChecker input; nullopt for nodes without a Stack.
   [[nodiscard]] virtual std::optional<StackUsage> debug_usage() const { return std::nullopt; }
   // A counter of everything observable the node did (trace events, socket

@@ -185,6 +185,9 @@ public:
     inner_->run_apps(now);
   }
   [[nodiscard]] bool finished() const override { return inner_->finished(); }
+  [[nodiscard]] const TcpConfig* effective_tcp_config() const override {
+    return inner_->effective_tcp_config();
+  }
   void debug_check() const override { inner_->debug_check(); }
   [[nodiscard]] std::optional<StackUsage> debug_usage() const override {
     return inner_->debug_usage();
@@ -263,6 +266,9 @@ public:
     }
   }
   [[nodiscard]] bool finished() const override { return done; }
+  [[nodiscard]] const TcpConfig* effective_tcp_config() const override {
+    return &stack_.config().tcp;
+  }
   void debug_check() const override { stack_.debug_check(); }
   [[nodiscard]] std::optional<StackUsage> debug_usage() const override {
     return stack_.debug_usage();

@@ -45,6 +45,9 @@ public:
   void run_apps(Time now) override;
   [[nodiscard]] bool finished() const override;
   void debug_check() const override;
+  [[nodiscard]] const TcpConfig* effective_tcp_config() const override {
+    return &stack().config().tcp;
+  }
   [[nodiscard]] std::optional<StackUsage> debug_usage() const override;
   [[nodiscard]] std::uint64_t activity() const override;
 
