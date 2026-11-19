@@ -175,6 +175,10 @@ def main(campaign, out):
         )
         counted = {m["run"] for pair in pairs for m, s in pair}
         assert len(counted) == 2 * len(pairs)
+        reps = [pair[0][0]["rep"] for pair in pairs]
+        assert len(set(reps)) == len(reps), "a repeated valid pair would overweight its seed"
+        if status == "ok":
+            assert set(reps) == set(range(5))
         statuses[cell + "/" + variant] = {
             "status": status,
             "bad_pairs": bad,
