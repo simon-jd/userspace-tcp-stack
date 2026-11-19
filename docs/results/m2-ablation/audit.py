@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -115,6 +116,9 @@ def check_run(rd, meta, spec):
         meta["image_id"]
         == "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66"
     )
+
+
+def check_qdisc(rd, meta):
     for phase in ("pre", "post"):
         lines = (rd / phase / "record.txt").read_text().splitlines()
         (tbf,) = [line for line in lines if line.startswith("qdisc tbf ")]
@@ -164,17 +168,65 @@ def stack_trace(rd, meta, summary, expect):
     return data
 
 
+def invalid_row(meta, summary):
+    """Keep the identity and available measurements without asserting endpoint completion."""
+    row = {k: meta[k] for k in checkpoint_inputs.ROWS if k in meta}
+    row.update(
+        valid=0,
+        counted=0,
+        netem_seed=meta["seed"],
+        flags=";".join(summary["flags"]),
+        invalid=";".join(summary["invalid"]),
+        observed_cc=";".join(summary.get("sender_ccs", [])),
+        window_s=summary.get("window_s"),
+        kernel=meta.get("uname_r"),
+        image=meta.get("image_id"),
+        cpusets=json.dumps(meta["cpusets"], sort_keys=True),
+    )
+    for name in ("r1-in", "r2-out"):
+        snapshot = summary.get("capture", {}).get(name, {})
+        for field, source in (
+            ("captured", "captured"),
+            ("dropped", "kernel_dropped"),
+            ("filter", "received_by_filter"),
+        ):
+            row[name + "_" + field] = snapshot.get(source)
+    return row
+
+
 def main(campaign, out):
     planned = schedule(campaign)
     refs = profiles()
     out.mkdir(parents=True, exist_ok=False)
     families = defaultdict(list)
+    excluded = {}
     for mp in sorted(campaign.glob("*/meta.json")):
         rd = mp.parent
-        meta, summary = read(mp), read(rd / "summary.json")
+        meta = read(mp)
+        saved = rd / "summary.json"
+        summary = read(saved) if saved.is_file() else analyze.summarize_run(rd)
+        assert type(summary["valid"]) is bool and summary["run"] == rd.name
+        if summary["valid"]:
+            assert saved.is_file(), (rd, "valid transfer lacks its terminal summary")
+        else:
+            assert summary["invalid"] and summary == analyze.summarize_run(rd), (
+                rd,
+                "invalid summary disagrees with raw inputs",
+            )
+            excluded[rd.name] = dict(
+                saved_summary=saved.is_file(),
+                reasons=summary["invalid"],
+                flags=summary["flags"],
+                available_inputs=[
+                    f for f in analyze.ARCHIVE_FILES if (rd / f).is_file()
+                ],
+            )
         spec = planned[meta.get("rerun_of", meta["run"])]
         check_run(rd, meta, spec)
-        expected = settings(meta, spec, refs)
+        expected = None
+        if summary["valid"]:
+            check_qdisc(rd, meta)
+            expected = settings(meta, spec, refs)
         families[meta["cell"], meta["algo"]].append((meta, summary, expected))
     rows, traces, statuses = [], [], {}
     for (cell, variant), members in sorted(families.items()):
@@ -196,6 +248,10 @@ def main(campaign, out):
         }
         for meta, summ, expected in members:
             rd = campaign / meta["run"]
+            if not summ["valid"]:
+                assert meta["run"] not in counted
+                rows.append(invalid_row(meta, summ))
+                continue
             row = checkpoint_inputs.details(
                 rd, meta, summ, meta["run"] in counted, analyze, matrix
             )
@@ -235,7 +291,19 @@ def main(campaign, out):
     (out / "qualification.json").write_text(
         json.dumps(statuses, sort_keys=True, indent=2) + "\n"
     )
-    verify_endpoint_cc.main(campaign, out / "evidence.csv", out / "endpoint-cc.csv")
+    if excluded:
+        (out / "invalid-attempts.json").write_text(
+            json.dumps(excluded, sort_keys=True, indent=2) + "\n"
+        )
+    # A valid partner from a failed pair still needs full sample and terminal CC verification.
+    with tempfile.TemporaryDirectory() as scratch:
+        all_valid = Path(scratch) / "valid.csv"
+        write_csv(
+            all_valid,
+            checkpoint_inputs.ROWS,
+            [dict(row, counted=1) for row in rows if row["valid"]],
+        )
+        verify_endpoint_cc.main(campaign, all_valid, out / "endpoint-cc.csv")
     diagnostics.main(campaign, out / "evidence.csv", out / "trace-diagnostics.csv")
     return statuses
 

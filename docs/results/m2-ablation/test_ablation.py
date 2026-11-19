@@ -2,6 +2,7 @@
 
 import csv
 import json
+import subprocess
 import tempfile
 import copy
 import sys
@@ -17,51 +18,67 @@ def stat(lo, hi):
     return {"min": lo, "max": hi, "median": (lo + hi) / 2, "n": 5}
 
 
+def run_report(base, evidence, output):
+    subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(audit.HERE / "report.py"),
+            str(base),
+            str(base / evidence),
+            str(base / "cells.csv"),
+            str(base / output),
+        ],
+        check=True,
+    )
+
+
+def write_example(base):
+    rows, cells = [], []
+    for cell in report.CELLS:
+        for variant in report.VARIANTS:
+            for side in ("utcp", "linux"):
+                rate = 2 if variant == "rfc" and side == "linux" else 1
+                metrics = dict(
+                    goodput_bps=rate * 1e6,
+                    retrans_pct=1.0,
+                    qdelay_p50_ms=0.1,
+                    qdelay_p99_ms=0.2,
+                )
+                agg = dict(cell=cell, algo=variant, impl=side, n_counted=5, status="ok")
+                for metric, value in metrics.items():
+                    for key in ("median", "min", "max", "n"):
+                        agg[metric + "_" + key] = report.A.fmt(
+                            5 if key == "n" else value
+                        )
+                cells.append(agg)
+                for index in range(5):
+                    name = f"{cell}-{variant}-{side}-{index}"
+                    directory = base / name
+                    directory.mkdir()
+                    (directory / "summary.json").write_text(
+                        json.dumps(dict(metrics, flags=[]))
+                    )
+                    rows.append(
+                        dict(
+                            cell=cell,
+                            algo=variant,
+                            impl=side,
+                            run=name,
+                            counted=1,
+                        )
+                    )
+    report.save(base / "evidence.csv", rows)
+    report.save(base / "cells.csv", cells)
+    run_report(base, "evidence.csv", "result")
+    return rows
+
+
 class AblationTests(unittest.TestCase):
     def test_common_control_can_disagree_with_native_rfc_control(self):
         with tempfile.TemporaryDirectory() as root:
             base = Path(root)
-            rows, cells = [], []
-            for cell in report.CELLS:
-                for variant in report.VARIANTS:
-                    for side in ("utcp", "linux"):
-                        rate = 2 if variant == "rfc" and side == "linux" else 1
-                        metrics = dict(
-                            goodput_bps=rate * 1e6,
-                            retrans_pct=1.0,
-                            qdelay_p50_ms=0.1,
-                            qdelay_p99_ms=0.2,
-                        )
-                        agg = dict(
-                            cell=cell, algo=variant, impl=side, n_counted=5, status="ok"
-                        )
-                        for metric, value in metrics.items():
-                            for key in ("median", "min", "max", "n"):
-                                agg[metric + "_" + key] = report.A.fmt(
-                                    5 if key == "n" else value
-                                )
-                        cells.append(agg)
-                        for index in range(5):
-                            name = f"{cell}-{variant}-{side}-{index}"
-                            directory = base / name
-                            directory.mkdir()
-                            (directory / "summary.json").write_text(
-                                json.dumps(dict(metrics, flags=[]))
-                            )
-                            rows.append(
-                                dict(
-                                    cell=cell,
-                                    algo=variant,
-                                    impl=side,
-                                    run=name,
-                                    counted=1,
-                                )
-                            )
-            report.save(base / "evidence.csv", rows)
-            report.save(base / "cells.csv", cells)
-            report.main(
-                base, base / "evidence.csv", base / "cells.csv", base / "result"
-            )
+            write_example(base)
             with (base / "result" / "effects.csv").open() as f:
                 effects = list(csv.DictReader(f))
             for row in effects:
@@ -73,6 +90,29 @@ class AblationTests(unittest.TestCase):
                 else:
                     self.assertEqual(row["status"], "goodput gap")
                     self.assertEqual(float(row["median"]), 0)
+
+    def test_excluded_transfer_contributes_flags_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            rows = write_example(base)
+            extra = dict(rows[0], run="excluded-physical-transfer", counted=0)
+            (base / extra["run"]).mkdir()
+            (base / extra["run"] / "summary.json").write_text(
+                json.dumps(
+                    {"flags": ["foreign_cpu"], "goodput_bps": 1e12, "valid": False}
+                )
+            )
+            report.save(base / "all-evidence.csv", [*rows, extra])
+            run_report(base, "all-evidence.csv", "with-excluded")
+            raw = (base / "result" / "tables.md").read_text()
+            result = (base / "with-excluded" / "tables.md").read_text()
+            self.assertNotIn("with `foreign_cpu`", raw)
+            self.assertEqual(result.count("1 with `foreign_cpu`"), 1)
+            for output in ("effects.csv", "comparisons.csv"):
+                self.assertEqual(
+                    (base / "result" / output).read_bytes(),
+                    (base / "with-excluded" / output).read_bytes(),
+                )
 
     def test_shared_rfc_bound(self):
         result = report.corner_range(

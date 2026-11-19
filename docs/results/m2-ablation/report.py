@@ -64,10 +64,12 @@ def span(s, scale=1, decimals=3):
 def main(camp, evidence, cells_file, out):
     out.mkdir(parents=True, exist_ok=False)
     groups = defaultdict(list)
+    physical_flags = defaultdict(Counter)
     with evidence.open() as f:
         for row in csv.DictReader(f):
+            s = json.loads((camp / row["run"] / "summary.json").read_bytes())
+            physical_flags[row["cell"]].update(s["flags"])
             if row["counted"] == "1":
-                s = json.loads((camp / row["run"] / "summary.json").read_bytes())
                 groups[row["cell"], row["algo"], row["impl"]].append(s)
     with cells_file.open() as f:
         aggregates = {(r["cell"], r["algo"], r["impl"]): r for r in csv.DictReader(f)}
@@ -245,13 +247,7 @@ def main(camp, evidence, cells_file, out):
                 tables.append(
                     f"- {'Lower goodput' if m == 'goodput_bps' else 'Higher ' + dict(retrans_pct='retransmission', qdelay_p50_ms='p50 delay', qdelay_p99_ms='p99 delay')[m]} than the common Linux median occurred with {', '.join(worse[m])}."
                 )
-        flags = Counter(
-            x
-            for (c, a, i), rows in groups.items()
-            if c == cell
-            for s in rows
-            for x in s["flags"]
-        )
+        flags = physical_flags[cell]
         tables.extend(
             [
                 "",
@@ -259,7 +255,7 @@ def main(camp, evidence, cells_file, out):
                 + ", ".join(f"{n} with `{flag}`" for flag, n in sorted(flags.items()))
                 + "."
                 if flags
-                else "All counted transfers were unflagged.",
+                else "All physical transfers were unflagged.",
                 "",
             ]
         )
