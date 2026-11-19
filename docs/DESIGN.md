@@ -1114,6 +1114,22 @@ An app-limited restart in PROBE_BW uses the unity-gain rate to charge the depart
 connection traces expose the mode, long-term bandwidth selection, effective bandwidth (Q24 packets
 per microsecond), minimum RTT (microseconds), and pacing/window gains (Q8).
 
+BBRv1 estimates bandwidth with a ten-round maximum over delivered packets per sample interval.
+It keeps a minimum RTT for ten seconds. STARTUP uses a pacing gain of 739/256 and declares a
+full pipe after three rounds without 25% bandwidth growth. DRAIN uses 88/256 until flight
+at the scheduled departure time reaches one estimated BDP. PROBE_BW cycles through 320/256,
+192/256 and six unit gains. The initial phase draws from the connection's injected random
+stream. When the RTT estimate expires, PROBE_RTT caps cwnd at four packets and holds it for
+at least 200 ms and one round before restoring the saved window.
+
+The long-term sampler compares two loss-bearing intervals of 4–16 rounds with loss at least
+50/256 of deliveries. Rates within one eighth or 4 kbit/s qualify the long-term estimate.
+During PROBE_BW that estimate selects unit pacing gain for up to 48 rounds. The normal cwnd
+target accounts for packet quantization and ACK aggregation, with accumulated ACK credit
+capped at 100 ms of estimated bandwidth. Entering Loss resets the full-bandwidth baseline
+and preserves the full-pipe latch. The model and its three-candidate bandwidth filter follow
+Linux v7.0 `net/ipv4/tcp_bbr.c` and `lib/win_minmax.c`.
+
 NewReno grows only while cwnd limits sending. Its additive increase carries unused packet credits across
 ACKs. CUBIC enters through the same `cc_select` and recovery hooks. Both CUBIC flavours use β=717/1024,
 C=410/1024 and Linux's integer cube root for K. A second loss below the previous maximum applies fast
