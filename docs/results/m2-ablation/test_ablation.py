@@ -30,6 +30,8 @@ def run_report(base, evidence, output):
             str(base / output),
         ],
         check=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -57,7 +59,7 @@ def write_example(base):
                     directory = base / name
                     directory.mkdir()
                     (directory / "summary.json").write_text(
-                        json.dumps(dict(metrics, flags=[]))
+                        json.dumps(dict(metrics, flags=[], valid=True))
                     )
                     rows.append(
                         dict(
@@ -113,6 +115,36 @@ class AblationTests(unittest.TestCase):
                     (base / "result" / output).read_bytes(),
                     (base / "with-excluded" / output).read_bytes(),
                 )
+
+    def test_pre_only_excluded_attempt_and_missing_counted_summary(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            rows = write_example(base)
+            rows = [dict(r, valid=1, flags="", invalid="") for r in rows]
+            partial = dict(
+                rows[0],
+                run="pre-only-attempt",
+                counted=0,
+                valid=0,
+                invalid="no receiver JSONL;no sender JSONL",
+            )
+            rd = base / partial["run"]
+            rd.mkdir()
+            (rd / "meta.json").write_text(json.dumps({"run": rd.name}))
+            report.save(base / "pre-evidence.csv", [*rows, partial])
+            run_report(base, "pre-evidence.csv", "pre-output")
+            self.assertIn(
+                "1 excluded attempt", (base / "pre-output/tables.md").read_text()
+            )
+            for name in ("comparisons.csv", "effects.csv"):
+                self.assertEqual(
+                    (base / "pre-output" / name).read_bytes(),
+                    (base / "result" / name).read_bytes(),
+                )
+            (base / rows[0]["run"] / "summary.json").unlink()
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                run_report(base, "pre-evidence.csv", "corrupt-counted")
+            self.assertIn("Missing counted or valid summary", caught.exception.stderr)
 
     def test_shared_rfc_bound(self):
         result = report.corner_range(

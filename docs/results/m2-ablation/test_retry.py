@@ -17,15 +17,13 @@ sys.path.insert(0, str(HERE))
 import audit
 
 
-def invoke(script, *arguments, fail=False):
+def invoke(script, *arguments, error=None):
     command = [sys.executable, "-B", str(script), *map(str, arguments)]
     result = subprocess.run(
         command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
     )
-    if fail:
-        assert result.returncode != 0 and "raw-to-summary mismatch" in result.stdout, (
-            result.stdout
-        )
+    if error:
+        assert result.returncode != 0 and error in result.stdout, result.stdout
     elif result.returncode:
         raise RuntimeError(result.stdout)
     return result.stdout
@@ -58,7 +56,13 @@ def main(original, stage):
         for directory in (rd, retry):
             s = audit.analyze.summarize_run(directory)
             assert s["valid"] == (directory == retry)
-            (directory / "summary.json").write_text(json.dumps(s))
+            if directory == rd and name.endswith("-linux"):
+                partial_metadata = audit.read(rd / "meta.json")
+                for key in ("reuse_key", "sender_exit"):
+                    del partial_metadata[key]
+                (rd / "meta.json").write_text(json.dumps(partial_metadata))
+            else:
+                (directory / "summary.json").write_text(json.dumps(s))
 
     def replay(where, label):
         out = stage / label
@@ -71,9 +75,12 @@ def main(original, stage):
                 assert row["invalid"] == "no receiver JSONL;no sender JSONL"
                 assert row["receiver_bytes"] == row["transfer_sha256"] == ""
         failed = audit.read(out / "invalid-attempts.json")
-        assert set(failed) == set(names) and all(
-            v["saved_summary"] for v in failed.values()
+        assert set(failed) == set(names)
+        assert (
+            failed[names[0]]["saved_summary"] and not failed[names[1]]["saved_summary"]
         )
+        assert failed[names[1]]["absent_metadata"] == ["reuse_key", "sender_exit"]
+        assert [r["reuse_key"] for r in rows if r["run"] == names[1]] == [""]
         assert all(
             not {"snd.jsonl", "rcv.jsonl"}.intersection(v["available_inputs"])
             for v in failed.values()
@@ -139,17 +146,80 @@ def main(original, stage):
             f.name
         )
 
+    # Plot and export the same counted selection from the ordinary raw and compact entry points.
+    for label, source, evidence in (("raw", camp, raw), ("compact", restored, copied)):
+        rendered = stage / (label + "-plots")
+        transcript = stage / (label + "-plots.txt")
+        transcript.write_text(invoke(audit.REPO / "tools/m2/plot.py", source, rendered))
+        invoke(
+            HERE / "plot_selection.py",
+            source,
+            evidence / "evidence.csv",
+            transcript,
+            stage / (label + "-selection.csv"),
+        )
+    assert (stage / "raw-selection.csv").read_bytes() == (
+        stage / "compact-selection.csv"
+    ).read_bytes()
+    images = sorted((stage / "raw-plots").glob("*.png"))
+    assert len(images) == 14
+    for image in images:
+        assert image.read_bytes() == (stage / "compact-plots" / image.name).read_bytes()
+
+    # An excluded record may omit a late identity field, but an actually recorded
+    # incorrect key, or the absence of a required counted key/exit, must fail.
+    for label, name, key, value, message in (
+        (
+            "wrong-recorded-key",
+            names[1],
+            "reuse_key",
+            "incorrect",
+            "changed final reuse key",
+        ),
+        (
+            "missing-counted-key",
+            names[0] + "-rerun1",
+            "reuse_key",
+            None,
+            "final reuse key",
+        ),
+        (
+            "missing-counted-exit",
+            names[0] + "-rerun1",
+            "sender_exit",
+            None,
+            "terminal sender exit",
+        ),
+    ):
+        meta = camp / name / "meta.json"
+        original_bytes = meta.read_bytes()
+        masked = json.loads(original_bytes)
+        if value is None:
+            del masked[key]
+        else:
+            masked[key] = value
+        meta.write_text(json.dumps(masked))
+        try:
+            invoke(HERE / "audit.py", camp, stage / label, error=message)
+        finally:
+            meta.write_bytes(original_bytes)
+
     # Keep the valid saved summary, but take away one counted sender's samples.
     # An already-recorded successful transfer must still fail the ordinary audit.
     sender = camp / (names[0] + "-rerun1") / "snd.jsonl"
     sender.rename(stage / "missing-counted-sender.jsonl")
     try:
-        invoke(HERE / "audit.py", camp, stage / "negative-audit", fail=True)
+        invoke(
+            HERE / "audit.py",
+            camp,
+            stage / "negative-audit",
+            error="raw-to-summary mismatch",
+        )
     finally:
         (stage / "missing-counted-sender.jsonl").rename(sender)
     print(
         "142 physical evidence rows, 140 counted, 2 explicitly invalid originals, 70 pairs and 280 counted captures."
-        " Native/compact inputs and replay outputs agree. A missing counted sender was rejected."
+        " Raw/compact audit, report, plot and selection outputs agree. An early missing terminal summary/key/exit is retained. Missing or incorrect counted evidence and a wrong observed key were rejected."
     )
 
 

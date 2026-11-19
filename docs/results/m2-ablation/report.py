@@ -65,11 +65,25 @@ def main(camp, evidence, cells_file, out):
     out.mkdir(parents=True, exist_ok=False)
     groups = defaultdict(list)
     physical_flags = defaultdict(Counter)
+    missing_summaries = Counter()
     with evidence.open() as f:
         for row in csv.DictReader(f):
-            s = json.loads((camp / row["run"] / "summary.json").read_bytes())
+            rd = camp / row["run"]
+            terminal = rd / "summary.json"
+            if not terminal.is_file():
+                if row["counted"] != "0" or row["valid"] != "0":
+                    raise ValueError(f"Missing counted or valid summary for {rd.name}")
+                recovered = A.summarize_run(rd)
+                assert recovered["valid"] is False and recovered["invalid"]
+                assert row["invalid"] == ";".join(recovered["invalid"])
+                assert row["flags"] == ";".join(recovered["flags"])
+                physical_flags[row["cell"]].update(recovered["flags"])
+                missing_summaries[row["cell"]] += 1
+                continue
+            s = json.loads(terminal.read_bytes())
             physical_flags[row["cell"]].update(s["flags"])
             if row["counted"] == "1":
+                assert s["valid"] is True, (rd, "counted summary is invalid")
                 groups[row["cell"], row["algo"], row["impl"]].append(s)
     with cells_file.open() as f:
         aggregates = {(r["cell"], r["algo"], r["impl"]): r for r in csv.DictReader(f)}
@@ -255,10 +269,21 @@ def main(camp, evidence, cells_file, out):
                 + ", ".join(f"{n} with `{flag}`" for flag, n in sorted(flags.items()))
                 + "."
                 if flags
+                else "No flags were recoverable."
+                if missing_summaries[cell]
                 else "All physical transfers were unflagged.",
                 "",
             ]
         )
+        if missing_summaries[cell]:
+            n = missing_summaries[cell]
+            tables.extend(
+                [
+                    f"For {n} excluded attempt{'s' if n != 1 else ''}, the terminal summary was missing. "
+                    "The tally includes flags recoverable from its available evidence. Other flags are unknown.",
+                    "",
+                ]
+            )
     save(out / "comparisons.csv", comparisons)
     save(out / "effects.csv", effects)
     (out / "tables.md").write_text("\n".join(tables).rstrip() + "\n")

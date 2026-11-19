@@ -89,7 +89,7 @@ def settings(meta, spec, refs):
     return expected
 
 
-def check_run(rd, meta, spec):
+def check_run(rd, meta, spec, valid):
     assert (
         rd.name
         == meta["run"]
@@ -101,12 +101,21 @@ def check_run(rd, meta, spec):
     assert meta["slot"] == spec["slot_index"] == 0 and meta["timing"] is True
     assert (
         meta["commit"],
-        meta["reuse_key"],
         meta["gate"],
         meta["bulk_sha256"],
         meta["core_sha256"],
         meta["scripts_sha256"],
-    ) == (SOURCE, KEY, GATE, BULK, CORE, SCRIPTS)
+    ) == (SOURCE, GATE, BULK, CORE, SCRIPTS)
+    # The frozen runner adds these fields only after collecting its post snapshot.
+    if valid or "reuse_key" in meta:
+        assert meta.get("reuse_key") == KEY, (rd, "missing or changed final reuse key")
+    if valid or "sender_exit" in meta:
+        assert type(meta.get("sender_exit")) is int, (
+            rd,
+            "missing terminal sender exit",
+        )
+        if valid:
+            assert meta["sender_exit"] == 0, (rd, "nonzero terminal sender exit")
     assert meta["campaign"] == "m2d-ablation" and meta["duration_s"] == spec["duration"]
     assert (
         meta["uname_r"] == "7.0.0-42-generic"
@@ -215,6 +224,18 @@ def main(campaign, out):
             )
             excluded[rd.name] = dict(
                 saved_summary=saved.is_file(),
+                absent_metadata=[
+                    key
+                    for key in (
+                        "reuse_key",
+                        "sender_exit",
+                        "uptime",
+                        "top_cpu",
+                        "threads_on_8_15",
+                        "module_parameters",
+                    )
+                    if key not in meta
+                ],
                 reasons=summary["invalid"],
                 flags=summary["flags"],
                 available_inputs=[
@@ -222,7 +243,7 @@ def main(campaign, out):
                 ],
             )
         spec = planned[meta.get("rerun_of", meta["run"])]
-        check_run(rd, meta, spec)
+        check_run(rd, meta, spec, summary["valid"])
         expected = None
         if summary["valid"]:
             check_qdisc(rd, meta)
