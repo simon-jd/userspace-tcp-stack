@@ -168,6 +168,13 @@ void Cubic::shift_epoch(std::uint32_t now, std::uint32_t idle) {
 }
 
 void Cubic::cwnd_event(CcConn& c, CaEvent event) {
+  if (event == CaEvent::cwnd_restart && c.flavor == CcFlavor::rfc) {
+    // RFC 5681 §4.1: the caller applies RW after this event. Let the first
+    // avoidance ACK seed the curve, Reno estimate and fraction from that window.
+    epoch_.reset();
+    pause_.reset();
+    return;
+  }
   if (event != CaEvent::tx_start || !epoch_) return;
   const auto now = jiffies(c.now);
   const auto idle = now - jiffies(c.lsndtime);

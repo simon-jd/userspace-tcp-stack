@@ -31,7 +31,7 @@ private:
   std::uint64_t end_ = 0;
   Duration previous_ = Duration::max(), current_ = Duration::max(), baseline_ = Duration::max();
   std::uint32_t samples_ = 0, rounds_ = 0, carry_ = 0;
-  bool css_ack_ = false, done_ = false;
+  bool waiting_for_flight_ = true, css_ack_ = false, done_ = false;
 };
 
 }  // namespace utcp

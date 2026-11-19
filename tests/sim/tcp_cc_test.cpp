@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
+#include <iterator>
 #include <iostream>
 
 #include "tcp_sim_util.hpp"
@@ -10,11 +13,13 @@ namespace {
 
 struct CcTransfer {
   std::vector<TraceEvent> acks;
+  StackStats stats;
   unsigned drops = 0;
   Time dropped{};
 };
 
-void run_bulk(CcTransfer& trace, ProfileId profile, std::uint64_t bytes) {
+void run_bulk(CcTransfer& trace, ProfileId profile, std::uint64_t bytes,
+              const std::function<void(TcpConfig&)>& configure = {}) {
   LinkParams link;
   link.delay = 10ms;
   link.rate_bps = 100'000'000;
@@ -28,8 +33,9 @@ void run_bulk(CcTransfer& trace, ProfileId profile, std::uint64_t bytes) {
   BulkClient client;
   client.total = bytes;
   client.start = s.start + 1ms;
-  auto sender = std::make_unique<AppNode>(s, 0, [](StackConfig& c) {
+  auto sender = std::make_unique<AppNode>(s, 0, [&](StackConfig& c) {
     c.tcp.cc = CcAlgo::cubic;
+    if (configure) configure(c.tcp);
     c.tcp.snd_buf_init = c.tcp.snd_buf_max = 4 * 1024 * 1024;
   });
   auto* stack = &sender->stack();
@@ -62,6 +68,7 @@ void run_bulk(CcTransfer& trace, ProfileId profile, std::uint64_t bytes) {
   for (const auto& v : result.violations) ADD_FAILURE() << v.message;
   EXPECT_EQ(result.verdict, Verdict::ok);
   EXPECT_EQ(stack->stats().TcpRetransSegs, trace.drops);
+  trace.stats = stack->stats();
   EXPECT_EQ(client.sent, bytes);
   EXPECT_EQ(peer->counts().tcp_bytes_received, bytes);
   for (const auto& segment : result.links) {
@@ -69,6 +76,107 @@ void run_bulk(CcTransfer& trace, ProfileId profile, std::uint64_t bytes) {
     EXPECT_EQ(segment.lost, 0u);
     EXPECT_EQ(segment.mtu_drops, 0u);
   }
+}
+
+TEST(TcpCcSim, RfcCubicResumesFromTheRestartWindow) {
+  LinkParams link;
+  link.delay = 5ms;
+  link.rate_bps = 100'000'000;
+  link.queue_bytes = 8 * 1024 * 1024;
+  auto s = two_node_scenario(9406, link, link);
+  s.node[0].profile = ProfileId::rfc;
+  TrickleClient client;
+  client.chunk = 512 * 1024;
+  client.total = 2 * client.chunk;
+  client.start = s.start + 1ms;
+  client.gap = 4s;
+  s.conn.push_back(bulk(client.total, 0));
+  RunSpec spec;
+  spec.keep_wire = false;
+  spec.make = [&](const Scenario& scenario, std::uint32_t node) -> std::unique_ptr<Node> {
+    if (node != 0) return nullptr;
+    auto sender = std::make_unique<AppNode>(scenario, node, [](StackConfig& cfg) {
+      cfg.tcp.cc = CcAlgo::cubic;
+      cfg.tcp.initial_cwnd = cfg.tcp.initial_ssthresh = 10;
+      cfg.tcp.snd_buf_init = cfg.tcp.snd_buf_max = 2 * 1024 * 1024;
+    });
+    sender->script = [&](AppNode& app, Time now) { client.step(app, now); };
+    return sender;
+  };
+  const auto result = run_sim(s, spec);
+  ASSERT_TRUE(result.ok()) << result.violations();
+  ASSERT_EQ(result.counts[1].tcp_bytes_received, client.total);
+  ASSERT_EQ(result.stats[0].TcpRetransSegs, 0u);
+  const auto events = result.events(0, [](const auto& e) {
+    return e.kind == TraceKind::ack || (e.kind == TraceKind::tx && e.tx == TxKind::data);
+  });
+  const auto last = events.end();
+  const auto restart = std::find_if(events.begin(), last, [&](const auto& e) {
+    return e.t >= client.start + client.gap && e.kind == TraceKind::tx;
+  });
+  ASSERT_NE(restart, events.begin());
+  ASSERT_NE(restart, last);
+  const auto& drained = *std::prev(restart);
+  ASSERT_EQ(drained.in_flight, 0u);
+  ASSERT_GT(drained.cwnd, 11u);
+  ASSERT_GT((restart->t - drained.t).count(), drained.rto_ns);
+  EXPECT_EQ(restart->cwnd, 10u);
+  const auto is_ack = [](const auto& e) { return e.kind == TraceKind::ack; };
+  const auto first_ack = std::find_if(restart, last, is_ack);
+  ASSERT_NE(first_ack, last);
+  EXPECT_LE(first_ack->cwnd, restart->cwnd + 1);
+  const auto next_ack = std::find_if(std::next(first_ack), last, is_ack);
+  ASSERT_NE(next_ack, last);
+  ASSERT_NE(std::next(first_ack), next_ack);
+  const auto burst = std::max_element(std::next(first_ack), next_ack,
+      [](const auto& a, const auto& b) { return a.in_flight < b.in_flight; });
+  EXPECT_LE(burst->in_flight, restart->cwnd + 1);
+  RecordProperty("pre_idle_cwnd", drained.cwnd);
+  RecordProperty("restart_cwnd", restart->cwnd);
+  RecordProperty("first_ack_cwnd", first_ack->cwnd);
+  RecordProperty("next_burst_in_flight", burst->in_flight);
+}
+
+TEST(TcpCcSim, ClassicOverridePublishesTrainAndDelayExitCounters) {
+  for (bool train : {true, false}) {
+    SCOPED_TRACE(train);
+    CcTransfer trace;
+    run_bulk(trace, ProfileId::rfc, 8'000'000, [train](TcpConfig& cfg) {
+      cfg.hystart = Hystart::hystart_classic;
+      if (!train) cfg.hystart_ack_delta = 0us;
+    });
+    const auto exit = std::find_if(trace.acks.begin(), trace.acks.end(),
+        [](const auto& e) { return e.ssthresh < cwnd_infinite; });
+    ASSERT_NE(exit, trace.acks.end());
+    ASSERT_GT(trace.acks.end() - exit, 100);
+    RecordProperty(train ? "train_exit_cwnd" : "delay_exit_cwnd", exit->ssthresh);
+    EXPECT_EQ(trace.stats.TcpExtTCPHystartTrainDetect, train ? 1u : 0u);
+    EXPECT_EQ(trace.stats.TcpExtTCPHystartTrainCwnd, train ? exit->ssthresh : 0u);
+    EXPECT_EQ(trace.stats.TcpExtTCPHystartDelayDetect, train ? 0u : 1u);
+    EXPECT_EQ(trace.stats.TcpExtTCPHystartDelayCwnd, train ? 0u : exit->ssthresh);
+  }
+}
+
+TEST(TcpCcSim, ClassicHonorsConfiguredLowWindow) {
+  CcTransfer control;
+  run_bulk(control, ProfileId::rfc, 1'000'000, [](TcpConfig& cfg) {
+    cfg.hystart = Hystart::hystart_classic;
+  });
+  ASSERT_EQ(control.stats.TcpExtTCPHystartTrainDetect, 1u);
+  CcTransfer trace;
+  run_bulk(trace, ProfileId::rfc, 1'000'000, [](TcpConfig& cfg) {
+    cfg.hystart = Hystart::hystart_classic;
+    cfg.hystart_low_window = 1024;
+  });
+  const auto peak = std::max_element(trace.acks.begin(), trace.acks.end(),
+      [](const auto& a, const auto& b) { return a.cwnd < b.cwnd; });
+  ASSERT_NE(peak, trace.acks.end());
+  EXPECT_GT(peak->cwnd, control.stats.TcpExtTCPHystartTrainCwnd);
+  RecordProperty("raised_low_window_peak", peak->cwnd);
+  EXPECT_LT(peak->cwnd, 1024u);
+  EXPECT_EQ(peak->ssthresh, cwnd_infinite);
+  EXPECT_EQ(trace.stats.TcpExtTCPHystartTrainDetect, 0u);
+  EXPECT_EQ(trace.stats.TcpExtTCPHystartDelayDetect, 0u);
 }
 
 TEST(TcpCcSim, LinuxSingleDropAndReturnToPreviousMaximum) {

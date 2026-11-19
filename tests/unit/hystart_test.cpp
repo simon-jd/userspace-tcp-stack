@@ -78,8 +78,12 @@ TEST(Hystart, ClassicTrainUsesPacingCushionLowWindowAndConfiguredGap) {
   EXPECT_EQ(small.c.ssthresh, cwnd_infinite);
   Flow tuned(Hystart::hystart_classic);
   tuned.c.hystart_low_window = 17;
-  tuned.c.cwnd = 17;
   tuned.c.hystart_ack_delta = 500us;
+  for (int i = 0; i < 23; ++i) tuned.sample(20ms, 500us);
+  EXPECT_EQ(tuned.c.ssthresh, cwnd_infinite);  // cwnd 16, threshold 17
+  tuned.c.cwnd = 17;
+  tuned.next_round();
+  ++tuned.c.snd_una;
   for (int i = 0; i < 40; ++i) tuned.sample(20ms, 1ms);
   EXPECT_EQ(tuned.c.ssthresh, cwnd_infinite);
   tuned.next_round();
@@ -119,6 +123,44 @@ TEST(Hystart, PlusPlusThresholdGrowthCarryAndFiveRoundExit) {
       f.sample(base + threshold);
       EXPECT_EQ(f.c.ssthresh, f.c.cwnd);
     }
+  }
+}
+
+TEST(Hystart, PlusPlusUsesOneEighthBetweenTheClamps) {
+  for (const Duration rtt : {Duration{89500us}, Duration{90ms}}) {
+    Flow f(Hystart::hystart_pp);
+    f.samples(80ms, 8);
+    f.next_round();
+    f.samples(rtt, 9);
+    f.grow(8);
+    EXPECT_EQ(f.c.cwnd, rtt < 90ms ? 24u : 18u);
+  }
+}
+
+TEST(Hystart, PlusPlusCompletesDrainedRoundsOnce) {
+  for (bool one_ack_per_flight : {false, true}) {
+    SCOPED_TRACE(one_ack_per_flight);
+    Flow f(Hystart::hystart_pp);
+    f.samples(20ms, 8);
+    f.next_round();
+    f.samples(24ms, 8);
+    for (int round = 1; round <= 5; ++round) {
+      f.c.snd_una = f.c.snd_nxt;
+      f.sample(24ms);
+      const auto expected = round == 5 ? f.c.cwnd : cwnd_infinite;
+      EXPECT_EQ(f.c.ssthresh, expected) << round;
+      f.sample(-1ns);  // a duplicate of the draining ACK
+      EXPECT_EQ(f.c.ssthresh, expected) << round;
+      f.c.snd_nxt += 100;
+      if (!one_ack_per_flight) {
+        f.c.snd_una += 25;
+        f.sample(24ms);
+        EXPECT_EQ(f.c.ssthresh, expected) << round;
+      }
+    }
+    f.c.snd_una = f.c.snd_nxt;
+    f.sample(24ms);  // the write after CSS exit
+    EXPECT_EQ(f.c.ssthresh, f.c.cwnd);
   }
 }
 

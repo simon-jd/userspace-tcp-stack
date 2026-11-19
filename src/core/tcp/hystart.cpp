@@ -51,7 +51,15 @@ void ClassicHyStart::sample(CcConn& c, std::uint32_t delay_us, std::uint32_t min
 
 void HyStartPlusPlus::sample(CcConn& c, Duration rtt) {
   // RFC 9406 §4.2: the ACK covering windowEnd starts a new sample round.
-  if (c.snd_una >= end_ && c.snd_nxt > end_) {
+  if (waiting_for_flight_) {
+    if (c.snd_nxt <= end_) return;
+    end_ = c.snd_nxt;
+    waiting_for_flight_ = false;
+  }
+  if (c.snd_una >= end_) {
+    // A draining ACK completes the round immediately. Its duplicates cannot
+    // complete another until there is a new flight with its own windowEnd.
+    waiting_for_flight_ = c.snd_nxt == c.snd_una;
     end_ = c.snd_nxt;
     previous_ = current_;
     current_ = Duration::max();
