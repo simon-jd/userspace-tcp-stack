@@ -1,4 +1,4 @@
-"""Print the checkpoint Markdown tables from cells.csv and the accompanying trace explanations."""
+"""Print tables for docs/RESULTS.md from cells.csv and the accompanying trace explanations."""
 import argparse
 import csv
 from itertools import product
@@ -34,12 +34,13 @@ def render(directory):
             stack, linux = [groups[algo, cell, side] for side in ("utcp", "linux")]
             if stack["status"] != linux["status"]:
                 raise ValueError(f"inconsistent cell status for {algo} {cell}")
-            label = " · ".join(cell.split("-")[:3]) + (" †" if stack["transient"] == "1" else "")
+            label = " · ".join(cell.split("-")[:3])
+            label = f"[{label}](results/m2-checkpoint/plots/{cell}-{algo}.png)" + (" †" if stack["transient"] == "1" else "")
             ranges = []
             gaps = []
             for metric in METRICS:
                 scale = 1e6 if metric == "goodput_bps" else 1
-                ranges.append(" / ".join(metric_range(r, metric, scale) for r in (stack, linux)))
+                ranges.append("<br>".join(metric_range(r, metric, scale) for r in (stack, linux)))
                 verdict = stack["gap_" + metric]
                 if verdict != linux["gap_" + metric]:
                     raise ValueError(f"inconsistent {metric} verdict for {algo} {cell}")
