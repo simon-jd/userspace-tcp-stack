@@ -714,3 +714,186 @@ The [compressed ACK ledger](results/m2-integrate/ack-decisions.jsonl.gz) contain
 per transfer. Each group contains the cumulative ACK, ordered SACK blocks, and sends between
 this ACK and the next. Each send contains its offset, payload length, copy number and count of
 previously sent bytes. All offsets are relative to that run's first comparison hole.
+
+## Checkpoint
+
+The checkpoint compares a single bulk sender using the stack's Linux-compatible profile with the
+same application using Linux kernel sockets. Both receivers use Linux. The matrix crosses 10 and
+100 Mbit/s, 20 and 100 ms base RTT, and 0 and 1% configured forward loss. The forward bottleneck
+queue holds twice the bandwidth-delay product. Each algorithm and condition has five paired
+repetitions. The sender writes for 30 seconds at 20 ms and 60 seconds at 100 ms. All rates use
+decimal Mbit/s. [Measurement plan](results/m2-checkpoint/plan.toml) · [Method](#method)
+
+Each metric cell shows the stack on the first line and Linux on the second, with its median and
+[min–max] across the five qualifying groups. Δ goodput is 100 × (stack / Linux − 1). Select a
+network condition to open its three-panel overlay. † marks the predeclared 100 Mbit/s, 100 ms,
+zero-loss condition, where slow-start exit and queue filling influence the measurement window.
+Rates come from receiver byte-counter interpolation after a five-second warm-up. Queue delay
+subtracts each run's idle median RTT from the loaded ping observations. A goodput or delay gap
+requires disjoint ranges and a median difference greater than 10% of the Linux median. A
+retransmission gap requires disjoint ranges and a stack excess greater than 0.05 percentage
+points at zero loss or 0.2 points at 1% loss. “Yes (<1 ms)” retains a formal delay gap below
+measurement resolution. [Gap thresholds](#gap-rule-and-thresholds) ·
+[Run eligibility](#which-runs-count) · [Aggregate CSV](results/m2-checkpoint/cells.csv) ·
+[Per-transfer CSV](results/m2-checkpoint/runs.csv)
+
+### NewReno
+
+| Mbit/s · ms · loss % | Goodput (Mbit/s) | Δ goodput | Retransmissions (%) | Queue delay p50 (ms) | Queue delay p99 (ms) | Goodput gap | Retrans. gap | p50 gap | p99 gap | Explanation |
+|---|---|---|---|---|---|---|---|---|---|---|
+| [10 · 20 · 0](results/m2-checkpoint/plots/10-20-0-2-newreno.png) | 9.54914 [9.54868–9.54918]<br>9.54914 [9.54908–9.54916] | +0.00% | 0.164889 [0.160049–0.184269]<br>0.189111 [0.164897–0.19395] | 25.3242 [25.0637–25.7457]<br>25.2358 [25.1687–25.2918] | 37.9365 [37.8927–38.092]<br>37.7707 [37.7474–38.045] | No | No | No | No | — |
+| [10 · 20 · 1](results/m2-checkpoint/plots/10-20-1-2-newreno.png) | 6.19778 [5.85603–6.2812]<br>6.11151 [5.89959–6.48618] | +1.41% | 1.00016 [0.964367–1.16662]<br>1.03698 [0.920298–1.17428] | -0.029661 [-0.040676–0.006081]<br>-0.013332 [-0.027267–0.015411] | 11.4559 [10.183–14.2374]<br>11.432 [9.27309–15.6956] | No | No | No | No | — |
+| [10 · 100 · 0](results/m2-checkpoint/plots/10-100-0-2-newreno.png) | 9.54952 [9.54952–9.54973]<br>9.54972 [9.54952–9.54973] | -0.00% | 0.00883923 [0.00662974–0.00883964]<br>0.00662971 [0.00662969–0.00883955] | 137.842 [137.79–138.396]<br>137.395 [136.952–137.796] | 197.11 [196.724–197.959]<br>197.874 [197.863–197.974] | No | No | No | No | — |
+| [10 · 100 · 1](results/m2-checkpoint/plots/10-100-1-2-newreno.png) | 1.358 [1.1525–1.45759]<br>1.38059 [1.11072–1.54496] | -1.64% | 0.942814 [0.887235–1.1769]<br>0.968083 [0.853081–1.27412] | -0.0195675 [-0.030364–-0.008282]<br>-0.01637 [-0.030584–-0.0093115] | 0.858116 [0.691352–1.19235]<br>0.987947 [0.390528–1.18147] | No | No | No | No | — |
+| [100 · 20 · 0](results/m2-checkpoint/plots/100-20-0-2-newreno.png) | 95.6259 [95.6255–95.626]<br>95.6256 [95.6255–95.626] | +0.00% | 0.00193929 [0.00145446–0.0019393]<br>0.000969643 [0.000969633–0.000969682] | 27.3789 [27.2419–27.3893]<br>26.8412 [26.7291–27.2198] | 39.6534 [39.6205–39.6725]<br>39.14 [39.0894–39.1606] | No | No | No | No | — |
+| [100 · 20 · 1](results/m2-checkpoint/plots/100-20-1-2-newreno.png) | 6.71392 [6.40324–7.05851]<br>6.63269 [6.39483–7.17952] | +1.22% | 1.03941 [0.96279–1.10348]<br>1.05207 [0.93453–1.10466] | -0.0208565 [-0.0253505–-0.016508]<br>-0.011754 [-0.0224605–0.0166325] | 0.047796 [0.0325266–0.0523399]<br>0.113775 [0.0532793–0.174716] | No | No | No | Yes (<1 ms) | Below measurement resolution |
+| [100 · 100 · 0](results/m2-checkpoint/plots/100-100-0-2-newreno.png) † | 95.6258 [95.6258–95.6264]<br>95.6258 [95.6246–95.6262] | +0.00% | 0 [0–0]<br>0 [0–0] | 72.5631 [72.3927–72.8445]<br>72.423 [72.3245–77.451] | 90.3533 [90.1922–90.4014]<br>90.4158 [89.519–94.8622] | No | No | No | No | — |
+| [100 · 100 · 1](results/m2-checkpoint/plots/100-100-1-2-newreno.png) | 1.40993 [1.32278–1.58958]<br>1.42451 [1.38502–1.54074] | -1.02% | 0.976476 [0.817942–1.01122]<br>0.936132 [0.857726–0.996284] | -0.021344 [-0.029743–-0.008381]<br>-0.005411 [-0.017291–0.0205015] | 0.0478796 [0.0161827–0.071059]<br>0.0613645 [0.046563–0.0739003] | No | No | No | No | — |
+
+### CUBIC
+
+| Mbit/s · ms · loss % | Goodput (Mbit/s) | Δ goodput | Retransmissions (%) | Queue delay p50 (ms) | Queue delay p99 (ms) | Goodput gap | Retrans. gap | p50 gap | p99 gap | Explanation |
+|---|---|---|---|---|---|---|---|---|---|---|
+| [10 · 20 · 0](results/m2-checkpoint/plots/10-20-0-2-cubic.png) | 9.54915 [9.53868–9.54916]<br>9.54926 [9.54915–9.54963] | -0.00% | 0.0776368 [0.0776364–0.116599]<br>0.0824907 [0.0824867–0.0873388] | 30.4133 [29.9371–30.7175]<br>30.4929 [30.342–30.7224] | 37.9664 [37.6955–37.9752]<br>38.1722 [37.9675–38.1809] | No | No | No | No | — |
+| [10 · 20 · 1](results/m2-checkpoint/plots/10-20-1-2-cubic.png) | 5.78962 [5.42432–6.36518]<br>5.62923 [5.35983–6.42486] | +2.85% | 0.998592 [0.816238–1.15041]<br>1.04158 [0.808819–1.12062] | -0.024049 [-0.038266–-0.0166485]<br>-0.017924 [-0.0205005–-0.0060985] | 4.53035 [2.39863–11.664]<br>3.80598 [2.25781–10.4546] | No | No | No | No | — |
+| [10 · 100 · 0](results/m2-checkpoint/plots/10-100-0-2-cubic.png) | 9.54953 [9.54952–9.54973]<br>9.54973 [9.54973–9.54974] | -0.00% | 0.0993645 [0.0949502–0.0993671]<br>0.0993754 [0.0993597–0.0993795] | 155.501 [155.412–156.336]<br>155.465 [155.425–155.507] | 197.972 [197.871–197.994]<br>197.976 [197.873–198.059] | No | No | No | No | — |
+| [10 · 100 · 1](results/m2-checkpoint/plots/10-100-1-2-cubic.png) | 1.32068 [1.22508–1.38732]<br>1.38396 [1.26812–1.4709] | -4.57% | 0.949226 [0.863017–1.14296]<br>0.910773 [0.831947–1.15169] | -0.024925 [-0.034228–-0.011033]<br>-0.013613 [-0.0277355–-0.0124555] | 0.655186 [0.255509–0.91865]<br>0.878819 [0.575309–0.969982] | No | No | No | No | — |
+| [100 · 20 · 0](results/m2-checkpoint/plots/100-20-0-2-cubic.png) | 95.6256 [95.6254–95.626]<br>95.6259 [95.6255–95.626] | -0.00% | 0.00193907 [0.00193907–0.0019391]<br>0.00193908 [0.00193908–0.00193909] | 30.9031 [30.867–30.9077]<br>30.122 [30.0628–30.1779] | 39.7319 [39.6735–39.7587]<br>39.2457 [39.1948–39.2725] | No | No | No | No | — |
+| [100 · 20 · 1](results/m2-checkpoint/plots/100-20-1-2-cubic.png) | 5.95252 [5.47934–6.17269]<br>6.18946 [5.64066–6.30254] | -3.83% | 1.01139 [0.910323–1.16232]<br>1.00943 [0.959622–1.17848] | -0.020071 [-0.030339–-0.0181775]<br>-0.0097015 [-0.0206335–-0.0041985] | 0.0379057 [0.0215593–0.0854793]<br>0.0458396 [0.0387648–0.0619343] | No | No | No | No | — |
+| [100 · 100 · 0](results/m2-checkpoint/plots/100-100-0-2-cubic.png) † | 95.6265 [95.6263–96.0988]<br>95.6263 [95.6256–95.6266] | +0.00% | 0.0132203 [0.0127798–0.0134407]<br>0.01278 [0.0125598–0.0132203] | 156.148 [156.138–156.365]<br>155.85 [155.747–155.864] | 199.635 [199.592–199.638]<br>199.349 [199.253–199.43] | No | No | No | No | — |
+| [100 · 100 · 1](results/m2-checkpoint/plots/100-100-1-2-cubic.png) | 1.36983 [1.28479–1.56268]<br>1.33248 [1.30315–1.44684] | +2.80% | 0.930587 [0.817366–1.04375]<br>0.977094 [0.852978–1.11338] | -0.0088855 [-0.027745–-0.002609]<br>-0.00363 [-0.0440705–0.009758] | 0.0545468 [0.0218363–0.076099]<br>0.0642176 [0.0391732–0.072368] | No | No | No | No | — |
+
+### What the 16 comparisons showed
+
+The stack's median goodput ranged from 98.36% to 101.41% of Linux's for NewReno and from 95.43%
+to 102.85% for CUBIC. The largest percentage deficit was CUBIC at 10 Mbit/s, 100 ms and 1%
+loss (1.321 vs 1.384 Mbit/s). The largest percentage advantage was CUBIC at 10 Mbit/s, 20 ms
+and 1% loss (5.790 vs 5.629 Mbit/s). All 16 goodput, 16 retransmission-rate and 16 p50-delay
+comparisons received a “no gap” verdict.
+
+One of 16 p99-delay comparisons met the formal gap rule. At 100 Mbit/s, 20 ms and 1% loss,
+NewReno measured 0.047796 ms [0.032527–0.052340] for the stack and 0.113775 ms
+[0.053279–0.174716] for Linux. The stack median was 0.065979 ms lower. Replaying the echo request and reply timestamps
+from all ten router captures reproduced both ranges. The difference was below measurement resolution. All 64 comparisons have a verdict. Several p50 values are slightly negative because
+the metric subtracts that run's idle RTT median.
+
+All 160 transfers finished with a matching endpoint data hash and a positive measurement window.
+The first 80 pairs qualified without reruns or interruptions. All 160 transfers carried the
+`foreign_cpu` flag. The lower bound on time consumed outside the four testbed containers ranged
+from 2.37% to 26.87% of the slot's CPU time. These flagged runs remain in every median and range.
+The run records include uptime, threads last observed on CPUs 8–15, per-CPU usage and
+interrupt ticks, container CPU usage and softirq counts. [Timing hygiene](#timing-hygiene) ·
+[Per-run flags and environment](results/m2-checkpoint/evidence.csv)
+
+The 16 overlays show the congestion window, delivery and pacing rates, and receiver goodput in
+100 ms bins. Each compares the median-goodput repetition of each side among the counted pairs.
+The two representative repetitions can have different seeds. The raw measurements and the cell
+statistics preserve same-seed pairs. [Selected runs](results/m2-checkpoint/overlay-runs.csv) ·
+[Per-run trace and queue metrics](results/m2-checkpoint/trace-diagnostics.csv)
+
+### Acquisition and replay
+
+The measured checkout was `170b21fd9fb172f6917484fcde32d23bdd55f630`. Both slot gates used
+the executable and core independently frozen at `3f48c30dbf70240d50234f095eaca6de24fc0625`.
+Each gate passed 67 checks and its consumer revalidated 62 source records. On the
+Intel Core i9-13900K with Linux `7.0.0-42-generic`, the stack and kernel senders used CPUs 8–9,
+the receiver used CPU 10, and both routers used CPU 11. Slot 1 was removed before the first
+measurement. The fifteen-transfer CUBIC parallel proof passed with five measured overlaps.
+The earlier NewReno timing evidence kept production serial. [Calibration](#integrated-calibration-november-19-2026) ·
+[Timing evidence](#integrated-cubic-parallel-proof-november-19-2026)
+
+The plan seed was 20261119. The serialized one-slot expansion has SHA-256
+`a77b8ddd6d24a320394728fbb6348b114ead2f2a43ac64dc7c5260ff1b433116`.
+The single reuse key was `cd50db51c944442c8f1158f6b5e48f01ab3f913d9b96034a675af9a8aed9c1fd`.
+Original and restored records were checked against the fixed run-counting rule. The kernel
+qdisc records before and after each transfer supply the actual delay, loss and netem seed.
+Endpoint timestamps give the order within each pair. [Chronological pairs and kernel seeds](results/m2-checkpoint/pair-order.csv) ·
+[Per-run environment and flags](results/m2-checkpoint/evidence.csv)
+
+The stack sender records its baseline TCP configuration before connecting. The 68 configuration
+fields were compared with the frozen binary's Linux-compatible profile, including the three
+testbed settings for send buffer, receive buffer and GSO size. The baseline CC is NewReno.
+The socket's `--cc` option selects the sender algorithm at connect. The sampled and terminal
+CC names establish which algorithm each connection ran. On Linux, the program reports the
+kernel's `reno` as `newreno`. The kernel receiver kept its default CUBIC with either sender
+algorithm, verified in its pre/post sysctls, samples and terminal record. The median sender sample interval in each transfer ranged from 9.999451 to 10.000347 ms.
+The receiver medians ranged from 9.999105 to 10.000245 ms. The 80 stack traces contained
+23,293 events. Their counts and connection tuples matched the sender records.
+[Effective profiles and traces](results/m2-checkpoint/profile-trace.csv) ·
+[Both endpoint algorithms and sample intervals](results/m2-checkpoint/endpoint-cc.csv)
+
+In the zero-loss 100 Mbit/s × 100 ms CUBIC condition, repetition 3 illustrates the difference
+between receiver goodput and payload crossing the router within the same time bounds. At the
+start of the stack run's measurement window, 3,242,072 bytes had already arrived above a
+sequence hole. The gap closed within the window. The receiver recorded 96.098791 Mbit/s, while
+the outgoing router capture carried 95.626387 Mbit/s of payload during the window. The Linux
+run had zero bytes above a hole at either boundary and measured 95.626317 and 95.626547 Mbit/s,
+respectively. The table uses the preregistered receiver counters for all repetitions.
+[Window reconstruction](results/m2-checkpoint/window-example/wire-window.json) ·
+[Packet replay](results/m2-checkpoint/window-example/wire-window.py)
+
+The stack omits Linux D-SACK/timestamp undo and F-RTO. This experiment covers one forward flow
+and a queue of 2 × BDP. BBRv1, the 24-cell matrix, multi-flow comparisons and later milestones
+remain pending. [Implementation scope](DESIGN.md#12-non-goals)
+
+### Archives and reproduction
+
+The original campaign is `utcp-data:/m2/m2-checkpoint/`. Its `acquisition-records/` directory
+includes the expanded plan, runner transcript, topology records and terminal runtime fingerprints.
+The content-addressed archives and the full per-file manifest live in `utcp-data:/m2/archive/`.
+The analysis archive contains 1,600 inputs and its manifest. The full raw archive also retains
+the original packet captures, tcpdump counters and process output. The restored raw manifest
+verified all 2,755 original files (8,200,393,116 bytes). [Archive names and SHA-256](results/m2-checkpoint/archives.sha256)
+
+Across the 320 physical pcaps, the original and restored traces contain 53,804,465 packet
+records occupying 6,617,412,166 bytes. Every pcap's packet count matched its tcpdump count,
+all filter counts matched the captured counts, and the kernel reported zero capture drops.
+The receiver and sender streams independently reproduced the rates and all median/min/max
+ranges. The standard CSVs and all 16 overlay PNGs reproduced byte for byte
+from the analysis archive. [Physical capture checks](results/m2-checkpoint/capture-audit.csv) ·
+[Replay totals](results/m2-checkpoint/physical.json)
+
+To check the archives on the measurement host, open an analysis shell from this checkout.
+
+```sh
+docker run --rm -it --network none --cpuset-cpus 16-31 \
+    -v "$PWD:/utcp:ro" -v utcp-data:/data:ro -v utcp-data:/work \
+    utcp-testbed:dev nice -n 10 bash
+```
+
+In that shell, use the frozen runtime's analysis code and keep scratch files on the data volume.
+
+```bash
+set -euo pipefail
+res=/utcp/docs/results/m2-checkpoint
+cd /data/m2/archive
+sha256sum -c "$res/archives.sha256"
+work=$(mktemp -d /work/m2/archive/checkpoint-replay.XXXXXXXX)
+export TMPDIR="$work"
+analysis=$(awk '$2 ~ /-analysis-.*\.tar\.gz$/ {print $2}' "$res/archives.sha256")
+raw=$(awk '$2 ~ /-raw-.*\.tar\.gz$/ {print $2}' "$res/archives.sha256")
+python3 -IB /utcp/tools/m2/analyze.py tables "$work/tables" --archive "$analysis"
+cmp "$work/tables/cells.csv" "$res/cells.csv"
+cmp "$work/tables/runs.csv" "$res/runs.csv"
+mkdir "$work/raw"
+tar xzf "$raw" -C "$work/raw"
+camp="$work/raw/m2-checkpoint"
+(cd "$camp" && sha256sum -c ../manifest/raw.sha256)
+sha=170b21fd9fb172f6917484fcde32d23bdd55f630
+key=cd50db51c944442c8f1158f6b5e48f01ab3f913d9b96034a675af9a8aed9c1fd
+gate=m2-integrate/3f48c30dbf70240d50234f095eaca6de24fc0625-calib-a1-s0
+python3 -IB "$res/verify/checkpoint_inputs.py" /utcp "$camp" "$res/cells.csv" "$work/audit" "$sha" "$key" "$gate"
+for file in evidence.csv overlay-runs.csv; do cmp "$work/audit/$file" "$res/$file"; done
+python3 -IB "$res/verify/physical_checkpoint.py" "$camp" "$res/evidence.csv" "$work/physical"
+cmp "$work/physical/capture-audit.csv" "$res/capture-audit.csv"
+cmp "$work/physical/pair-order.csv" "$res/pair-order.csv"
+python3 -IB "$res/verify/verify_endpoint_cc.py" "$camp" "$res/evidence.csv" "$work/endpoint-cc.csv"
+python3 -IB "$res/verify/verify_profile_trace.py" "$camp" "$res/evidence.csv" \
+    "$res/verify/linux-profile.json" "$work/profile-trace.csv"
+cmp "$work/endpoint-cc.csv" "$res/endpoint-cc.csv"
+cmp "$work/profile-trace.csv" "$res/profile-trace.csv"
+python3 -IB /utcp/tools/m2/plot.py "$camp" "$work/plots" > "$work/plot.log"
+python3 -IB "$res/verify/compare_overlay.py" "$res/overlay-runs.csv" "$work/plot.log"
+for file in "$res"/plots/*.png; do cmp "$file" "$work/plots/${file##*/}"; done
+python3 -IB "$res/render_tables.py" "$res"
+```

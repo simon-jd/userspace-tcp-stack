@@ -1,0 +1,36 @@
+[
+  {
+    "run": "100-100-0-2-cubic-r3-utcp",
+    "reuse_key": "cd50db51c944442c8f1158f6b5e48f01ab3f913d9b96034a675af9a8aed9c1fd",
+    "receiver_accept_ns": 959459007841601,
+    "sender_start_ns": 959458907695800,
+    "window_lo_ns": 959464007841601,
+    "window_hi_ns": 959518907695800,
+    "window_s": 54.899854199,
+    "wire_payload_bytes": 656234336,
+    "wire_payload_mbit_s": 95.62638671079797,
+    "contiguous_advance_bytes": 659476408,
+    "contiguous_advance_mbit_s": 96.09882104379248,
+    "above_hole_bytes_at_start": 3242072,
+    "above_hole_bytes_at_end": 0,
+    "receiver_interpolated_bytes": 659476198.5729328,
+    "receiver_goodput_mbit_s": 96.09879052610601
+  },
+  {
+    "run": "100-100-0-2-cubic-r3-linux",
+    "reuse_key": "cd50db51c944442c8f1158f6b5e48f01ab3f913d9b96034a675af9a8aed9c1fd",
+    "receiver_accept_ns": 959536318354792,
+    "sender_start_ns": 959536218297732,
+    "window_lo_ns": 959541318354792,
+    "window_hi_ns": 959596218297732,
+    "window_s": 54.89994294,
+    "wire_payload_bytes": 656236496,
+    "wire_payload_mbit_s": 95.62654689345658,
+    "contiguous_advance_bytes": 656236496,
+    "contiguous_advance_mbit_s": 95.62654689345658,
+    "above_hole_bytes_at_start": 0,
+    "above_hole_bytes_at_end": 0,
+    "receiver_interpolated_bytes": 656234919.785286,
+    "receiver_goodput_mbit_s": 95.62631720801362
+  }
+]
