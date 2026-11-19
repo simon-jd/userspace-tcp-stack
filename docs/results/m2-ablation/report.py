@@ -188,30 +188,30 @@ def main(camp, evidence, cells_file, out):
             if item["cell"] == cell and item["reference"] == "primary"
         ]
 
-        def verdicts(variant, ref):
-            return ", ".join(
-                f"{m} {v['verdict']}"
-                for m, v in zip(
-                    ("goodput", "retransmission", "p50", "p99"),
-                    [
-                        v
-                        for v in comparisons
-                        if v["cell"] == cell
-                        and v["variant"] == variant
-                        and v["reference"] == ref
-                    ],
-                )
-            )
-
         e = [x for x in effects if x["cell"] == cell and x["reference"] == "primary"]
         tables.extend(
             [
                 "",
-                f"Against the common Linux control, RFC: {verdicts('rfc', 'primary')}. Linux-compatible: {verdicts('compat', 'primary')}.",
-                f"RFC against its own paired Linux control: {verdicts('rfc', 'RFC-paired sensitivity')}.",
-                "",
+                "| Stack sender | Linux control | Goodput | Retransmission | Queue p50 | Queue p99 |",
+                "|---|---|---|---|---|---|",
             ]
         )
+        for variant, ref in (
+            ("rfc", "primary"),
+            ("compat", "primary"),
+            ("rfc", "RFC-paired sensitivity"),
+        ):
+            results = [
+                v["verdict"]
+                for v in comparisons
+                if v["cell"] == cell
+                and v["variant"] == variant
+                and v["reference"] == ref
+            ]
+            assert len(results) == len(METRICS)
+            control = "Common" if ref == "primary" else "RFC-paired"
+            tables.append("| " + " | ".join([LABEL[variant], control, *results]) + " |")
+        tables.append("")
         if e[0]["status"] == "goodput gap":
             tables.extend(
                 [
@@ -224,11 +224,15 @@ def main(camp, evidence, cells_file, out):
                 for x in e[:-1]
             )
         else:
-            tables.append(f"RFC-to-Linux goodput attribution: {e[0]['status']}.")
+            tables.append(
+                "There is no gap to attribute."
+                if e[0]["status"] == "no gap to attribute"
+                else "Evidence is insufficient for goodput attribution."
+            )
         tables.extend(
             [
                 "",
-                f"Unattributed Linux-compatible minus all-four goodput difference, Mbit/s: {span(e[-1])}.",
+                f"The unattributed goodput difference (Linux-compatible minus all-four) was {span(e[-1])} Mbit/s.",
                 "",
             ]
         )
@@ -239,7 +243,7 @@ def main(camp, evidence, cells_file, out):
         for m in METRICS:
             if worse[m]:
                 tables.append(
-                    f"- {'Lower goodput' if m == 'goodput_bps' else 'Higher ' + dict(retrans_pct='retransmission', qdelay_p50_ms='p50 delay', qdelay_p99_ms='p99 delay')[m]} than the common Linux median: {', '.join(worse[m])}."
+                    f"- {'Lower goodput' if m == 'goodput_bps' else 'Higher ' + dict(retrans_pct='retransmission', qdelay_p50_ms='p50 delay', qdelay_p99_ms='p99 delay')[m]} than the common Linux median occurred with {', '.join(worse[m])}."
                 )
         flags = Counter(
             x
@@ -251,7 +255,11 @@ def main(camp, evidence, cells_file, out):
         tables.extend(
             [
                 "",
-                f"Flags across all counted physical transfers in this cell: {dict(sorted(flags.items()))}.",
+                "Counts across all physical transfers were "
+                + ", ".join(f"{n} with `{flag}`" for flag, n in sorted(flags.items()))
+                + "."
+                if flags
+                else "All counted transfers were unflagged.",
                 "",
             ]
         )
