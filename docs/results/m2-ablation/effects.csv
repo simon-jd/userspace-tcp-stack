@@ -1,0 +1,29 @@
+cell,reference,linux_partner,effect,unit,median,min,max,status
+100-20-1-2,primary,compat,rfc-rto,percent of signed gap,12.305305183408679,-61.45599388108482,35.314293851259144,goodput gap
+100-20-1-2,primary,compat,rfc-prr,percent of signed gap,5.69845658083047,-49.05924889371529,52.925984860492164,goodput gap
+100-20-1-2,primary,compat,rfc-iw,percent of signed gap,4.805463961129576,-64.48954205964101,37.632677395306125,goodput gap
+100-20-1-2,primary,compat,rfc-hystart,percent of signed gap,14.57261106595507,-6.278517053895373,41.366244350112886,goodput gap
+100-20-1-2,primary,compat,rfc-all,percent of signed gap,-0.13676124090787475,-25.810462343182337,20.13629535502057,goodput gap
+100-20-1-2,primary,compat,interaction,percent of signed gap,-37.518598032231665,-164.65101403129603,178.13678159305002,goodput gap
+100-20-1-2,primary,compat,compat minus all four,Mbit/s,-2.366248062913499,-2.86805460973589,-1.7784730383138536,unattributed
+100-20-1-2,RFC-paired sensitivity,rfc,rfc-rto,percent of signed gap,13.836708706776614,-85.75302713732567,45.23882429958114,goodput gap
+100-20-1-2,RFC-paired sensitivity,rfc,rfc-prr,percent of signed gap,6.4076333428509,-68.45514710672384,67.80000585798848,goodput gap
+100-20-1-2,RFC-paired sensitivity,rfc,rfc-iw,percent of signed gap,5.403507189786254,-89.98590863268423,48.20875331047773,goodput gap
+100-20-1-2,RFC-paired sensitivity,rfc,rfc-hystart,percent of signed gap,16.38618233448108,-8.760770256952323,52.99158091537413,goodput gap
+100-20-1-2,RFC-paired sensitivity,rfc,rfc-all,percent of signed gap,-0.15378126951056842,-36.01479917523657,25.79528650486572,goodput gap
+100-20-1-2,RFC-paired sensitivity,rfc,interaction,percent of signed gap,-42.18781284340542,-210.92360860683294,248.56433524877568,goodput gap
+100-20-1-2,RFC-paired sensitivity,rfc,compat minus all four,Mbit/s,-2.366248062913499,-2.86805460973589,-1.7784730383138536,unattributed
+10-100-1-2,primary,compat,rfc-rto,percent of signed gap,-12.152240651804982,-1810.3652656853617,80.75027361428126,goodput gap
+10-100-1-2,primary,compat,rfc-prr,percent of signed gap,1.4254677113688738,-1678.0185248700402,77.94395457965685,goodput gap
+10-100-1-2,primary,compat,rfc-iw,percent of signed gap,2.104852734581448,-2376.2298669557745,77.33054167844456,goodput gap
+10-100-1-2,primary,compat,rfc-hystart,percent of signed gap,-7.598050318145563,-2159.121121201766,80.41355398191601,goodput gap
+10-100-1-2,primary,compat,rfc-all,percent of signed gap,6.793307048313409,-2530.5890575183353,68.57248198704139,goodput gap
+10-100-1-2,primary,compat,interaction,percent of signed gap,23.013277572313633,-294.7236198173389,7067.688633995285,goodput gap
+10-100-1-2,primary,compat,compat minus all four,Mbit/s,-0.3251472816994793,-0.5849085890949945,-0.15678056758210598,unattributed
+10-100-1-2,RFC-paired sensitivity,rfc,rfc-rto,percent of signed gap,,,,no gap to attribute
+10-100-1-2,RFC-paired sensitivity,rfc,rfc-prr,percent of signed gap,,,,no gap to attribute
+10-100-1-2,RFC-paired sensitivity,rfc,rfc-iw,percent of signed gap,,,,no gap to attribute
+10-100-1-2,RFC-paired sensitivity,rfc,rfc-hystart,percent of signed gap,,,,no gap to attribute
+10-100-1-2,RFC-paired sensitivity,rfc,rfc-all,percent of signed gap,,,,no gap to attribute
+10-100-1-2,RFC-paired sensitivity,rfc,interaction,percent of signed gap,,,,no gap to attribute
+10-100-1-2,RFC-paired sensitivity,rfc,compat minus all four,Mbit/s,-0.3251472816994793,-0.5849085890949945,-0.15678056758210598,unattributed

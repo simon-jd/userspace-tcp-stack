@@ -915,3 +915,101 @@ The plan compares seven CUBIC stack configurations on two 1% loss paths with a 2
 All stack senders use `snd_buf_max=64Mi`, `rcv_buf_max=32Mi` and `gso_max_size=65215` (the interface limit minus 321). The frozen RFC baseline reports a 1 s RTO floor, the RFC 6298 estimator, RFC 6675 reduction, the profile's default initial window (`none`), HyStart++, RFC congestion-control flavor and RACK/TLP disabled. The evidence checker compares each complete stack configuration field by field to the frozen profile with the registered overrides. The checker independently verifies per-connection CUBIC in every endpoint sample and terminal record. The baseline configuration's default CC field is `newreno`; the application explicitly selected CUBIC for the measured socket. [Configuration and trace readback](results/m2-ablation/profile-trace.csv) · [Endpoint CC](results/m2-ablation/endpoint-cc.csv)
 
 For each metric the frozen gap rule compares five-run medians and requires disjoint observed ranges. Goodput and queueing delays must differ by more than 10% of the Linux median. At 1% loss, excess stack retransmission must exceed 0.2 percentage points. Delay gaps below 1 ms carry the measurement-resolution annotation. Each primary share, `100 × (X − R) / (L − R)`, uses the same RFC baseline R and the Linux-compatible variant's kernel control L. Shares require a qualifying goodput gap. Bounds enumerate the eight min/max corners of X, R and L, using one R in numerator and denominator. The interaction subtracts all four single-knob shares from the all-four share and enumerates the joint corners with shared R and L. The residual reports the signed difference in Mbit/s, Linux-compatible minus all-four, without assigning it to an individual setting. Ranges describe the recorded runs. [Full-precision contrasts](results/m2-ablation/comparisons.csv) · [Shares and residuals](results/m2-ablation/effects.csv)
+
+### A1 · 100 Mbit/s, 20 ms
+
+Medians and observed ranges across the first five valid pairs. Retransmission is a percentage of transmitted data segments. Queueing delays are in milliseconds.
+
+| Sender | Goodput (Mbit/s) | Retransmission (%) | Queue p50 (ms) | Queue p99 (ms) |
+|---|---:|---:|---:|---:|
+| RFC | 8.338 [8.106, 8.636] | 0.999 [0.920, 1.046] | -0.01254 [-0.04610, -0.00161] | 0.09134 [0.06352, 0.15928] |
+| RFC + RTO/estimator | 8.068 [7.807, 9.223] | 1.055 [0.867, 1.097] | -0.01684 [-0.03895, -0.01258] | 0.10658 [0.06253, 0.15236] |
+| RFC + PRR | 8.213 [7.393, 8.998] | 0.965 [0.894, 1.148] | -0.01094 [-0.01507, -0.00171] | 0.10520 [0.05489, 0.14844] |
+| RFC + IW10 | 8.233 [7.752, 9.278] | 0.946 [0.917, 1.043] | -0.01019 [-0.02337, -0.00245] | 0.08174 [0.07014, 0.12815] |
+| RFC + classic HyStart | 8.018 [7.665, 8.220] | 1.045 [1.011, 1.099] | -0.00988 [-0.03009, -0.00525] | 0.09374 [0.04025, 0.09968] |
+| RFC + all four | 8.341 [8.163, 8.575] | 1.000 [0.943, 1.019] | -0.00758 [-0.03900, 0.02007] | 0.05546 [0.02614, 0.13516] |
+| Linux-compatible stack | 5.975 [5.707, 6.385] | 1.048 [0.965, 1.112] | -0.00907 [-0.02134, -0.00136] | 0.05378 [0.04468, 0.07638] |
+| Linux CUBIC | 6.138 [5.976, 6.288] | 1.006 [0.973, 1.094] | -0.00846 [-0.01784, 0.00992] | 0.06870 [0.06122, 0.08285] |
+
+| Stack sender | Linux control | Goodput | Retransmission | Queue p50 | Queue p99 |
+|---|---|---|---|---|---|
+| RFC | Common | gap | no gap | no gap | no gap |
+| Linux-compatible stack | Common | no gap | no gap | no gap | no gap |
+| RFC | RFC-paired | gap | no gap | no gap | no gap |
+
+| Change | Share of signed RFC-to-Linux goodput gap (%) |
+|---|---:|
+| RFC + RTO/estimator | 12.31 [-61.46, 35.31] |
+| RFC + PRR | 5.70 [-49.06, 52.93] |
+| RFC + IW10 | 4.81 [-64.49, 37.63] |
+| RFC + classic HyStart | 14.57 [-6.28, 41.37] |
+| RFC + all four | -0.14 [-25.81, 20.14] |
+| interaction | -37.52 [-164.65, 178.14] |
+
+The unattributed goodput difference (Linux-compatible minus all-four) was -2.366 [-2.868, -1.778] Mbit/s.
+
+- Lower goodput than the common Linux median occurred with Linux-compatible stack.
+- Higher retransmission than the common Linux median occurred with RFC + RTO/estimator, RFC + classic HyStart, Linux-compatible stack.
+- Higher p50 delay than the common Linux median occurred with RFC + all four.
+- Higher p99 delay than the common Linux median occurred with RFC, RFC + RTO/estimator, RFC + PRR, RFC + IW10, RFC + classic HyStart.
+
+Counts across all physical transfers were 69 with `foreign_cpu`, 6 with `rwnd_limited_frac`, 1 with `time_squeeze`.
+
+### A2 · 10 Mbit/s, 100 ms
+
+Medians and observed ranges across the first five valid pairs. Retransmission is a percentage of transmitted data segments. Queueing delays are in milliseconds.
+
+| Sender | Goodput (Mbit/s) | Retransmission (%) | Queue p50 (ms) | Queue p99 (ms) |
+|---|---:|---:|---:|---:|
+| RFC | 1.646 [1.484, 1.849] | 0.951 [0.804, 1.250] | -0.00418 [-0.01048, -0.00099] | 0.85756 [0.72096, 1.10865] |
+| RFC + RTO/estimator | 1.684 [1.545, 1.687] | 0.981 [0.869, 1.082] | -0.01765 [-0.02206, -0.00948] | 0.59875 [0.43930, 1.04653] |
+| RFC + PRR | 1.641 [1.556, 1.672] | 1.029 [0.939, 1.114] | -0.00882 [-0.01900, -0.00344] | 1.04881 [0.85873, 1.12886] |
+| RFC + IW10 | 1.639 [1.558, 1.750] | 0.961 [0.861, 1.086] | -0.01699 [-0.04346, -0.01136] | 0.97469 [0.88352, 1.06849] |
+| RFC + classic HyStart | 1.669 [1.546, 1.726] | 1.017 [0.910, 1.137] | -0.00696 [-0.01385, 0.01919] | 1.04436 [0.96595, 1.14722] |
+| RFC + all four | 1.625 [1.591, 1.767] | 1.049 [0.815, 1.092] | -0.00699 [-0.01455, 0.00215] | 0.68208 [0.55695, 1.09233] |
+| Linux-compatible stack | 1.300 [1.182, 1.434] | 1.011 [0.874, 1.139] | -0.00677 [-0.01003, -0.00411] | 0.82682 [0.19641, 0.97237] |
+| Linux CUBIC | 1.335 [1.182, 1.473] | 0.931 [0.881, 1.148] | -0.00636 [-0.00836, -0.00484] | 0.81943 [0.66210, 0.98151] |
+
+| Stack sender | Linux control | Goodput | Retransmission | Queue p50 | Queue p99 |
+|---|---|---|---|---|---|
+| RFC | Common | gap | no gap | no gap | no gap |
+| Linux-compatible stack | Common | no gap | no gap | no gap | no gap |
+| RFC | RFC-paired | no gap | no gap | no gap | no gap |
+
+| Change | Share of signed RFC-to-Linux goodput gap (%) |
+|---|---:|
+| RFC + RTO/estimator | -12.15 [-1810.37, 80.75] |
+| RFC + PRR | 1.43 [-1678.02, 77.94] |
+| RFC + IW10 | 2.10 [-2376.23, 77.33] |
+| RFC + classic HyStart | -7.60 [-2159.12, 80.41] |
+| RFC + all four | 6.79 [-2530.59, 68.57] |
+| interaction | 23.01 [-294.72, 7067.69] |
+
+The unattributed goodput difference (Linux-compatible minus all-four) was -0.325 [-0.585, -0.157] Mbit/s.
+
+- Lower goodput than the common Linux median occurred with Linux-compatible stack.
+- Higher retransmission than the common Linux median occurred with RFC, RFC + RTO/estimator, RFC + PRR, RFC + IW10, RFC + classic HyStart, RFC + all four, Linux-compatible stack.
+- Higher p50 delay than the common Linux median occurred with RFC.
+- Higher p99 delay than the common Linux median occurred with RFC, RFC + PRR, RFC + IW10, RFC + classic HyStart, Linux-compatible stack.
+
+Counts across all physical transfers were 2 with `capture_mismatch:total_retrans`, 68 with `foreign_cpu`, 2 with `time_squeeze`.
+
+### Direction, interaction and sensitivity
+
+RFC delivered more application data than the common Linux sender in both cells. The denominator `L − R` was −2.200048 Mbit/s in A1 and −0.310814 Mbit/s in A2. A positive share therefore means that a stack change lowered RFC goodput toward Linux. A negative share means that it raised goodput further above Linux. The all-four median share was −0.14% in A1 and +6.79% in A2. Every single-knob, all-four and interaction range crosses zero. These five repetitions leave the sign of each knob contribution and of the interaction uncertain. The bounds enumerate observed extrema and do not estimate a statistical confidence level. In A2 the nearest Linux/RFC range endpoints differ by only 0.011190 Mbit/s. That small corner denominator produces the wide bounds reported above.
+
+The Linux-compatible stack was slower than all-four at every corner. The remaining median changes were −2.366 Mbit/s in A1 and −0.325 Mbit/s in A2, and the full residual ranges were below zero. The experiment changes several additional profile fields together in that comparison. The residual therefore remains unattributed.
+
+The paired sensitivity gives a different answer in A2. Its kernel median was 1.258416 [1.105447, 1.687174] Mbit/s, overlapping the RFC range of 1.483985–1.848797. Under that sensitivity comparison there is no A2 goodput gap to attribute. A1 retained a goodput gap against its RFC-paired kernel median of 6.381901 [6.077129, 6.802965] Mbit/s. The predeclared common reference determines the primary results in both cells. In A2 the two additional p50 gaps against the common control, for RTO/estimator and IW10, measured −0.01129 and −0.01063 ms. Both fall below the 1 ms resolution threshold. Negative queueing-delay values reflect subtraction of the idle-ping baseline. [Comparisons](results/m2-ablation/comparisons.csv)
+
+The stack's congestion-window samples help describe the goodput difference. Taking the median within each run and then across its five repetitions, A1 had 14 segments for RFC and all-four, and 10 for both Linux-compatible and common Linux. A2 had 13, 14, 11 and 11 segments, respectively. Both cells had zero median sampled queue occupancy for those four rows. The trace classified 6,300 ordinary retransmissions, 5,770 fast retransmissions, 106 RTO retransmissions and 106 separate RTO events. It emitted zero standalone cwnd or recovery events. Three classic HyStart ACK-train detections recorded cwnds of 203, 156 and 250 segments. Both delay counters were zero. These event counts cover complete stack transfers. The congestion-window comparison uses only the registered measurement windows. [Window diagnostics](results/m2-ablation/trace-diagnostics.csv) · [Full trace and counters](results/m2-ablation/profile-trace.csv)
+
+### Acquisition and replay
+
+The restored executable and core came from `3f48c30dbf70240d50234f095eaca6de24fc0625`. The campaign ran in the accepted checkpoint checkout `35a14fb5ff9c5b243a74aa9198268c29ee250ffc`. On November 19, 2026 both idle slot consumers accepted 67 calibration items and checked 62 underlying files per slot. Re-evaluation of all 31 source files for the CUBIC parallel proof reproduced its archived report, including 15 valid transfers and five overlapping pairs. Both slots and all measured transfers matched reuse key `cd50db51c944442c8f1158f6b5e48f01ab3f913d9b96034a675af9a8aed9c1fd`. An initial pre-acquisition comparison stopped on Python tuple/JSON array representation. A fresh gate check compared the complete serialized reports before the first measured transfer. Both start records were archived.
+
+Slot 1 was released at 05:50:34 PST. Slot 0 started the first transfer at 05:50:38 and finished the last at 08:14:42, with topology teardown complete at 08:14:44. All 140 transfers were valid. There were 70 physically consecutive same-seed pairs and zero retries or interrupted transfers. Reconstruction verified both endpoint payload digests, socket algorithms, sample bounds and receiver goodput in every transfer. Both kernel qdisc snapshots matched the registered seed, loss, delay, rate and queue size in every run. The original and completely restored data yielded identical packet counts and SHA-256 digests for all 280 captures, comprising 6,420,395 packets and 805,056,252 bytes. The captures reported zero kernel drops. [Run evidence](results/m2-ablation/evidence.csv) · [Pair chronology](results/m2-ablation/pair-order.csv) · [Capture hashes](results/m2-ablation/capture-audit.csv)
+
+All flags remain in the counts. The foreign-CPU lower bound had a median of 4.270% and a range of 1.334–24.871%. It exceeded 2% on 137 transfers. Three transfers recorded `time_squeeze`, and six recorded receive-window limitation, reaching 2.985% of one A1 RFC+PRR measurement window. No transfer recorded positive send-buffer-limited time. Two A2 auxiliary kernel controls carried the whole-run `capture_mismatch:total_retrans` flag. For the PRR partner at repetition 4, r1-ingress sequence analysis counted 81 retransmissions and the sender counted 75. Their window rates were 0.953678% and 0.862852%. The all-four partner at repetition 1 recorded 84 and 77, respectively, with window rates of 1.167343% and 1.084056%. The registered retransmission metric uses the sender counter. All four captures for these two controls reported zero kernel drops. [All transfers and flags](results/m2-ablation/runs.csv)
+
+The volume `utcp-data:/m2/m2d-ablation/` holds source data. The raw and compact archives are under `utcp-data:/m2/archive/`. A fresh extraction of the raw archive reproduced all pcap audits and both standard CSVs. The compact archive reproduced both standard CSVs, endpoint and full-profile evidence, diagnostics, contrasts, effect bounds, and 14 median-run overlays. A compact replay obtains the campaign-level `plan.json` from the verified full archive. The overlay for each label shows its own paired kernel control. The result-file manifest covers the exported CSVs, report tables, plots, reproduction inputs and analysis scripts. [Result-file hashes](results/m2-ablation/SHA256SUMS) [Archive hashes](results/m2-ablation/archives.sha256) · [Acquisition-end runtime hashes](results/m2-ablation/final-runtime.sha256) · [Raw and compact replay commands](results/m2-ablation/archive.sh) · [Selected overlay runs](results/m2-ablation/plot-selection.csv)
