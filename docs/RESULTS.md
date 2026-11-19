@@ -242,7 +242,10 @@ transfers. The fixed stack goodput threshold was 93.727873 Mbit/s. Each gate con
 62 source fingerprints. The separate slot 0 diagnostic on `8facd285` passed 67/67 under key
 `96d5b26f1e9db5fd7e971c8a5a304c420fb1605078a7ff8ce5d9c82bcfddcff7`.
 Its default and capped rates were 95.625960 and 95.617249 Mbit/s. Its peer slot and proof were
-never acquired. The November 14 runs above each passed 66/67.
+never acquired. The November 14 runs above each passed 66/67. Their original gate JSON files
+under `/m2/m2d-testbed/calib-s{0,1}/` retain SHA-256
+`1cc7cd9ba1cd19decaf2c13f61eb02529b8b637b29efbaa8d920d6ec23f95631` and
+`167490c922089a8a719e0e0e9a24bca82393aea3b119f7571d5fba34bc1637d2`, respectively.
 
 | Final slot | Passing rows by item 1–6 | Default / capped NewReno (Mbit/s) | Stack / kernel idle medians (ms) | Signed difference (ms) |
 |---|---|---:|---:|---:|
@@ -460,6 +463,70 @@ lateness p99 65 535 ns both; lateness max 1.81-2.37 ms with, 1.78-2.11 ms withou
 per run. No cost is visible at this event count. The core does not emit `cwnd` or `recovery` events
 yet (DESIGN §14.6), so these traces hold only retransmissions and RTOs; once those kinds are emitted
 the measurement is repeated.
+
+### Integrated CUBIC parallel proof, November 19, 2026
+
+The frozen calibration build ran 15 trace-enabled `linux_compat` CUBIC transfers at 100 Mbit/s,
+20 ms, zero configured loss and 2×BDP. All endpoint SHA-256 values and byte counts matched,
+and all 15 senders reported CUBIC throughout the measured window. The five serial transfers
+ran on slot 0. Five subsequent pairs had simultaneous measured windows on slots 0 and 1,
+with overlap 24.978921–24.979886 s (99.996222–99.999913% of the longer window).
+The proof uses receiver acceptance plus five seconds as the lower bound, and the earlier of the
+sender and receiver duration endpoints as the upper bound. The two slots share a boot ID. All 30 transfer captures replayed, totaling 11,144,434 records,
+with matching filter and captured counts and zero kernel capture drops.
+
+| Metric | Serial slot 0 | Parallel slot 0 | Parallel slot 1 |
+|---|---:|---:|---:|
+| Goodput median [range], Mbit/s | 95.625730 [95.625495–95.625975] | 95.625862 [95.625727–95.625961] | 95.625800 [95.625502–95.625857] |
+| Pooled histogram samples | 20,979 | 21,520 | 21,163 |
+| Pooled loop lateness p99 bucket upper edge, ns | 32,767 | 65,535 | 65,535 |
+| Exact greatest loop lateness, ns | 2,618,734 | 2,774,214 | 2,956,912 |
+| Median of per-run ping RTT p99, ms | 59.8132 | 59.7474 | 59.8185 |
+| Median of per-run queueing delay p99, ms | 39.7381 | 39.6687 | 39.7710 |
+| Greatest sndbuf- / rwnd-limited time, % of window | 0.000 / 0.000 | 0.000 / 0.000 | 0.000 / 0.000 |
+| Foreign CPU lower bound, range (%) | 1.795–6.065 | 6.327–27.279 | 2.209–4.686 |
+
+| Repetition | Serial exact max (ns) | Parallel slot 0 exact max (ns) | Parallel slot 1 exact max (ns) | Overlap (s) |
+|---:|---:|---:|---:|---:|
+| 0 | 2,362,432 | 2,774,214 | 2,956,912 | 24.979614 |
+| 1 | 1,654,352 | 2,750,379 | 1,206,505 | 24.979779 |
+| 2 | 2,195,985 | 2,012,068 | 2,006,609 | 24.978921 |
+| 3 | 1,413,836 | 2,006,075 | 1,420,729 | 24.979110 |
+| 4 | 2,618,734 | 1,916,306 | 1,098,404 | 24.979886 |
+
+The CUBIC proof passed all predeclared comparisons on both slots. The earlier NewReno proof
+still determines the serial production schedule.
+
+The allowed parallel goodput median difference was 2% with overlapping ranges. The allowed
+pooled p99 change was one log2 bucket. The exact parallel maximum limit was
+5,237,468 ns, twice the exact serial maximum. Each reported loop maximum was independently
+checked against the sender terminal record and the backend statistics. The ping RTT values
+come from request/reply captures, with the base subtracted only for the queueing-delay row.
+
+All 15 runs retained host uptime, top CPU users, other threads last seen on CPUs 8–15,
+per-CPU busy/irq/softirq ticks and container cgroup usage. Foreign CPU time varied during the
+two full calibration gates as well. Its lower bound ranged from 0.966% to 14.541% on slot 0
+and 0.889% to 9.667% on slot 1. The 2% flag appeared in 16/26 and
+17/26 calibration transfers, respectively, and 14/15 proof transfers. The per-run
+metadata and per-CPU deltas are retained with the raw data.
+
+```sh
+set -euo pipefail
+export UTCP_M2_PREFIX=utcp-m2-finalgate UTCP_M2_JOB=utcp-m2-finalgate-runner
+sha=3f48c30dbf70240d50234f095eaca6de24fc0625
+taskset -c 16-31 nice -n 10 python3 tools/m2/matrix.py proof \
+    --campaign "m2-integrate/${sha}-proof-a1-cubic" --cubic-only
+```
+
+The historical NewReno proof JSON still has SHA-256
+`a055af5f4c652032b376be8549395d2221ec2a8a017deab9eb248cec15c8e1e6` under `/m2/m2d-testbed/proof/`.
+
+The original raw root is `utcp-data:/m2/m2-integrate/${sha}-proof-a1-cubic/`.
+Its proof JSON SHA-256 is `61678ae37526bc0b15fbe896ecfa2b9f9af4c1cfa0af80e4e18b0681a2ce1ab4`.
+The non-pcap archive has 245 entries and SHA-256
+`83a1d773e8c3c9a27f55351abfb4a53b3f01bf4c69859badc3fa78f5475920a5` in
+`/m2/archive/m2-integrate-${sha}-proof-a1-cubic-audit-1/`. The adjacent
+`-physical-a1/physical-replay.json` records the independent packet, time-window and histogram checks.
 
 ## Comparison with Linux traces
 
