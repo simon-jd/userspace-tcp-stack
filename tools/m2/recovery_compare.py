@@ -187,6 +187,36 @@ def bracket_phase(samples, t):
     return dict(phase=observed, before=sample_view(before), after=sample_view(after))
 
 
+def state_interval(events, drop, last, srtt_us):
+    """Bound the first continuous Recovery/Loss state observed in the damaged flight.
+
+    Times are sender monotonic nanoseconds. No active sample, or no subsequent
+    exit, leaves duration unknown. A Lost-to-Recovery transition is still active.
+    """
+    active = ("loss", "recovery", "cwr")
+    prior = drop
+    opened = None
+    latest = None
+    states = []
+    for event in events:
+        t = event["t"]
+        if not drop <= t <= last:
+            continue
+        ca = event.get("ca_state", event.get("ca"))
+        if ca in active:
+            if opened is None:
+                opened = [prior, t]
+            latest = t
+            if not states or states[-1] != ca:
+                states.append(ca)
+        elif opened and ca in ("open", "disorder"):
+            return dict(states=states, entry_bracket_ns=opened, exit_bracket_ns=[latest, t],
+                        duration_rtts=[(latest - opened[1]) / (srtt_us * 1000),
+                                       (t - opened[0]) / (srtt_us * 1000)] if srtt_us else None)
+        prior = t
+    return dict(states=states, entry_bracket_ns=opened, exit_bracket_ns=None, duration_rtts=None)
+
+
 def pcap_records(path):
     with path.open("rb") as f:
         hdr = f.read(24)
@@ -296,14 +326,16 @@ def analyze_run(rd):
     tdrop, tend = (clock.to_mono(e[k]) for k in ("drop_ns", "recovery_ack_ns"))
     sampled_phase = bracket_phase(samples, tdrop)
     detail = sampled_phase
+    state_events = samples
     post = next((s for s in samples if s["t"] >= tend and s["ca_state"] in ("open", "disorder")
-                 and s["bytes_acked"] >= e["high_at_repair"]), None)
+                 and s["bytes_acked"] >= e["high_at_repair"] + 1), None)
     source = "10ms TCP_INFO; first subsequent sample in Open/Disorder covering the recovery ACK"
     if meta["impl"] == "utcp":
         config = A.find_event(snd, "config") or {}
         checks["linux_config"] = (config.get("quickack") == "linux" and config.get("rack_tlp") == "true"
                                   and config.get("recovery_reduction") == "prr")
         trace = A.read_jsonl(rd / "trace.jsonl")
+        state_events = (v for v in trace if v["ev"] in ("ack", "tx", "rto"))
         tx = collections.defaultdict(list)
         for v in trace:
             if v["ev"] == "tx" and v["len"] > 0:
@@ -337,10 +369,19 @@ def analyze_run(rd):
     srtt = (before or {}).get("srtt_us")
     checks["srtt_observed"] = bool(srtt and srtt > 0)
     counters, undo = report_counters(rd, meta)
+    state = state_interval(state_events, tdrop, post["t"] if post else tend, srtt)
+    sample_gaps = [b["t"] - a["t"] for a, b in zip(samples, samples[1:])]
+
     groups = e.pop("ack_groups")
     with (rd / "recovery-acks.jsonl").open("w") as out:
         for g in groups:
             print(json.dumps(g, separators=(",", ":")), file=out)
+    if meta["impl"] == "utcp":
+        loss_signals = [dict(t=p["t_ns"], tx=p["trace_tx"]["tx"], off=p["off"])
+                        for a in groups for p in a["tx"] if p.get("trace_tx")
+                        and p["trace_tx"]["tx"] in ("rto_rexmit", "tlp")]
+    else:
+        loss_signals = None
     result = dict(run=rd.name, case=case, rep=meta["rep"], cc=cc, impl=meta["impl"],
                   commit=meta["commit"], bulk_sha256=meta["bulk_sha256"], checks=checks,
                   valid=all(checks.values()), delivery={k: [ss.get(k), rs.get(k)] for k in ("bytes", "sha256", "cc")},
@@ -349,7 +390,9 @@ def analyze_run(rd):
                   post_cwnd=sample_view(post), post_cwnd_source=source,
                   post_ms_from_wire_ack=(post["t"] - tend) / 1e6 if post else None,
                   srtt_before_drop_us=srtt, counters=counters, undo_counters=undo,
-                  ack_groups=len(groups), wire=e, wire_rtts={
+                  ack_groups=len(groups), wire=e, state_interval=state, stack_probe_rto_tx=loss_signals,
+                  sample_count=len(samples), max_sample_gap_ms=max(sample_gaps, default=0) / 1e6,
+                  wire_rtts={
                       k: (e["recovery_ack_ns"] - e[k]) / (srtt * 1000) if srtt else None
                       for k in ("drop_ns", "repair_ns")})
     json_write(rd / "recovery.json", result)
@@ -367,7 +410,7 @@ def decisions(rd, hole):
 
 
 def pair_report(base):
-    pairs, missing = [], []
+    pairs, missing, provenance = [], [], set()
     for case, cc, rep in itertools.product(CASES, CCS, (1, 2)):
         names = [f"{case}-{cc}-r{rep}-{impl}" for impl in IMPLS]
         if not all((base / name / "recovery.json").exists() for name in names):
@@ -377,6 +420,8 @@ def pair_report(base):
         if not all("latched" in x for x in (a, b)):
             pairs.append(dict(runs=names, comparable=False, reason="incomplete analysis"))
             continue
+        for x in (a, b):
+            provenance.add((x["commit"], x["bulk_sha256"]))
         left, right = [decisions(base / n, r["latched"][-1][0]) for n, r in zip(names, (a, b))]
         def first_difference(l, r):
             return next(({"index": i, "utcp": x, "linux": y} for i, (x, y) in
@@ -384,18 +429,22 @@ def pair_report(base):
         first = first_difference(left, right)
         repairs = [[v for g in seq for v in g["tx"] if v[3]] for seq in (left, right)]
         comparable = (a["valid"] and b["valid"] and a["commit"] == b["commit"] and
-                      a["bulk_sha256"] == b["bulk_sha256"])
+                      a["bulk_sha256"] == b["bulk_sha256"] and
+                      all((r["case"], r["cc"], r["rep"], r["impl"], r["run"]) == (case, cc, rep, impl, n)
+                          for r, impl, n in zip((a, b), IMPLS, names)))
         pairs.append(dict(runs=names, comparable=comparable,
                           ack_groups=[len(left), len(right)], first_ack_difference=first,
                           repair_order=repairs, first_repair_difference=first_difference(*repairs),
                           counters=[r["counters"] for r in (a, b)], warmup=[r["warmup"] for r in (a, b)],
+                          state_intervals=[r["state_interval"] for r in (a, b)],
+                          stack_probe_rto_tx=a["stack_probe_rto_tx"], linux_undo=b["undo_counters"],
                           srtt_us=[r["srtt_before_drop_us"] for r in (a, b)],
                           repair_to_ack_rtts=[r["wire_rtts"]["repair_ns"] for r in (a, b)],
                           post_cwnd=[(r["post_cwnd"] or {}).get("cwnd") for r in (a, b)],
                           note=("wire decisions differ; causal attribution requires review of ACKs and samples"
                                 if first else "identical ordered wire decisions for the observed ACK interval")))
     result = dict(expected_runs=40, missing=missing, pairs=pairs,
-                  complete=len(pairs) == 20 and all(p["comparable"] for p in pairs))
+                  revisions=sorted(provenance), complete=len(pairs) == 20 and len(provenance) == 1 and all(p["comparable"] for p in pairs))
     json_write(base / "recovery-pairs.json", result)
     return result
 

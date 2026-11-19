@@ -44,6 +44,23 @@ class DirectedRecovery(unittest.TestCase):
         self.assertEqual(C.bracket_phase([s(10, 10, 20), s(20, 20, 20)], 14)["phase"], "unresolved")
         self.assertEqual(C.bracket_phase([s(10, 10, 20), s(20, 10, 100, "loss")], 14)["phase"], "unresolved")
 
+    def test_state_duration_is_bounded_by_observations(self):
+        rows = [{"t": t, "ca_state": ca, "cwnd": 10} for t, ca in
+                ((0, "open"), (10, "open"), (20, "recovery"), (30, "loss"), (40, "open"))]
+        obs = C.state_interval(rows, 13, 40, 1)
+        self.assertEqual(obs["entry_bracket_ns"], [13, 20])
+        self.assertEqual(obs["exit_bracket_ns"], [30, 40])
+        self.assertEqual(obs["duration_rtts"], [0.01, 0.027])
+        self.assertIsNone(C.state_interval([rows[0], rows[-1]], 13, 40, 1)["duration_rtts"])
+        self.assertIsNone(C.state_interval(rows[:-1], 13, 35, 1)["duration_rtts"])
+
+    def test_tail_probe_before_first_hole_repair(self):
+        rows = [(1, "tx", 0, 100), (2, "tx", 100, 100), (3, "tx", 200, 50),
+                (4, "ack", 100, []), (5, "tx", 200, 50), (6, "ack", 100, [[200, 250]]),
+                (7, "tx", 100, 100), (8, "ack", 250, [])]
+        e = C.wire_episode(rows, [100, 200], 250)
+        self.assertEqual((e["drop_ns"], e["repair_ns"], e["recovery_ack_ns"]), (2, 5, 8))
+
     def test_complete_paired_plan(self):
         p = list(C.plan("smoke/wire", C.CASES, C.CCS, C.IMPLS, [1, 2]))
         self.assertEqual(len({name for name, _ in p}), 40)
