@@ -10,6 +10,7 @@
 #include <optional>
 #include <string_view>
 
+#include "utcp/config.hpp"
 #include "utcp/time.hpp"
 #include "utcp/types.hpp"
 
@@ -140,6 +141,8 @@ struct TraceEvent {
   // (the gate was checked against pacing_next before it).
   std::uint64_t gate_rate = 0;
   bool burst_start = false;
+  // Resolved socket option when it differs from the stack-wide default.
+  std::optional<CcAlgo> cc_override;
   std::optional<BbrInfo> bbr;  // only for connections using BBR
 
   bool operator==(const TraceEvent&) const = default;
@@ -275,6 +278,7 @@ void for_each_field(const TraceEvent& e, F&& f) {
   f(std::string_view{"snd_nxt_off"}, e.snd_nxt_off);
   f(std::string_view{"gate_rate"}, e.gate_rate);
   f(std::string_view{"burst_start"}, e.burst_start);
+  if (e.cc_override) f(std::string_view{"cc_override"}, *e.cc_override);
   if (e.bbr) {
     f(std::string_view{"bbr_mode"}, e.bbr->mode);
     f(std::string_view{"bbr_lt_use_bw"}, e.bbr->lt_use_bw);

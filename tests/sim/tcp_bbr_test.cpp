@@ -174,6 +174,75 @@ TEST(TcpBbrSim, IdleProbeBandwidthRestartPacesFirstPayloadAtUnityGain) {
   EXPECT_GT(changed, 0u);  // ensure the old cached rate would disagree
 }
 
+// Only the observer changes in the negative cases. Real packets and socket
+// selection follow the normal World path; optional BBR diagnostics are
+// missing in both controls and faults.
+TEST(TcpBbrSim, CheckerUsesSocketSelectionWhenModelDiagnosticsAreMissing) {
+  struct Observer final : TraceSink {
+    AppNode* app = nullptr;
+    bool corrupt = false, paced = false;
+    unsigned payloads = 0;
+    void on_event(const TraceEvent& original) override {
+      auto e = original;
+      e.bbr.reset();
+      if (e.kind == TraceKind::tx && e.tx == TxKind::data) {
+        ++payloads;
+        if (corrupt) {
+          e.gate_rate = paced ? 0 : e.pacing_rate;
+          e.burst_start = !paced;
+        }
+      }
+      app->on_event(e);
+    }
+  };
+  for (const auto& [node_cc, socket_cc] : {
+         std::pair{CcAlgo::bbr, std::optional<CcAlgo>{}},
+         std::pair{CcAlgo::newreno, std::optional{CcAlgo::bbr}},
+         std::pair{CcAlgo::bbr, std::optional{CcAlgo::newreno}}}) {
+    for (bool corrupt : {false, true}) {
+      SCOPED_TRACE(to_string(node_cc));
+      SCOPED_TRACE(to_string(socket_cc.value_or(node_cc)));
+      SCOPED_TRACE(corrupt);
+      auto s = two_node_scenario(9406, clean_link(10ms), clean_link(10ms));
+      TrickleClient client;
+      client.chunk = 32 * 1024;
+      client.total = client.chunk;
+      client.start = s.start + 1ms;
+      client.opts.cc = socket_cc;
+      s.conn.push_back(bulk(client.total, 0));
+      Observer observer;
+      observer.corrupt = corrupt;
+      observer.paced = socket_cc.value_or(node_cc) == CcAlgo::bbr;
+      RunSpec spec;
+      spec.keep_trace = spec.keep_wire = false;
+      spec.make = [&](const Scenario& sc, std::uint32_t n) -> std::unique_ptr<Node> {
+        if (n != 0) return nullptr;
+        auto sender = std::make_unique<AppNode>(sc, n, [&](StackConfig& cfg) {
+          cfg.tcp.cc = node_cc;
+          cfg.tcp.pacing = Pacing::cc_requested;
+        });
+        observer.app = sender.get();
+        sender->script = [&](AppNode& app, Time now) {
+          app.stack().set_trace_sink(&observer);
+          client.step(app, now);
+        };
+        return sender;
+      };
+      const auto r = run_sim(s, spec);
+      if (corrupt) {
+        EXPECT_EQ(r.result.verdict, Verdict::pacing) << r.violations();
+        const char* cause = observer.paced ? "ordinary paced payload missing gate rate"
+                                          : "gate rate disagrees with sender pacing rate";
+        EXPECT_NE(r.violations().find(cause), std::string::npos);
+      } else {
+        EXPECT_TRUE(r.ok()) << r.violations();
+        EXPECT_EQ(r.counts[1].tcp_bytes_received, client.total);
+        EXPECT_GT(observer.payloads, 10u);
+      }
+    }
+  }
+}
+
 TEST(TcpBbrSim, LossyBulkActivatesLongTermBandwidthSampling) {
   BbrFlow flow;
   run_bbr(flow, true);

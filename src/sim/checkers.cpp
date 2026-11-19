@@ -704,7 +704,8 @@ std::optional<std::string> PacingChecker::on_trace(std::uint32_t node, const Tra
   const bool configured = conf != configs_.end();
   const bool paced = configured ? (conf->second.test_fixed_pacing_rate ||
       conf->second.pacing == Pacing::always ||
-      (conf->second.pacing == Pacing::cc_requested && e.bbr.has_value()))
+      (conf->second.pacing == Pacing::cc_requested &&
+       e.cc_override.value_or(conf->second.cc) == CcAlgo::bbr))
       : s.rate != 0;
   const auto rate = configured ? conf->second.test_fixed_pacing_rate.value_or(e.pacing_rate)
                                : e.pacing_rate;
