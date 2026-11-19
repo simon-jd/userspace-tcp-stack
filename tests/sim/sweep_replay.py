@@ -38,6 +38,17 @@ with tempfile.TemporaryDirectory() as out:
                and e["bbr_cwnd_gain_q8"] == 739 and e["bbr_min_rtt_us"] > 0
                and e["bbr_bandwidth_q24"] > 0 and e["delivery_rate"] > 0
                and isinstance(e["bbr_lt_use_bw"], bool) for e in acks)
+    # The first advancing ACK covers the short first segment in the initial
+    # burst. Linux reports delivered packets times MSS, using integer-us stamps.
+    first_tx = next(e for e in events if e["node"] == "a" and e["ev"] == "tx"
+                    and e["tx"] == "data" and e["len"] > 0)
+    first_ack = next(e for e in acks if e["snd_una_off"] > first_tx["snd_una_off"])
+    assert first_ack["snd_una_off"] - first_tx["snd_una_off"] == first_tx["len"]
+    assert first_ack["delivered"] - first_tx["delivered"] == 1
+    interval_us = first_ack["t"] // 1000 - first_tx["t"] // 1000
+    expected_rate = first_tx["mss"] * 1_000_000 // interval_us
+    assert first_ack["pacing_rate"] != expected_rate
+    assert first_ack["delivery_rate"] == expected_rate, (first_ack["delivery_rate"], expected_rate)
     assert all("bbr_mode" not in e for e in events if e["node"] == "b")
 
     # Count only payload that the receiver actually read and checked. Gen5
