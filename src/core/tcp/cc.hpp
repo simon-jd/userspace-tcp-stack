@@ -88,6 +88,8 @@ struct AckSample {
 
 enum class CaEvent : std::uint8_t { tx_start, cwnd_restart, complete_cwr, loss };  // CA_EVENT_*
 
+struct StackStats;
+
 struct CcConn {  // the part of the TCB a CC may read and write
   std::uint32_t cwnd = 0, ssthresh = 0, cwnd_cnt = 0, cwnd_clamp = 0;
   std::uint32_t prior_cwnd = 0, prior_ssthresh = 0;  // for undo (§1.2) and repeated RTOs
@@ -122,6 +124,10 @@ struct CcConn {  // the part of the TCB a CC may read and write
   // The pacing gate applies (Linux sk_pacing_status != SK_PACING_NONE;
   // HyStart reads it, tcp_cubic.c hystart_update).
   bool paced = false;
+  Hystart hystart = Hystart::hystart_classic;
+  std::uint32_t hystart_low_window = 16;
+  Duration hystart_ack_delta = std::chrono::milliseconds{2};
+  StackStats* stats = nullptr;  // stack-wide classic HyStart event counters
   CcFlavor flavor = CcFlavor::linux;  // TcpConfig::cc_flavor (M2-DESIGN §2.1 item 5)
 };
 

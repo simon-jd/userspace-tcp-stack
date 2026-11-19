@@ -88,6 +88,7 @@ public:
 struct Rig {
   explicit Rig(bool sack_ok) : sack(sack_ok) {
     q.set_sack_ok(sack_ok);
+    cc.flavor = cfg.cc_flavor;
     cc.cwnd = 10;
     cc.ssthresh = utcp::cwnd_infinite;
     cc.mss = mss;
@@ -217,9 +218,9 @@ TEST(AckPipeline, ScriptedSackSequence) {
   EXPECT_EQ(o.seq_rtt, 115ms);  // segment 5 sent at 5 ms
   EXPECT_EQ(r.rec.state(), CaState::recovery);
   EXPECT_TRUE(r.q.find(2000)->lost);
-  EXPECT_EQ(r.cc.ssthresh, 4u);  // FlightSize 8 / 2
-  // PRR (M2-DESIGN §1.8): in_flight 8 - 3 - 1 = 4 = ssthresh, delta 0, and
-  // the forced sndcnt of 1 for the fast retransmission: cwnd 4 + 1.
+  EXPECT_EQ(r.cc.ssthresh, 7u);  // Linux tcp_reno_ssthresh: cwnd 14 / 2
+  // PRR: in_flight 8 - 3 - 1 = 4 is below ssthresh 7. The one newly
+  // delivered packet permits one transmission, giving cwnd 4 + 1.
   EXPECT_EQ(r.cc.cwnd, 5u);
   EXPECT_EQ(r.algo.log,
             (std::vector<std::string>{"pkts_acked 0 disorder", "set_state recovery"}));
@@ -249,7 +250,8 @@ TEST(AckPipeline, ScriptedSackSequence) {
   o = r.ack(10'000);
   EXPECT_EQ(r.rec.state(), CaState::open);
   EXPECT_EQ(o.delivered, 4u);
-  EXPECT_EQ(r.cc.cwnd, 5u);  // 4, then cwnd_cnt 4 >= 4
+  EXPECT_EQ(r.cc.cwnd, 7u);  // 4 delivered credits are below cwnd 7
+  EXPECT_EQ(r.cc.cwnd_cnt, 4u);
   EXPECT_EQ(r.algo.log, (std::vector<std::string>{"pkts_acked 4 recovery", "set_state open",
                                                   "cong_avoid 4"}));
   EXPECT_EQ(r.rate.delivered, 10u);

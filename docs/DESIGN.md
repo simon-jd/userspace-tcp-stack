@@ -386,7 +386,7 @@ Linux buffer of nominal size N holds less than N bytes of payload.
 | `rack_tlp` (M2a) | off (RFC 6675 loss detection) | on | RFC 8985 (§9.2: RFC 6675 recovery MUST NOT be used with RACK-TLP, so `check_tcp_config` rejects `rack_tlp` with `recovery_reduction = rfc6675`); Linux `tcp_recovery=1`, `tcp_early_retrans=3` |
 | `dupthresh` / adaptive reordering | 3 / fixed | 3 / adaptive up to 300 (M2a; M1: fixed 3) | RFC 5681; `tcp_reordering`, `tcp_max_reordering` |
 | `cc` | same: `newreno` in M1; `cubic` from M2b | | |
-| `cc_flavor` | `rfc` (RFC 5681 eq. 4 for NewReno, RFC 9438 for CUBIC) | `linux` (`tcp_reno_ssthresh`, `tcp_cubic.c`) | read by the CC through `CcConn::flavor` |
+| `cc_flavor` | NewReno adds at most one packet per slow-start ACK and halves FlightSize on loss (RFC 5681 §3.1). CUBIC follows RFC 9438. | NewReno credits all delivered packets in slow start and halves cwnd on loss. CUBIC follows Linux v7.0. | Both bound slow start at ssthresh and carry the remaining delivery into congestion avoidance. |
 | `hystart` (M2b) | `hystart_pp` | `hystart_classic` (ACK train + delay, low window 16, ack delta 2 ms) | RFC 9406; `tcp_cubic.c` |
 | `pacing`, `pacing_ss_ratio`/`_ca_ratio` | same: rate always computed (§5.5), applied only if the CC requests it (BBR); 200 % / 120 % | | the 2d sender has no fq qdisc, so Linux CUBIC is unpaced; `tcp_update_pacing_rate` |
 | `gso_max_size` (M2b) | same: testbed veth `gso_ipv4_max_size` − `MAX_TCP_HEADER` − 1, recorded | | `sk_setup_caps` (TCP always has GSO); pacing quantum, HyStart ACK delay |
@@ -1091,6 +1091,24 @@ sampling (Linux `tcp_cong_control`). CUBIC (M2b) uses integer cube root and the 
 `tcp_cubic.c`; HyStart++ follows RFC 9406 §4 with its constants (MIN_RTT_THRESH 4 ms, MAX_RTT_THRESH 16 ms,
 N_RTT_SAMPLE 8, CSS_GROWTH_DIVISOR 4, CSS_ROUNDS 5). BBRv1 (M2c) follows `tcp_bbr.c` of the server kernel,
 including `lt_bw` sampling and ACK aggregation (`extra_acked`).
+
+NewReno grows only while cwnd limits sending. Its additive increase carries unused packet credits across
+ACKs. CUBIC enters through the same `cc_select` and recovery hooks. Both CUBIC flavours use β=717/1024,
+C=410/1024 and Linux's integer cube root for K. A second loss below the previous maximum applies fast
+convergence. A timeout starts the next avoidance epoch at its new cwnd with K zero.
+
+The Linux flavour uses 1 ms jiffies, the minimum RTT, per-window and per-jiffy update gates, and Linux's
+Reno estimate. An idle transmit restart shifts the epoch. The RFC flavour computes its target one SRTT
+ahead, accumulates fractional packets, and excludes application-limited intervals (RFC 9438 §§4.2–4.5,
+5.8). Its multiplicative decrease uses FlightSize. Its Reno estimate changes to unit additive increase
+at the prior window. The first loss-free exit from slow start sets that prior window to the exit cwnd.
+
+CUBIC reads the independently selectable `hystart` setting during slow start. Classic HyStart uses Linux
+v7.0's ACK-train and round-minimum delay detectors, configured low window and inter-ACK gap, and records
+the detection counts and exit windows. RFC 9406 HyStart++ bounds unpaced growth to eight packets per ACK.
+After eight RTT samples show sufficient inflation over the previous round, conservative slow start divides
+growth by four and carries fractional packets. An RTT decrease can resume regular slow start. Five
+conservative rounds, including the partial entry round, end the initial slow start.
 
 ### 5.3 What M1 ships
 

@@ -49,6 +49,25 @@ TEST(CcNewreno, SlowStartAddsDeliveredUpToSsthresh) {
   EXPECT_EQ(d.cwnd, 20u);
 }
 
+TEST(CcNewreno, ProfileThresholdAndDelayedAck) {
+  NewReno r;
+  for (auto flavor : {utcp::CcFlavor::rfc, utcp::CcFlavor::linux}) {
+    CcConn c = conn(20, 30);
+    c.flavor = flavor;
+    c.packets_out = 12;
+    const bool rfc = flavor == utcp::CcFlavor::rfc;
+    EXPECT_EQ(r.ssthresh(c), rfc ? 6u : 10u);
+    r.cong_avoid(c, delivered(2));
+    EXPECT_EQ(c.cwnd, rfc ? 21u : 22u);
+    EXPECT_EQ(c.cwnd_cnt, 0u);
+    c.cwnd = 29;
+    c.cwnd_cnt = 29;
+    r.cong_avoid(c, delivered(3));
+    EXPECT_EQ(c.cwnd, 31u);  // one packet reached ssthresh, two entered AI
+    EXPECT_EQ(c.cwnd_cnt, 1u);
+  }
+}
+
 TEST(CcNewreno, CongestionAvoidanceAddsOnePerCwndDelivered) {
   NewReno r;
   CcConn c = conn(20, 10);
@@ -209,6 +228,7 @@ TEST(CcNewreno, CwndClamp) {
 TEST(CcNewreno, SsthreshIsHalfTheFlightSizeAtLeastTwo) {
   NewReno r;
   CcConn c = conn(40, 100);
+  c.flavor = utcp::CcFlavor::rfc;
   const std::uint32_t flight[] = {20, 7, 3, 1, 0, 1001};
   const std::uint32_t expect[] = {10, 3, 2, 2, 2, 500};
   for (std::size_t i = 0; i < std::size(flight); ++i) {
@@ -224,7 +244,8 @@ TEST(CcNewreno, StorageAndCurrentSsthresh) {
   EXPECT_FALSE(utcp::cc_of(s).has_cong_control());
   EXPECT_EQ(utcp::cc_of(s).sndbuf_expand(), 2u);
   EXPECT_EQ(utcp::cc_of(s).min_tso_segs(utcp::CcConn{}), 2u);
-  EXPECT_DEATH(utcp::cc_select(s, utcp::CcAlgo::cubic), "");
+  utcp::cc_select(s, utcp::CcAlgo::cubic);
+  EXPECT_EQ(utcp::cc_of(s).name(), "cubic");
   CcConn c = conn(40, 10);
   EXPECT_EQ(utcp::current_ssthresh(c), 30u);  // 3/4 cwnd
   c.ssthresh = 50;

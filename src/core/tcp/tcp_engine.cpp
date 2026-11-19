@@ -341,6 +341,10 @@ void TcpEngine::refresh_cc(Tcb& t, Time now) {
   c.min_rtt = t.rtt.min_rtt();
   c.app_limited = t.rate.app_limited;  // one value (M2-DESIGN §2.1 item 7)
   c.flavor = cfg_.cc_flavor;
+  c.hystart = cfg_.hystart;
+  c.hystart_low_window = cfg_.hystart_low_window;
+  c.hystart_ack_delta = cfg_.hystart_ack_delta;
+  c.stats = &core_.stats();
   // The connection's pacing status (sk_pacing_status), not the per-segment
   // gate: the rule that leaves the first 10 segments unpaced does not count.
   c.paced = t.txp.pacing_applies(c, std::max<std::uint64_t>(t.ctr.data_segs_out, 10));

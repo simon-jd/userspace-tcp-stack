@@ -236,39 +236,86 @@ void check_attach_errors() {
          no_addr ? "attach without an address succeeded" : no_addr.error());
 }
 
-void check_timers_and_rerun() {
+void check_timers_and_rerun(bool start_overdue) {
   Pair p;
   auto t = attach(p, options());
+  const auto check = start_overdue ? "timers_coalesced" : "timers";
+  constexpr auto period = 10ms;
   std::string log;
-  int periodic = 0;
+  std::string early;
+  std::vector<Time> ticks;
+  std::vector<Time> batches;
+  const auto record = [&](char name, Time earliest) {
+    // Stack::now() is the dispatch time passed to every timer in this batch.
+    const Time now = t->stack().now();
+    if (batches.empty() || batches.back() != now) {
+      batches.push_back(now);
+    }
+    log += name;
+    if (now < earliest) {
+      early += name;
+    }
+    return now;
+  };
   const Time t0 = t->now();
   std::optional<Time> stopped_at;
-  t->add_timer(10ms, [&] {
-    log += 'p';
-    if (++periodic == 3) {
+  Time earliest_tick = t0 + period;
+  t->add_timer(period, [&] {
+    ticks.push_back(record('p', earliest_tick));
+    earliest_tick += period;
+    if (ticks.size() == 3) {
       stopped_at = t->now();
       t->stop();
     }
   });
-  t->add_oneshot(5ms, [&] { log += 'a'; });
-  t->add_oneshot(5ms, [&] { log += 'b'; });
+  t->add_oneshot(5ms, [&, due = t->now() + 5ms] { record('a', due); });
+  t->add_oneshot(5ms, [&, due = t->now() + 5ms] { record('b', due); });
   const auto never = t->add_oneshot(15ms, [&] { log += 'X'; });
-  t->add_oneshot(12ms, [&] {
-    log += 'c';
+  t->add_oneshot(12ms, [&, due = t->now() + 12ms] {
+    record('c', due);
     t->cancel_timer(never);
+    if (start_overdue) {
+      // Leave the second tick part of a period late to exercise drift-free rearming.
+      std::this_thread::sleep_for(15ms);
+    }
   });
   Recorder h;
   h.t = t.get();
+  if (start_overdue) {
+    // All one-shots and the first periodic tick are due in the same dispatch.
+    std::this_thread::sleep_for(25ms);
+  }
   t->run(h);
-  const auto elapsed = (stopped_at.value_or(t0) - t0);
-  expect(log == "abpcpp", "timers", std::format("order {} (want abpcpp)", log));
-  expect(elapsed >= 30ms && elapsed < 200ms, "timers",
-         std::format("third periodic tick after {} us (want >= 30000)", elapsed.count() / 1000));
+  const auto elapsed = stopped_at.value_or(t0) - t0;
+  expect(log == "abpcpp", check, std::format("order {} (want abpcpp)", log));
+  expect(early.empty(), check, std::format("callbacks before their deadlines: '{}'", early));
+  expect(elapsed >= 30ms && elapsed < 200ms, check,
+         std::format("third periodic tick after {} us (want [30000, 200000))",
+                     elapsed.count() / 1000));
+  expect(ticks.size() == 3 && ticks[0] < ticks[1] && ticks[1] < ticks[2], check,
+         "three periodic ticks in distinct batches");
   const auto* ls = t->loop_stats();
-  expect(ls != nullptr && ls->deadline_calls >= 5 && ls->lateness.count == ls->deadline_calls,
-         "timers",
-         std::format("loop stats: {} deadline calls, {} lateness samples",
-                     ls ? ls->deadline_calls : 0, ls ? ls->lateness.count : 0));
+  expect(ls && ls->deadline_calls + ls->deadline_calls_after_wake == batches.size() &&
+             ls->lateness.count == ls->deadline_calls,
+         check,
+         std::format("{} timer batches, {} deadlines at wake, {} after wake, {} lateness samples",
+                     batches.size(), ls ? ls->deadline_calls : 0,
+                     ls ? ls->deadline_calls_after_wake : 0, ls ? ls->lateness.count : 0));
+  if (start_overdue && ticks.size() == 3 && ls) {
+    expect(batches.size() == 3 && ls->lateness.max >= 20ms, check,
+           "three batches, with the first deadline at least 20 ms overdue");
+    // The first missed period resets the phase. A partially late second tick
+    // keeps that phase; only another whole missed period resets it again.
+    const Time phase = ticks[0] + 2 * period;
+    const Time third_due = ticks[1] < phase ? phase : ticks[1] + period;
+    expect(ticks[1] >= ticks[0] + period && ticks[2] >= third_due, check,
+           "overdue periodic timer rearmed without an early tick");
+    // The final wait starts after the second dispatch. Even a late wake
+    // must have requested at most the time remaining to the third deadline.
+    expect(ls->last_timeout_ns >= 0 && ls->last_timeout_ns <= (third_due - ticks[1]).count(), check,
+           std::format("third tick requested {} ns of wait (at most {})", ls->last_timeout_ns,
+                       (third_due - ticks[1]).count()));
+  }
 
   bool ran = false;
   t->add_oneshot(1ms, [&] {
@@ -963,7 +1010,8 @@ int main(int argc, char** argv) {
     return args ? 0 : 2;
   }
   check_attach_errors();
-  check_timers_and_rerun();
+  check_timers_and_rerun(false);
+  check_timers_and_rerun(true);
   check_timer_ties();
   check_device_rx_pcap(*args->get("tmp"));
   check_stats_file(*args->get("tmp"));

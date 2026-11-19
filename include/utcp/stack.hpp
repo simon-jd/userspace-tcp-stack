@@ -43,7 +43,7 @@ enum class Shutdown : std::uint8_t { read, write, both };
 struct TcpSocketOptions {
   std::optional<bool> nodelay;
   std::optional<std::uint32_t> snd_buf, rcv_buf;  // payload bytes; disables autotuning for that side
-  std::optional<CcAlgo> cc;                       // M1: newreno only
+  std::optional<CcAlgo> cc;                       // NewReno or CUBIC at socket creation
   std::optional<std::uint16_t> mss_clamp;         // like TCP_MAXSEG
 
   bool operator==(const TcpSocketOptions&) const = default;

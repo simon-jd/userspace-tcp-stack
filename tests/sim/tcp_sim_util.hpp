@@ -293,6 +293,73 @@ private:
 };
 
 // An AppNode application: connects to node `server`:5000 as workload
+// connection `conn` and writes its pattern data as fast as the send buffer
+// takes it, then shuts down writing, reads to EOF and closes. The server's
+// StackNode runs the matching ConnSpec and checks the bytes. A partly
+// accepted write keeps its remainder for the next call, so each byte is
+// generated once.
+struct BulkClient {
+  std::uint32_t conn = 0;
+  std::uint32_t server = 1;
+  std::uint64_t total = 0;
+  Time start;
+
+  std::optional<Handle> h;
+  bool connected = false, shut = false;
+  std::uint64_t sent = 0;
+  std::vector<std::byte> chunk;
+  std::size_t used = 0;
+
+  void step(AppNode& n, Time now) {
+    Stack& st = n.stack();
+    while (const auto ev = st.poll_event()) {
+      if (h && ev->h == *h && (ev->events & ev_connected) != 0) {
+        connected = true;
+      }
+    }
+    if (!h) {
+      if (now < start) {
+        n.wake_at(start);
+        return;
+      }
+      const auto c = st.tcp_connect(Endpoint{node_addr(server), 5000}, {});
+      ASSERT_TRUE(c.has_value());
+      h = *c;
+      return;
+    }
+    if (!connected || n.done) {
+      return;
+    }
+    StreamChecker& sc = n.ctx().stream();
+    while (sent < total) {
+      if (used == chunk.size()) {
+        chunk.resize(static_cast<std::size_t>(std::min<std::uint64_t>(65536, total - sent)));
+        sc.tcp_pattern(conn, 0).fill(sent, chunk);
+        used = 0;
+      }
+      const auto r = st.tcp_send(*h, std::span<const std::byte>(chunk).subspan(used));
+      if (!r || *r == 0) {
+        return;  // the send buffer is full: the next ACK calls us again
+      }
+      used += *r;
+      sent += *r;
+      sc.on_written(conn, 0, sent);
+    }
+    if (!shut) {
+      ASSERT_TRUE(st.tcp_shutdown(*h, Shutdown::write).has_value());
+      shut = true;
+    }
+    std::byte b[64];
+    const auto r = st.tcp_recv(*h, b);
+    if (r && *r == 0) {
+      n.closing(*h);
+      ASSERT_TRUE(st.tcp_close(*h).has_value());
+      n.done = true;
+    }
+  }
+};
+
+// An AppNode application: connects to node `server`:5000 as workload
 // connection `conn` (its pattern data, checked by the server's StackNode
 // reader), writes `chunk` bytes every `gap` until `total`, then shuts down
 // writing, reads to EOF and closes. A StackNode on the server side runs the
