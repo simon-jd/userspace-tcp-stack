@@ -4,9 +4,9 @@
   plot.py CAMPAIGN_DIR OUT_DIR
 
 Per (cell, algorithm) one PNG, OUT_DIR/<cell>-<algo>.png (algo = the plan's
-algorithm label, analyze.algo_of), from the
-median-goodput repetition of each implementation among the valid runs
-(selection_of): three panels on one time axis (seconds since the receiver's
+algorithm label, analyze.algo_of), from the median-goodput repetition of each
+implementation among the groups counted in cells.csv (analyze.select_runs):
+three panels on one time axis (seconds since the receiver's
 accept, t0; the §5.6 window starts at 5 s):
   1. cwnd in packets (10 ms samples) of the stack and of Linux; the stack's
      retransmissions (tx events of retransmission kinds) and RTOs from its
@@ -123,9 +123,12 @@ def main(argv):
     groups = {}
     for meta, summ in A.campaign_runs(campdir):
         if meta.get("impl") in ("utcp", "linux") and meta.get("cell"):
-            groups.setdefault((meta["cell"], A.algo_of(meta)), []).append((meta, summ))
+            run = {"impl": meta["impl"], "order": meta.get("order", 0), "run": meta["run"],
+                   "group": A.group_of(meta), "valid": summ["valid"], "pair": (meta, summ)}
+            groups.setdefault((meta["cell"], A.algo_of(meta)), []).append(run)
     for (cell, algo), runs in sorted(groups.items()):
-        sel = selection_of(runs)
+        counted, _ = A.select_runs(runs)
+        sel = selection_of([r["pair"] for side in counted.values() for r in side])
         if not sel:
             print(f"{cell} {algo}: no valid run")
             continue

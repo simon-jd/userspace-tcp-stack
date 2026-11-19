@@ -827,6 +827,28 @@ class Proof(unittest.TestCase):
 
 
 class Plot(unittest.TestCase):
+    def test_overlay_uses_counted_groups_within_each_algorithm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign, output = Path(tmp) / "campaign", Path(tmp) / "plots"
+            # Both the first pair (failed stack side) and a sixth valid pair
+            # fall outside the five counted groups. Each would shift a median.
+            for rep, rerun, rate in [(0, 0, 2.5), (0, 1, 1), (1, 0, 2), (2, 0, 3),
+                                     (3, 0, 4), (4, 0, 5), (5, 0, 0.5)]:
+                for side, impl in enumerate(("utcp", "linux")):
+                    make_run(campaign, f"r{rep}-{rerun}-{impl}",
+                             {"impl": impl, "group": rep, "rerun": rerun, "order": 2 * rep + side},
+                             valid=(rep, rerun, impl) != (0, 0, "utcp"), goodput_scale=rate)
+            # A partially collected stack-only variant still has an overlay.
+            # The lower middle of [1, 2, 2, 3] is the first run by name at 2.
+            for rep, rate in enumerate((2, 1, 2, 3)):
+                make_run(campaign, f"variant-{rep}", {"impl": "utcp", "algo": "cubic-rfc", "rep": rep},
+                         goodput_scale=rate)
+
+            with redirect_stdout(io.StringIO()) as log, mock.patch.object(P, "plot_cell", return_value="plot"):
+                self.assertEqual(P.main(["plot.py", campaign, output]), 0)
+            self.assertEqual(log.getvalue().splitlines(),
+                             ["plot: linux r2-0-linux, utcp r2-0-utcp", "plot: utcp variant-0"])
+
     def test_median_goodput_run_per_side(self):
         runs = [({"impl": "utcp", "run": f"u{i}"}, {"valid": True, "goodput_bps": g})
                 for i, g in enumerate((5, 1, 3, 4))]
