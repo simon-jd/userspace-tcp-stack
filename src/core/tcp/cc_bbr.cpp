@@ -11,7 +11,6 @@ namespace utcp {
 namespace {
 using U32 = std::uint32_t;
 using U64 = std::uint64_t;
-using Wide = __uint128_t;
 constexpr U32 bw_unit = 1u << 24;  // packets/us
 constexpr U32 unit = 256;          // gain
 constexpr U32 high_gain = 739;
@@ -21,22 +20,20 @@ constexpr U32 initial_window = 10;
 constexpr std::array<U32, 8> cycle_gains{320, 192, unit, unit, unit, unit, unit, unit};
 constexpr U32 max32 = std::numeric_limits<U32>::max();
 
-U32 packets(Wide n) { return static_cast<U32>(std::min<Wide>(n, max32)); }
 U64 microseconds(Duration d) {
   return static_cast<U64>(std::max<std::int64_t>(0, d.count()) / 1000);
 }
 
-// Delivered timestamps are already in whole us in the Linux model.
-U64 elapsed_us(Time end, Time start) {
-  return static_cast<U64>(std::max<std::int64_t>(0, end.ns / 1000 - start.ns / 1000));
+// tcp_stamp_us_delta clamps the two whole-us stamps and returns their low word.
+U32 elapsed_us(Time end, Time start) {
+  return static_cast<U32>(std::max<std::int64_t>(0, end.ns / 1000 - start.ns / 1000));
 }
 bool after_tick(U32 now, U32 deadline) { return static_cast<std::int32_t>(now - deadline) > 0; }
-U32 bw_sample(U64 count, U64 us) { return packets(Wide{count} * bw_unit / us); }
+U64 bw_sample(U64 count, U64 us) { return count * bw_unit / us; }
 
 // Keep Linux's intermediate Q8 truncation before the one-percent pacing margin.
 U64 bytes_per_second(U32 bw, U32 mss, U32 gain) {
-  const Wide rate = ((Wide{bw} * mss * gain) / unit) * 990'000 / bw_unit;
-  return static_cast<U64>(std::min<Wide>(rate, std::numeric_limits<U64>::max()));
+  return (U64{bw} * mss * gain / unit) * 990'000 / bw_unit;
 }
 U64 pacing_rate(const CcConn& c, U32 bw, U32 gain) {
   const auto rate = bytes_per_second(bw, c.mss, gain);
@@ -56,7 +53,7 @@ void Bbr::init(CcConn& c) {
   c.pacing_needed = true;
   next_round_ = c.delivered;
   min_stamp_ = jiffies(c.now);
-  min_rtt_us_ = c.min_rtt == Duration::max() ? max32 : packets(microseconds(c.min_rtt));
+  min_rtt_us_ = c.min_rtt == Duration::max() ? max32 : static_cast<U32>(microseconds(c.min_rtt));
   epoch_ = c.now;
   start_lt_interval(c);
   init_rate(c);
@@ -65,7 +62,7 @@ void Bbr::init(CcConn& c) {
 void Bbr::init_rate(CcConn& c) {
   seen_srtt_ = c.srtt.count() > 0;
   const auto us = seen_srtt_ ? std::max<U64>(1, microseconds(c.srtt)) : 1000;
-  c.pacing_rate = pacing_rate(c, bw_sample(c.cwnd, us), high_gain);
+  c.pacing_rate = pacing_rate(c, static_cast<U32>(bw_sample(c.cwnd, us)), high_gain);
 }
 
 void Bbr::pace(CcConn& c, U32 gain) {
@@ -87,20 +84,21 @@ U32 Bbr::tso_goal(const CcConn& c) const {
 }
 
 U32 Bbr::flight_target(const CcConn& c, U32 bw, U32 gain, U32 bonus) const {
-  const auto scaled = Wide{bw} * min_rtt_us_ * gain / unit;
-  const auto bdp =
-      min_rtt_us_ == max32 ? initial_window : packets((scaled + bw_unit - 1) / bw_unit);
+  const U64 scaled = U64{bw} * min_rtt_us_ * gain / unit;
+  const U32 bdp =
+      min_rtt_us_ == max32 ? initial_window : static_cast<U32>((scaled + bw_unit - 1) / bw_unit);
   // Three TSO bursts, then round up to even to tolerate delayed ACKs. The
   // high PROBE_BW phase adds two more packets even on a short path.
-  const U64 with_bursts = U64{bdp} + bonus + 3 * tso_goal(c);
+  const U32 with_bursts = bdp + bonus + 3 * tso_goal(c);
   const U32 probe = mode_ == Mode::probe_bw && phase_ == 0 ? 2 : 0;
-  return packets(((with_bursts + 1) & ~U64{1}) + probe);
+  return ((with_bursts + 1) & ~1u) + probe;
 }
 
 U32 Bbr::flight_at_edt(const CcConn& c, U32 flight) const {
-  const auto leaving = Wide{bandwidth()} * microseconds(c.wstamp - c.now) / bw_unit;
-  const U64 queued = U64{flight} + (pacing_gain_ > unit ? tso_goal(c) : 0);
-  return leaving >= queued ? 0 : packets(queued - leaving);
+  // EDT uses a u64 time interval, then stores delivered packets in a u32.
+  const auto leaving = static_cast<U32>(bandwidth() * microseconds(c.wstamp - c.now) / bw_unit);
+  const U32 queued = flight + (pacing_gain_ > unit ? tso_goal(c) : 0);
+  return leaving >= queued ? 0 : queued - leaving;
 }
 
 void Bbr::save_window(const CcConn& c) {
@@ -197,15 +195,15 @@ void Bbr::sample_lt(const CcConn& c, const RateSample& rs) {
   if (!delivered || lost * unit < delivered * 50u) {
     return;
   }
-  const auto ms = c.delivered_time.ns / 1'000'000 - lt_start_.ns / 1'000'000;
-  if (ms < 1) {
+  const auto ms = static_cast<U32>(c.delivered_time.ns / 1'000'000 - lt_start_.ns / 1'000'000);
+  if (static_cast<std::int32_t>(ms) < 1) {
     return;
   }
   if (ms >= max32 / 1000) {
     reset_lt(c);
     return;
   }
-  const auto estimate = bw_sample(delivered, static_cast<U64>(ms) * 1000);
+  const auto estimate = static_cast<U32>(bw_sample(delivered, ms * 1000));
   const U32 delta = estimate - lt_bw_;
   const U32 diff = std::min(delta, 0u - delta);  // magnitude of signed low-word difference
   // bbr_lt_bw_interval_done compares both Q8 products modulo 2^32. At high
@@ -231,7 +229,7 @@ void Bbr::sample_bw(const CcConn& c, const RateSample& rs) {
   sample_lt(c, rs);
   const auto rate = bw_sample(rs.delivered, microseconds(rs.interval));
   if (!rs.is_app_limited || rate >= max_bw_.get()) {
-    max_bw_.update(10, rounds_, rate);
+    max_bw_.update(10, rounds_, static_cast<U32>(rate));
   }
 }
 
@@ -244,16 +242,16 @@ void Bbr::sample_aggregation(const CcConn& c, const RateSample& rs) {
     bucket_ ^= 1;
     extra_[bucket_] = 0;
   }
-  auto expected = Wide{bandwidth()} * elapsed_us(c.delivered_time, epoch_) / bw_unit;
+  auto expected =
+      static_cast<U32>(U64{bandwidth()} * elapsed_us(c.delivered_time, epoch_) / bw_unit);
   constexpr U32 epoch_limit = 1u << 20;
-  if (epoch_acked_ <= expected || U64{epoch_acked_} + rs.acked_sacked >= epoch_limit) {
+  if (epoch_acked_ <= expected || epoch_acked_ + rs.acked_sacked >= epoch_limit) {
     expected = 0;
     epoch_acked_ = 0;
     epoch_ = c.delivered_time;
   }
-  epoch_acked_ =
-      static_cast<U32>(std::min<U64>(epoch_limit - 1, U64{epoch_acked_} + rs.acked_sacked));
-  const auto extra = std::min(c.cwnd, epoch_acked_ - static_cast<U32>(expected));
+  epoch_acked_ = std::min(epoch_limit - 1, epoch_acked_ + rs.acked_sacked);
+  const auto extra = std::min(c.cwnd, epoch_acked_ - expected);
   if (extra > extra_[bucket_]) {
     extra_[bucket_] = static_cast<std::uint16_t>(extra);
   }
@@ -263,7 +261,8 @@ void Bbr::check_plateau(const RateSample& rs) {
   if (full_pipe_ || !round_start_ || rs.is_app_limited) {
     return;
   }
-  if (max_bw_.get() >= U64{plateau_bw_} * 320 / unit) {
+  const auto threshold = static_cast<U32>(U64{plateau_bw_} * 320 / unit);
+  if (max_bw_.get() >= threshold) {
     plateau_bw_ = max_bw_.get();
     plateau_rounds_ = 0;
   } else {
@@ -326,9 +325,9 @@ void Bbr::probe_rtt(CcConn& c, const RateSample& rs) {
   const auto now = jiffies(c.now);
   const bool expired = after_tick(now, min_stamp_ + 10'000);
   if (rs.rtt.count() >= 0) {
-    const auto sample = packets(microseconds(rs.rtt));
+    const auto sample = microseconds(rs.rtt);
     if (sample < min_rtt_us_ || (expired && !rs.is_ack_delayed)) {
-      min_rtt_us_ = sample;
+      min_rtt_us_ = static_cast<U32>(sample);
       min_stamp_ = now;
     }
   }
@@ -379,9 +378,10 @@ void Bbr::update_window(CcConn& c, const RateSample& rs) {
   U32 window = c.cwnd;
   if (acked) {
     if (rs.losses) {
-      window = window > rs.losses ? window - rs.losses : 1;
+      const auto remaining = static_cast<std::int32_t>(window - rs.losses);
+      window = static_cast<U32>(std::max<std::int32_t>(remaining, 1));
     }
-    const auto flight_plus_ack = packets(U64{c.in_flight} + acked);
+    const U32 flight_plus_ack = c.in_flight + acked;
     if (c.ca_state == CaState::recovery && previous_ca_ != CaState::recovery) {
       conserve_ = true;
       next_round_ = c.delivered;
@@ -394,10 +394,10 @@ void Bbr::update_window(CcConn& c, const RateSample& rs) {
     if (conserve_) {
       window = std::max(window, flight_plus_ack);
     } else {
-      const auto max_extra = packets(U64{bandwidth()} * 100'000 / bw_unit);
+      const auto max_extra = static_cast<U32>(U64{bandwidth()} * 100'000 / bw_unit);
       const auto bonus = full_pipe_ ? std::min<U32>(max_extra, std::max(extra_[0], extra_[1])) : 0;
       const auto target = flight_target(c, bandwidth(), cwnd_gain_, bonus);
-      const auto growth = packets(U64{window} + acked);
+      const U32 growth = window + acked;
       if (full_pipe_) {
         window = std::min(growth, target);
       } else if (window < target || static_cast<U32>(c.delivered) < initial_window) {

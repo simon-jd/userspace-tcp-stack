@@ -583,5 +583,97 @@ TEST_F(CcBbrModel, InitialPacingUsesHighGainBeforeTheFirstGainUpdate) {
   EXPECT_EQ(b.info().cwnd_gain_q8, 739u);
 }
 
+TEST_F(CcBbrModel, FullBandwidthThresholdIsNarrowedAfterTheQ8Shift) {
+  for (unsigned n : {20479u, 20480u, 20481u, 20500u}) {
+    c = CcConn{};
+    rng = Rng{Seed::from_u64(37)};
+    c.rng = &rng;
+    c.now = c.delivered_time = Time{} + 100ms;
+    c.cwnd = 30000;
+    c.mss = 128;
+    c.srtt = 200us;
+    c.min_rtt = 100us;
+    c.in_flight = 30000 - n;
+    b.init(c);
+    rs.interval = rs.rtt = 100us;
+    rs.delivered = rs.acked_sacked = n;
+    rs.prior_in_flight = 30000;
+    for (int i = 0; i < 4; ++i) {
+      ack(100us);
+    }
+    EXPECT_EQ(b.info().mode, n > 20480 ? Bbr::Mode::startup : Bbr::Mode::probe_bw) << n;
+    if (n == 20481) {
+      EXPECT_EQ(c.cwnd, 70962u);
+      EXPECT_EQ(c.pacing_rate, 74920522029ULL);
+    }
+  }
+}
+
+TEST_F(CcBbrModel, BandwidthFilterStoresTheLow32BitsOfTheQ24Sample) {
+  rs.delivered = 256;
+  rs.interval = 1us;
+  ack();
+  EXPECT_EQ(b.info().bandwidth_q24, 0u);  // exactly 2^32 Q24
+  rs.delivered = 257;
+  ack();
+  EXPECT_EQ(b.info().bandwidth_q24, 1u << 24);
+}
+
+TEST_F(CcBbrModel, RateMarginMultiplicationUsesTheKernel64BitAccumulator) {
+  c.mss = 9000;
+  rs.delivered = 20000;
+  rs.interval = 100us;
+  ack();
+  EXPECT_EQ(b.info().bandwidth_q24, 3355443200u);
+  EXPECT_EQ(c.pacing_rate, 746086301396ULL);
+}
+
+TEST_F(CcBbrModel, CycleElapsedMicrosecondsWrapsBeforeComparingWithMinRtt) {
+  probe_bw();
+  ASSERT_EQ(b.info().pacing_gain_q8, 320u);
+  c.app_limited = c.delivered + 1;
+  b.cwnd_event(c, CaEvent::tx_start);
+  rs.prior_in_flight = 100;
+  ack(std::chrono::microseconds{1ULL << 32});
+  EXPECT_EQ(b.info().mode, Bbr::Mode::probe_bw);
+  EXPECT_EQ(b.info().pacing_gain_q8, 320u);  // tcp_stamp_us_delta returned zero
+}
+
+TEST_F(CcBbrModel, AggregationExpectedPacketCountWrapsBeforeTheEpochComparison) {
+  rng = Rng{Seed::from_u64(37)};
+  c.now = c.delivered_time = Time{} + 100ms;
+  c.mss = 128;
+  c.cwnd = 30000;
+  c.srtt = 200us;
+  c.min_rtt = 100us;
+  c.delivered = 0;
+  c.in_flight = 10000;
+  b.init(c);
+  rs.rtt = rs.interval = 100us;
+  rs.delivered = rs.acked_sacked = 12800;
+  rs.prior_in_flight = 22800;
+  for (int i = 0; i < 6; ++i) {
+    ack(100us);
+  }
+  c.app_limited = 1;
+  b.cwnd_event(c, CaEvent::tx_start);
+  rs.acked_sacked = 10000;
+  rs.prior_in_flight = 20000;
+  ack(0us);
+  // At 128 packets/us this blackout projects exactly 2^32 packets.
+  rs.interval = std::chrono::microseconds{1u << 25};
+  c.in_flight = 4;
+  rs.delivered = rs.acked_sacked = 8000;
+  rs.prior_in_flight = 8004;
+  ack(rs.interval);
+  EXPECT_EQ(b.info().mode, Bbr::Mode::probe_rtt);
+  rs.interval = 201ms;
+  rs.delivered = rs.acked_sacked = 1;
+  rs.prior_in_flight = 5;
+  ack(201ms);
+  EXPECT_EQ(b.info().mode, Bbr::Mode::probe_bw);
+  EXPECT_EQ(c.cwnd, 38783u);
+}
+
 }  // namespace
 }  // namespace utcp
