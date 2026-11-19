@@ -411,3 +411,150 @@ counter totals do not assign a cause to each retransmission or isolate the effec
 The archived M2 captures are in `utcp-data:/m2/m2a-recovery/p2/` and
 `utcp-data:/m2/m2a-recovery-verify-2/m1/`. The per-timeout capture comparisons and sender
 `TCP_INFO` samples are in `utcp-data:/m2/m2a-recovery/refix2/results.json`.
+
+### Directed losses on the integrated runtime
+
+All 40 transfers on November 18, 2026 Pacific matched the sender and Linux receiver byte counts and
+SHA-256. Across 20 stack/Linux pairs the senders retransmitted the same hole-relative byte ranges,
+in the same order and with the same copy numbers. Their complete ACK-by-ACK transmissions differed
+in every pair. The largest consequence was in the 100,000-byte tail test. Three stack runs waited
+for a retransmission timeout and exited with cwnd 2. All four Linux runs repaired the hole on the
+probe's SACK and exited with cwnd 38–54.
+
+The build used source `5bd13159f8412786d8f619848ac24d0aa19a1641`, GCC 15.2 release, and kernel
+7.0.0-42-generic. Slot 2's four containers used CPUs 16–31, a 100 Mbit/s link, 20 ms base RTT,
+40 BDP of queue, and zero random loss. Both senders used the same Linux receiver and per-case
+application byte count. The stack selected `linux_compat` with Linux CC flavor, PRR and RACK/TLP.
+Connected sender samples confirmed NewReno or CUBIC on every run. The stack configuration line
+describes defaults before the per-socket algorithm selection.
+
+**What was captured.** The 32 longer transfers each sent 3,000,000 bytes. For the eight 100,000-byte
+transfers the last two original payloads started at 98,464 (1,448 bytes) and 99,912 (88 bytes).
+All burst, lost-retransmission and tail targets occurred in slow start, as shown by the stack TX
+trace and bracketing Linux samples. The router armed 2.3–3.3 ms after the SYN. Comparison of the
+upstream and downstream packets found
+all 96 intended drops, including the avoidance warm-ups, and no additional drops of the test flows.
+All 120 captures agreed with their filter counts and recorded zero kernel drops. An independent
+decoder verified all 350,412 capture records, then reproduced 2,222 ACK groups and 3,627 data
+transmissions in the measured intervals. The run count and these short episodes are independent of
+the calibration and throughput tables above.
+
+| Case | Algorithm | Post-exit cwnd, r1 | Post-exit cwnd, r2 | First repair to covering ACK, RTTs, r1 | First repair to covering ACK, RTTs, r2 | ACK groups, r1 | ACK groups, r2 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Single, slow start | NewReno | 12/11 | 12/12 | 1.00/1.00 | 1.01/1.00 | 22/27 | 19/24 |
+| Single, slow start | CUBIC | 16/16 | 16/17 | 1.00/1.00 | 1.01/0.99 | 17/24 | 24/24 |
+| Single, avoidance | NewReno | 23/23 | 23/23 | 0.99/0.98 | 0.98/0.98 | 28/31 | 29/30 |
+| Single, avoidance | CUBIC | 25/24 | 25/25 | 1.00/0.97 | 0.97/1.00 | 27/24 | 24/25 |
+| Five consecutive originals | NewReno | 47/46 | 47/46 | 1.19/1.11 | 1.08/1.38 | 119/122 | 87/103 |
+| Five consecutive originals | CUBIC | 65/65 | 65/65 | 1.10/1.08 | 1.10/1.12 | 82/84 | 87/122 |
+| Lost first retransmission | NewReno | 47/76 | 47/46 | 2.10/2.36 | 2.07/2.05 | 136/110 | 101/87 |
+| Lost first retransmission | CUBIC | 65/65 | 65/64 | 2.10/2.05 | 2.10/2.33 | 90/91 | 59/128 |
+| Last two originals | NewReno | 2/39 | 39/38 | 9.56/2.00 | 1.94/2.00 | 23/24 | 19/34 |
+| Last two originals | CUBIC | 2/53 | 2/54 | 9.57/2.00 | 12.18/2.00 | 23/34 | 25/33 |
+
+Each cell is stack/Linux for repetition r1 or r2. The covering ACK reaches the highest byte sent
+before the first repair. RTTs use each sender's last sampled SRTT before the target drop. The stack
+supplies its first qualifying post-ACK trace in Open/Disorder. Linux supplies the first 10 ms
+TCP_INFO sample in Open/Disorder covering the ACK. This can include ACKs beyond the measured flight.
+Entry and exit brackets, the duration bounds in RTTs, the original-drop-to-covering-ACK duration and
+each sample's cwnd and ssthresh are in the [paired observations](results/m2-integrate/directed-drops.json).
+
+**ACKs and congestion windows.** In 18 pairs the first difference included a different cumulative
+ACK. In the other two, the preceding ACK matched and the sends grouped after it differed. The
+ledger retains empty ACK groups, SACK order, new data and repeated bytes. These are independent
+flows. A packet following an ACK at r1 establishes wire order. Pacing, timers and packets already in
+flight preclude assigning that send to a specific kernel ACK handler from a capture alone.
+
+- At slow-start loss the stack's target was offset 19,280 and Linux's was 18,824. The last
+  cumulative ACK before the dropped packet was respectively 4,800 and 15,928 bytes behind the hole.
+  Both were in slow start, with ssthresh 2,147,483,647. In both NewReno pairs the resulting stack/Linux
+  ssthresh was 12/11. In r2 the qualifying Linux sample included 8,688 more acknowledged bytes
+  and showed cwnd 12. For CUBIC both thresholds were 16. Linux's r2 sample covered another 10,136 bytes
+  and showed 17. Each sender retransmitted only the one hole in the target interval.
+- Avoidance used an earlier single loss to exit slow start. Its covering ACK preceded the measured
+  target in every flow. Both bounding Linux samples and the stack's original-TX trace showed
+  cwnd at or above ssthresh when the target was sent. The warm-up accounts for one of the two
+  SACK recoveries in every avoidance transfer. NewReno reached threshold 23 throughout. On CUBIC r1,
+  the last pre-entry cwnds were 36/35 and the new thresholds 25/24, consistent with CUBIC's
+  threshold of floor(cwnd × 717/1024). In r2 both pre-entry cwnds were 36 and both thresholds were 25.
+- All eight burst runs repaired offsets 0, 1,448, 2,896, 4,344 and 5,792 relative to the first hole.
+  The NewReno r2 stack spread those repairs across ACK-group indices 35, 37, 39, 41 and 43.
+  Linux sent them in groups 88, 89, 89, 89 and 89. At the first repair, the SACK block above the
+  burst reached byte 11,584/92,672 relative to the hole, and the pre-repair flight extended
+  139,008/220,096 bytes above it. In r1 both used every second ACK group for the five repairs.
+  In both CUBIC pairs the spacing between successive repair groups was 1, 1, 2, 1 on both sides.
+  The NewReno thresholds were 47/46 in both pairs, the CUBIC thresholds 65/65.
+  The last pre-entry stack cwnd was 94 in each burst. Linux NewReno r2 sampled cwnd 93 before
+  entry. In the other three Linux bursts the last pre-entry sample was still at 79, so it bounds
+  the observation time without resolving the final slow-start increments.
+- In all eight lost-retransmission runs, copies 1 and 2 of the same offset disappeared at r1.
+  The sender repaired it with copy 3 without a timeout. NewReno r1 had the largest cwnd difference
+  among the long transfers. At first repair, 118,736/308,424 bytes extended beyond the hole, and
+  3/52 ACKs had been observed starting with the first SACK above it. The last pre-entry cwnds were
+  94/153. Integer halving gives the observed thresholds and exit cwnds of 47/76. For CUBIC r2,
+  the last pre-entry cwnds were 94/92 and thresholds 65/64. The Linux capture locates the later
+  first repair in both runs. Its TCP_INFO samples do not resolve each intervening kernel decision.
+- For the non-tail transfers, whole-run counters showed one SACK recovery for each one-loss, burst
+  or lost-retransmission case and two for avoidance, with one exception. Linux burst/CUBIC r1
+  entered a second recovery after the five target repairs. Both copies of bytes
+  [780472, 781920) passed r1 and r2. The receiver D-SACKed that range at cumulative ACK 878,936.
+  Linux counted six fast retransmissions and one partial undo. All other long transfers had zero
+  undo events. All 32 had zero loss probes, probe recoveries and timeouts. The historical A-N2
+  reordering results above concern separate transfers.
+
+**Why three stack tails waited for the timeout.** Each sender used one loss probe for the final
+88 bytes and then received cumulative ACK 98,464 with SACK [99,912, 100,001), including the FIN.
+The other missing packet was the 1,448-byte segment at 98,464. The loss probe was the first repair,
+so the table's repair-to-covering-ACK interval includes the entire wait for this segment.
+
+| Algorithm, rep | Stack probe-to-SACK minus min RTT (µs) | Stack state on SACK | Stack SACK to first-hole retransmission (ms, router 1) | Linux probe-to-SACK minus min RTT (µs, router 1) | Linux SACK to first-hole retransmission (ms, router 1) |
+|---|---:|---|---:|---:|---:|
+| NewReno r1 | 20,124.015 − 20,168 = −43.985 | Disorder | 157.670 | +17.703 | 0.021 |
+| NewReno r2 | 20,141.640 − 20,112 = +29.640 | Recovery | 0.053 | +39.476 | 0.021 |
+| CUBIC r1 | 20,158.153 − 20,196 = −37.847 | Disorder | 157.781 | +37.376 | 0.018 |
+| CUBIC r2 | 20,126.539 − 20,183 = −56.461 | Disorder | 206.948 | +13.775 | 0.026 |
+
+The stack's monotonic TX and ACK traces give its probe RTT. Its min RTT stayed at the sampled value
+across that ACK. For a retransmitted segment, a probe RTT below the existing minimum makes the ACK
+ambiguous, so RACK skips advancing its transmission timestamp. Linux v7.0 uses the same test
+(`net/ipv4/tcp_input.c:1583–1603`). With a negative delta the trace showed one SACKed and zero
+lost segments. No further ACK arrived before the RTO. The timer sent the earlier hole in Loss and
+cwnd was 2 on exit. With a positive delta that SACK put the stack in Recovery, marked one segment lost
+and immediately retransmitted it. The stack implementation is in [rack.cpp](../src/core/tcp/rack.cpp).
+
+For Linux the probe RTT is the router measurement and the minimum is the sender sample. All four
+router measurements exceeded the sampled minimum. The ensuing first-hole retransmission appeared
+18–26 µs after the SACK, and all four runs recorded SACK recovery. The exact Linux processing-clock
+delta is unavailable. Every tail recorded one loss probe and zero probe recoveries. The four Linux
+tails and stack NewReno r2 each recorded one SACK recovery and zero timeouts. The other three
+stack tails each recorded zero SACK recoveries and one timeout. Linux never entered a timeout
+episode here, so these runs exercise neither its post-RTO F-RTO send choice nor spurious-RTO undo.
+
+**Reproduction and records.** From a clean checkout of the measured revision, run the following
+on the test host with a fresh campaign name. The original basename was `drops-attempt-1`.
+
+```sh
+export UTCP_M2_PREFIX=utcp-m2-i40 UTCP_TB_PREFIX=utcp-m2-i40 UTCP_M2_JOB=utcp-m2-i40-runner
+export UTCP_COMMIT=$(git rev-parse HEAD) UTCP_CPUS=16-31
+build=build/tb-gcc-release
+docker run --rm --name utcp-m2-i40-build-release --cpuset-cpus 16-31 --user "$(id -u):$(id -g)" \
+  -v "$PWD:$PWD" -w "$PWD" utcp-testbed:dev nice -n 10 bash -ec \
+  'cmake --preset gcc-release -B "$1" && cmake --build "$1" -j4 --target utcp-bulk' bash "$build"
+taskset -c 16-31 nice -n 10 testbed/m2/up.sh --slot 2 --nontiming
+taskset -c 16-31 nice -n 10 tests/interop/m2_drops.sh --campaign "m2-integrate/$UTCP_COMMIT/drops-attempt-2"
+taskset -c 16-31 nice -n 10 testbed/m2/down.sh --slot 2
+```
+
+The original volume path is
+`utcp-data:/m2/m2-integrate/5bd13159f8412786d8f619848ac24d0aa19a1641/drops-attempt-1/`.
+Each run retains three pcaps, the 10 ms samples, router rules, counters and the recovery analysis.
+`audit/files.sha256` indexes the raw files and `audit/compact-inputs.tar.gz` contains the
+endpoint/trace inputs and ACK reports without pcaps. The adjacent directory
+`drops-audit-controls-1` retains copies of one measured Linux flow. The clean copy passed.
+Changing one sender sample's algorithm, truncating a capture by one byte and changing the requested
+drop from copy 1 to copy 2 each failed the corresponding check. The original run data remained intact.
+
+The [compressed ACK ledger](results/m2-integrate/ack-decisions.jsonl.gz) contains one JSON line
+per transfer. Each group contains the cumulative ACK, ordered SACK blocks, and sends between
+this ACK and the next. Each send contains its offset, payload length, copy number and count of
+previously sent bytes. All offsets are relative to that run's first comparison hole.
