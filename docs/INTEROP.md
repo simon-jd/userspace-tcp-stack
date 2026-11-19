@@ -218,6 +218,42 @@ Linux->Linux reference (tests/interop/m1_linux_ref.sh; not acceptance cases):
 | R-N4-100M-sack0-ts1-ws0-l2l | run3 | sack0-ts1-ws0 | N4 | 100 MB | yes | 36.774 | 721 / 721 | SACKDiscard 0, SACKReneging 0, Timeouts 38 | 0 / 0, 0, 0 | pass |
 | R-N4-100M-sack0-ts1-ws1-l2l | run3 | sack0-ts1-ws1 | N4 | 100 MB | yes | 35.366 | 1426 / 1426 | SACKDiscard 0, SACKReneging 0, Timeouts 34 | 0 / 0, 0, 0 | pass |
 
+## M2 integration with CUBIC on N1 and N4
+
+On 2026-11-18 Pacific, commit `5bd13159f8412786d8f619848ac24d0aa19a1641` completed
+one functional transfer in each direction on N1 and N4. Each sender and receiver reported
+1,000,000,000 bytes, observed CUBIC on the connected socket, and matched the independently generated
+payload SHA-256 `57c114707df855575bf7f97161237ef9ece1c41ebd58c104b1a344115d707969`.
+The stack used `linux_compat`. The command ran on CPUs 16–31.
+
+```sh
+M1_PROFILE=linux M1_CC=cubic tests/interop/m1_bulk.sh A-N1-s2l A-N1-l2s A-N4-s2l A-N4-l2s
+```
+
+| Profile | Sender → receiver | Sender retransmitted segments | Sender timeouts | Retries after a prior covering ACK at the receiver | First deliveries on a retry after silence |
+|---|---|---:|---:|---:|---:|
+| N1 | Stack → Linux | 7,031 | 16 | 15 | 1 |
+| N1 | Linux → stack | 6,985 | 2 | 2 | 0 |
+| N4 | Stack → Linux | 6,840 | 7 | 6 | 1 |
+| N4 | Linux → stack | 6,913 | 0 | 0 | 0 |
+
+Retransmission and timeout counts come from stack statistics or Linux namespace `nstat` deltas.
+The last two columns classify repeated data after at least 180 ms of outbound data silence. In each
+of the 23 prior-ACK cases the receiver had emitted a cumulative ACK covering the interval. The sender
+capture showed no covering ACK before the retry. In the two first-delivery cases, at byte offsets
+612,425,808 (N1) and 325,027,224 (N4), the sender had transmitted the 1,448-byte range twice before.
+The receiver first saw that range on the third copy and then ACKed it. The silences were 202.926 and
+205.173 ms. The counts agree with the sender timeout totals in each row. M1 records 100 ms sender
+samples, so attribution of an individual retry to its timer relies on its wire timing.
+
+All eight captures used a 128-byte snapshot length. Each covers the full payload sequence interval,
+reports zero kernel capture drops, and shows both FINs acknowledged with zero resets. The endpoint hashes verify payload
+contents. On N4 with the Linux sender, packet replay also reproduced 2,186 `TCPDSACKIgnoredDubious`
+and 1,894 `TCPSACKDiscard`. The private volume `utcp-data:/m2/m2-integrate/5bd1315-4gb/` holds
+`a1/<case>/{peer,utcp0}.pcap`, `evidence/frames/<case>.json` with offsets and frame numbers, and
+`evidence/compact-evidence.tar.gz` with the endpoint records and replay programs (SHA-256
+`25a71bca7b8549a0e005b5997c753fef609ec8c657fc8a899234cdaa4812bc67`).
+
 ## Results that need an explanation
 
 Linux source references are to the server's Ubuntu 7.0.0-42 kernel tree
