@@ -101,7 +101,13 @@ void TcpEngine::sync_timers(Tcb& t, Time now) {
   TimerHeap& th = core_.timers();
   if (t.syn_acked) {
     const RecoveryCtx c = rctx(t, now);
-    const auto [kind, when] = t.recovery.xmit_timer(c);
+    auto [kind, when] = t.recovery.xmit_timer(c);
+    // RFC 9293 §3.8.6.2.1: persist may override sender SWS avoidance and
+    // send new payload in a positive window. Its departure still obeys EDT.
+    if (kind == XmitTimer::persist && t.snd_wnd > 0 &&
+        t.pacing_gated(c.pacing_delay > Duration::zero(), now, cfg_.test_fault)) {
+      when = std::max(when, t.pacing_next);
+    }
     if (kind == XmitTimer::none) {
       if (th.armed(t.t_xmit)) {
         th.cancel(t.t_xmit);
@@ -347,7 +353,18 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
       // is not needed; the RTO takes over without the probing backoff.
       const std::uint8_t backoff = t.backoff;
       t.backoff = 0;
-      if (send_new_data(t, now, len, t.fin_queued && len == end - nxt)) {
+      refresh_cc(t, now);
+      const auto rate = t.cc_conn.paced ? t.txp.gate_rate(t.cc_conn) : 0;
+      t.tx_gate_rate = rate;
+      t.tx_burst_start = rate != 0;
+      const bool sent = send_new_data(t, now, len, t.fin_queued && len == end - nxt);
+      t.tx_gate_rate = 0;
+      t.tx_burst_start = false;
+      if (sent) {
+        if (rate != 0) {
+          t.pacing_after_send(now, len);
+          t.pacing_next = std::max(t.pacing_next, now);  // stamp startup sends too
+        }
         t.probes_out = 0;
         RecoveryCtx c = rctx(t, now);
         t.recovery.on_xmit_timer(c, XmitTimer::persist);
