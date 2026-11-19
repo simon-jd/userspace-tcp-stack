@@ -5,7 +5,6 @@ Run with Python 3.11+ on the complete or compact restored campaign:
 The compact restore needs the exact plan.json from the full archive.
 """
 
-import csv
 import hashlib
 import json
 import re
@@ -194,6 +193,23 @@ def main(campaign, out):
                 )
             rows.append(row)
     assert len(families) == 14
+    assert {
+        m.get("rerun_of", m["run"])
+        for members in families.values()
+        for m, _, _ in members
+    } == planned.keys()
+    intervals = []
+    for members in families.values():
+        for m, _, _ in members:
+            bounds = physical_checkpoint.bounds(campaign / m["run"])
+            if bounds:
+                intervals.append(
+                    (*bounds, m["group"], m["rerun"], m["in_group"], m["run"])
+                )
+    intervals.sort()
+    assert all(
+        a[1] <= b[0] and a[2:5] < b[2:5] for a, b in zip(intervals, intervals[1:])
+    ), "cross-group time or physical order"
     rows.sort(key=lambda r: (r["order"], r["rerun"]))
     write_csv(out / "evidence.csv", checkpoint_inputs.ROWS, rows)
     if traces:

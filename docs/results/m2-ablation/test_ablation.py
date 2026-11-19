@@ -1,5 +1,8 @@
 """Negative controls for the full-profile and shared-reference attribution rules."""
 
+import csv
+import json
+import tempfile
 import copy
 import sys
 import unittest
@@ -15,6 +18,62 @@ def stat(lo, hi):
 
 
 class AblationTests(unittest.TestCase):
+    def test_common_control_can_disagree_with_native_rfc_control(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            rows, cells = [], []
+            for cell in report.CELLS:
+                for variant in report.VARIANTS:
+                    for side in ("utcp", "linux"):
+                        rate = 2 if variant == "rfc" and side == "linux" else 1
+                        metrics = dict(
+                            goodput_bps=rate * 1e6,
+                            retrans_pct=1.0,
+                            qdelay_p50_ms=0.1,
+                            qdelay_p99_ms=0.2,
+                        )
+                        agg = dict(
+                            cell=cell, algo=variant, impl=side, n_counted=5, status="ok"
+                        )
+                        for metric, value in metrics.items():
+                            for key in ("median", "min", "max", "n"):
+                                agg[metric + "_" + key] = report.A.fmt(
+                                    5 if key == "n" else value
+                                )
+                        cells.append(agg)
+                        for index in range(5):
+                            name = f"{cell}-{variant}-{side}-{index}"
+                            directory = base / name
+                            directory.mkdir()
+                            (directory / "summary.json").write_text(
+                                json.dumps(dict(metrics, flags=[]))
+                            )
+                            rows.append(
+                                dict(
+                                    cell=cell,
+                                    algo=variant,
+                                    impl=side,
+                                    run=name,
+                                    counted=1,
+                                )
+                            )
+            report.save(base / "evidence.csv", rows)
+            report.save(base / "cells.csv", cells)
+            report.main(
+                base, base / "evidence.csv", base / "cells.csv", base / "result"
+            )
+            with (base / "result" / "effects.csv").open() as f:
+                effects = list(csv.DictReader(f))
+            for row in effects:
+                if row["effect"] == "compat minus all four":
+                    self.assertEqual(float(row["median"]), 0)
+                elif row["reference"] == "primary":
+                    self.assertEqual(row["status"], "no gap to attribute")
+                    self.assertEqual(row["median"], "")
+                else:
+                    self.assertEqual(row["status"], "goodput gap")
+                    self.assertEqual(float(row["median"]), 0)
+
     def test_shared_rfc_bound(self):
         result = report.corner_range(
             report.share, stat(10, 12), stat(18, 20), stat(14, 17)

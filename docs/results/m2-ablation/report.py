@@ -55,7 +55,7 @@ def interaction(r, l, all_four, *singles):
 
 
 def span(s, scale=1, decimals=3):
-    if not s or s.get("median") is None:
+    if not s or s.get("median") in (None, ""):
         return "—"
     fmt = lambda field: f"{s[field] * scale:.{decimals}f}"
     return f"{fmt('median')} [{fmt('min')}, {fmt('max')}]"
