@@ -631,6 +631,8 @@ def calibration_transfer(slot, campaign, run, spec, smeta, expected_key, sources
         errors.append("wrong timing placement")
     if summary.get("run") != run or summary.get("proof_meta_sha256") != A.proof_meta_digest(meta):
         errors.append("summary does not match run metadata")
+    if measured_transfer_window(summary, spec["duration"]) is None:
+        errors.append("missing or inconsistent endpoint measurement window")
     if summary.get("sender_ccs") != [spec["cc"]]:
         errors.append(f"sender reported {summary.get('sender_ccs')}, expected {spec['cc']}")
     if summary.get("valid") is not True or summary.get("invalid") != []:
@@ -1127,10 +1129,15 @@ def check_gate(slot, gates, key):
         if reason is None and (gate.get("campaign") != g or not timing_placement(slot.n, slot.cpus)):
             reason = "wrong campaign or current CPU placement"
         if reason is None:
+            durations = {f"{r['run']}/summary.json": default_duration(r.get("rtt", 20))
+                         for r in gate["items"] if r.get("run") and r["item"] != 1}
             for path, digest in gate["sources"].items():
                 source = parse_json_object(read_volume(slot, f"/data/m2/{g}/{path}"))
                 if source is None or A.proof_meta_digest(source) != digest:
                     reason = f"missing or changed calibration source {path}"
+                    break
+                if path in durations and measured_transfer_window(source, durations[path]) is None:
+                    reason = f"missing or inconsistent endpoint measurement window in {path}"
                     break
         if reason is None:
             return g
@@ -1518,18 +1525,18 @@ def proof_row_error(summary, meta, expected, kind):
 HIST_BUCKETS = {str(i) for i in range(64)}
 
 
+def measured_transfer_window(s, duration):
+    bounds = A.endpoint_window(s.get("t0_ns"), s.get("sender_start_ns"), duration)
+    end = s.get("window_end_ns")
+    return bounds if bounds and type(end) is int and end == bounds[1] else None
+
+
 def measured_window(s, spec):
     """Measured monotonic window, bounded by both endpoint starts (run_window)."""
     if "impl" not in spec:
         lo, hi = s.get("ping_start_ns"), s.get("ping_end_ns")
         return (lo, hi) if type(lo) is int and type(hi) is int and lo < hi else None
-    t0, sender, end = (s.get(k) for k in ("t0_ns", "sender_start_ns", "window_end_ns"))
-    if not all(type(t) is int for t in (t0, sender, end)):
-        return None
-    lo = t0 + int(A.WARMUP_S * A.NS)
-    if end != min(t0, sender) + spec["duration"] * A.NS or end <= lo:
-        return None
-    return lo, end
+    return measured_transfer_window(s, spec["duration"])
 
 
 def overlap_info(trials):

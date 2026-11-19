@@ -925,23 +925,42 @@ def counts_agree(a, b, tol):
     return abs(a - b) <= max(tol[0], tol[1] * max(abs(a), abs(b)))
 
 
+def endpoint_window(receiver, sender, duration_s):
+    """The positive part of the post-warm-up window covered by both endpoints."""
+    if type(receiver) is not int or type(sender) is not int or min(receiver, sender) < 0:
+        return None
+    lo, hi = window(receiver, duration_s)
+    hi = min(hi, sender + int(duration_s * NS))
+    return (lo, hi) if sender <= lo < hi else None
+
+
 def run_window(meta, rcv, snd):
     """(t0, lo, hi, sender start) of a run (§5.6, DESIGN §14.3): t0 = the
     receiver's start line (its accept), lo = t0 + 5 s, hi = t0 + S but not
     later than the sender's start line + S, where its writes stop. All delay
     is on the data path, so the sender's start (its connect returning) is one
     RTT before t0 and t0 + S alone would put an RTT after the last write into
-    the window. None without a receiver start line."""
+    the window. Calibration requires one identified start from each endpoint."""
+    duration = float(meta["duration_s"])
+    if meta.get("gate") in ("rate", "loss", "stack"):
+        times = []
+        for rows, role in ((rcv, "receiver"), (snd, "sender")):
+            starts = [r for r in rows if r.get("ev") == "start"]
+            if len(starts) != 1 or starts[0].get("role") != role:
+                return None
+            times.append(starts[0].get("t"))
+        t0, sender = times
+        bounds = endpoint_window(t0, sender, duration)
+        return (t0, *bounds, sender) if bounds else None
     start = find_event(rcv, "start")
     if start is None:
         return None
-    S = float(meta["duration_s"])
     t0 = start["t"]
-    lo, hi = window(t0, S)
+    lo, hi = window(t0, duration)
     s = find_event(snd, "start")
     snd_start = s["t"] if s else None
     if snd_start is not None:
-        hi = min(hi, snd_start + int(S * NS))
+        hi = min(hi, snd_start + int(duration * NS))
     return t0, lo, hi, snd_start
 
 
@@ -971,7 +990,7 @@ def summarize_run(rundir):
     snd = read_jsonl(rd / "snd.jsonl")
     w = run_window(meta, rcv, snd)
     if w is None:
-        invalid("no receiver start line")
+        invalid("missing or inconsistent endpoint measurement window")
         return out
     t0, lo, hi, snd_start = w
     out["t0_ns"] = t0

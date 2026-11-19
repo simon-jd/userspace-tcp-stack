@@ -1557,6 +1557,53 @@ class FakeSlot:
 
 
 class CalibrationEvidence(unittest.TestCase):
+    def test_archived_rate_requires_both_endpoint_starts(self):
+        # m2d-testbed/calib-s1/rate-100-20-2: original endpoint records and
+        # samples on both sides of warm-up, sender stop and receiver start + S.
+        rows = A.read_jsonl(Path(__file__).parent / "testdata/calibration-rate-endpoints.jsonl")
+        receiver = 577768819454879
+        sender = 577768799405294
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "meta.json").write_text(json.dumps(dict(gate="rate", impl="linux", duration_s=30)))
+
+            def write(role, records):
+                file = "snd.jsonl" if role == "sender" else "rcv.jsonl"
+                (d / file).write_text("".join(json.dumps(r) + "\n" for r in records))
+
+            for role in ("sender", "receiver"):
+                write(role, [r for r in rows if r["role"] == role])
+            control = A.summarize_run(d)
+            self.assertTrue(control["valid"], control["invalid"])
+            self.assertEqual(control["window_end_ns"], sender + 30 * NS)
+            self.assertAlmostEqual(control["goodput_bps"], 95625506.52316622)
+            for role in ("sender", "receiver"):
+                records = [r for r in rows if r["role"] == role]
+                start, *rest = records
+                self.assertEqual(start["ev"], "start")
+                for label, starts in [
+                        ("missing start", []), ("missing time", [{"ev": "start", "role": role}]),
+                        ("wrong type", [dict(start, t=str(start["t"]))]), ("boolean", [dict(start, t=True)]),
+                        ("wrong role", [dict(start, role="other")]), ("ambiguous", [start, start])]:
+                    with self.subTest(role=role, defect=label):
+                        write(role, starts + rest)
+                        result = A.summarize_run(d)
+                        self.assertFalse(result["valid"])
+                        self.assertIsNone(result.get("goodput_bps"))
+                for label, edge in (("warm-up", receiver + 5 * NS), ("stop", sender + 30 * NS)):
+                    with self.subTest(role=role, missing_sample_at=label):
+                        samples = [r for r in rest if r["ev"] == "sample" and
+                                   (r["t"] > edge if label == "warm-up" else r["t"] < edge)]
+                        write(role, [start, *samples, rest[-1]])
+                        self.assertFalse(A.summarize_run(d)["valid"])
+                write(role, records)
+            for invalid_start in (receiver - 25 * NS, receiver + 6 * NS):
+                with self.subTest(sender_start=invalid_start):
+                    records = [dict(r, t=invalid_start) if r["ev"] == "start" else r
+                               for r in rows if r["role"] == "sender"]
+                    write("sender", records)
+                    self.assertFalse(A.summarize_run(d)["valid"])
+
     def test_production_gate_and_source_inventory(self):
         slot = FakeSlot(0, True)
         slot.stack_ip = "stack"
@@ -1573,6 +1620,8 @@ class CalibrationEvidence(unittest.TestCase):
                 count = 100000 if name == "r1-in" else 100000 - round(1000 * spec["loss"])
                 cap[name] = dict(data_segs=count, captured=count, received_by_filter=count, kernel_dropped=0)
             row = dict(run=run, valid=True, invalid=[], sender_ccs=[spec["cc"]], goodput_bps=bw * 0.95e6,
+                       t0_ns=T0, sender_start_ns=T0 - 20_000_000,
+                       window_end_ns=T0 - 20_000_000 + spec["duration"] * NS,
                        capture=cap, local_drops={}, time_squeeze=0, stack_device={}, stack_local_drops={},
                        ack_path={"r1_a": {"dropped": 0}, "r2_b": {"dropped": 0}}, tbf={"dropped": 0},
                        netem={"dropped": 0}, queue={"reaches": True, "backlog_max": size, "drop_intervals_low": 0},
@@ -1601,10 +1650,25 @@ class CalibrationEvidence(unittest.TestCase):
             self.assertTrue(gate["passed"], gate["reject_reason"])
             self.assertEqual(len(gate["items"]), 67)
             self.assertEqual(M.check_gate(slot, ["t"], "key"), "t")
+            # A previous producer could attest a summary with the drain included.
+            path = "rate-10-20-2/summary.json"
+            old = json.loads(store[f"/data/m2/t/{path}"])
+            old.update(sender_start_ns=None, window_end_ns=T0 + 30 * NS)
+            store[f"/data/m2/t/{path}"] = json.dumps(old)
+            prior = json.loads(store["/data/m2/t/gate.json"])
+            prior["sources"][path] = fixture_meta_digest(old)
+            store["/data/m2/t/gate.json"] = json.dumps(prior)
+            with self.assertRaisesRegex(RuntimeError, "window"):
+                M.check_gate(slot, ["t"], "key")
+            store["/data/m2/t/gate.json"] = json.dumps(gate)
             del store["/data/m2/t/rate-10-20-2/summary.json"]
             with self.assertRaisesRegex(RuntimeError, "missing or changed"):
                 M.check_gate(slot, ["t"], "key")
             for name, row, meta in [
+                    ("rate-10-20-2", {"sender_start_ns": None}, {}),
+                    ("loss-100-100-2-1", {"t0_ns": None}, {}),
+                    ("stack-100-20-2-path", {"window_end_ns": None}, {}),
+                    ("rate-10-20-0.5", {"window_end_ns": T0 + 30 * NS}, {}),
                     ("rate-10-20-2", {"valid": False, "invalid": ["sha256 differs"]}, {}),
                     ("rate-10-20-2", {"ack_path": {}}, {}), ("rate-10-20-2", {"local_drops": None}, {}),
                     ("rate-10-20-2", {"capture": {}}, {}), ("rate-10-20-0.5", {"goodput_bps": float("inf")}, {}),
