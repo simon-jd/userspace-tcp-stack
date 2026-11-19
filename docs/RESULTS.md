@@ -376,3 +376,38 @@ lateness p99 65 535 ns both; lateness max 1.81-2.37 ms with, 1.78-2.11 ms withou
 per run. No cost is visible at this event count. The core does not emit `cwnd` or `recovery` events
 yet (DESIGN §14.6), so these traces hold only retransmissions and RTOs; once those kinds are emitted
 the measurement is repeated.
+
+## Comparison with Linux traces
+
+### Historical recovery runs on the M1 testbed
+
+These 1 GB transfers used the M2 recovery implementation with a NewReno stack sender. The N2 Linux
+reference used CUBIC. The [N0 receiver ACK counts](INTEROP.md#ack-frequency-of-the-stacks-receiver)
+come from separate transfers in the reverse direction.
+
+| Stack sender case | M1 run5 | M2 recovery build | M2 first verification | M2 second verification |
+|---|---:|---:|---:|---:|
+| N1 loss, RTO expiries | 150 | 8 | 0 | 9 |
+| N4 loss, duplication and reordering, RTO expiries | 133 | 5 | 8 | 0 |
+
+The M1 Linux reference sender counted 12 timeouts on N1 (run3) and 8 on N4 (run6). Captures at
+both endpoints show that the receiver had already sent a covering ACK for all 8 N1 expiries in
+the M2 build and all 9 in the second verification. In the build's N4 run, 3 of the
+5 timeout retransmissions first delivered the missing bytes. The receiver had missed 2, 2 and 3
+earlier copies of those segments. The sender had one retransmission in flight and SACKs for every
+other outstanding segment. With no later delivery to reveal that loss to RACK, the RTO supplied
+the fallback. The receiver had already acknowledged the other two. Both N3 duplication-only runs
+(build and second verification) had zero retransmissions, down from 432 in M1 run5.
+
+N2 injected reordering only. Over ten M2 runs through the first repair pass the stack counted
+1083–5253 fast retransmissions (median 2582), spanning the M1 run5 count of 1800. In the M2 build,
+2833 fast retransmissions accompanied 2779 D-SACKed segments and 87 recoveries. The separate second
+verification saw 734 fast retransmissions, 730 D-SACKed segments and 49 recoveries. The respective
+Linux reference runs had 306 and 508 **total** retransmissions and 194 and 176 partial undos.
+D-SACKs confirm duplicate delivery. Linux can undo a spurious loss decision on a partial ACK. The
+stack lacks this recovery-undo path, a plausible contributor to its extra retransmissions. The
+counter totals do not assign a cause to each retransmission or isolate the effect of undo.
+
+The archived M2 captures are in `utcp-data:/m2/m2a-recovery/p2/` and
+`utcp-data:/m2/m2a-recovery-verify-2/m1/`. The per-timeout capture comparisons and sender
+`TCP_INFO` samples are in `utcp-data:/m2/m2a-recovery/refix2/results.json`.
