@@ -86,6 +86,10 @@ def check_spec(directory, meta, spec, freeze, valid):
 
 def check_records(directory, meta, freeze):
     physical_checkpoint.kernel_netem(directory, meta)
+    assert meta["bdp_bytes"] == int(meta["bw"] * 1e6 * meta["rtt"] / 8000)
+    expected_burst = max(2 * 1514, int(meta["bw"] * 1e6 / 8000))
+    assert meta["burst_bytes"] == expected_burst
+    assert meta["ifaces"] == freeze["slots"]["0"]["ifaces"]
     snapshots = []
     for phase in ("pre", "post"):
         text = (directory / phase / "record.txt").read_text()
@@ -99,6 +103,13 @@ def check_records(directory, meta, freeze):
         for container, cpuset in meta["cpusets"].items():
             assert records[container, "cpuset"] == [cpuset]
         assert records["host", "uname -r"] == [meta["uname_r"]]
+        ingress_router = meta["containers"]["r1"]
+        (netem,) = (
+            line
+            for line in records[ingress_router, "tc -s -raw qdisc"]
+            if line.startswith("qdisc netem ")
+        )
+        assert " limit 20000 " in netem, (directory, phase, netem)
         router = meta["containers"]["r2"]
         (tbf,) = (
             line
@@ -115,8 +126,9 @@ def check_records(directory, meta, freeze):
                 phase,
                 tbf,
             )
-        # tc prints rounded token-bucket burst values on some rates. Keep its literal values.
+        # Both rates have exact byte readbacks on the recorded kernel and the approved gate.
         (burst,) = re.findall(r"\bburst (\S+)", tbf)
+        assert burst == f"{expected_burst}b", (directory, phase, tbf)
         snapshots.append(
             (
                 analyze.parse_nstat(records[meta["containers"]["snd"], "nstat -asz"]),
