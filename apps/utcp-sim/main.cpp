@@ -226,6 +226,9 @@ bool run_one(const Scenario& s, const Options& o, app::JsonlWriter& out) {
       const std::string prefix = node_name(i) + "_";
       row.add(prefix + "requested", requested).add(prefix + "written", counts.tcp_bytes_sent)
           .add(prefix + "received", counts.tcp_bytes_received)
+          .add(prefix + "idle_closes", counts.tcp_idle_closes)
+          .add(prefix + "tcp_errors", counts.tcp_errors)
+          .add(prefix + "first_tcp_error", counts.first_tcp_error)
           .add(prefix + "cc", counts.first_sender_cc)
           .add(prefix + "cc_flavor", to_string(node.stack().config().tcp.cc_flavor));
     }

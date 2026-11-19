@@ -143,3 +143,15 @@ losses. The three on egress (seed 47500 `b`, seed 74000 `a` twice) are pure ACKs
 the FIN's sequence number + 1, which is SND.NXT once the FIN is sent (RFC 9293 §3.4); TShark's sequence
 analysis flags them, the stack is right. D-SACK, zero-window and RST segments are part of the generated workloads
 (duplication and retransmission, paused readers, aborts and connections to closed ports).
+
+## Gen 5 strict sweep
+
+The gcc-sweep run of seeds 0 through 99,999 on `9b1ce4e8cce0fbd10886cb4d3b3f0577212099c0` produced 99,989 passing scenarios and 11 pacing violations. Replaying each saved scenario reproduced its event count, message and digest.
+
+### sb-0011. New payload sent by the persist timer bypassed pacing
+
+The affected seeds were 14042, 32781, 40825, 41431, 41724, 44701, 62519, 66979, 74485, 89797 and 99601. Each is saved in `tests/sim/corpus/sb-0011-<seed>.scenario`. The pacing checker reported `ordinary paced payload missing gate rate` for 383–1,312 bytes of new data. The sender had a positive window below the silly-window-avoidance threshold. When its persist timer expired, it sent the window-sized payload directly and omitted the gate rate, burst marker and departure-time charge.
+
+Independent replay of preceding bursts put the offending packet 218–1,179 ms after its previous earliest departure. All 11 observed failures concern missing pacing metadata. A separate scripted TCP peer and fixed 100 B/s rate in `TcpZeroWindow.PositivePersistWindowHonorsAndAdvancesEdt` expose an actual early departure when the timer expires inside an outstanding pacing interval. The fixture covers the tenth payload segment, the next segment after a positive-window persist send, and a full transmit queue at expiry.
+
+Commit `e00dccd57776e4ff4f1de1e2eb61d2de75c498d1` schedules a positive-window persist send no earlier than EDT and charges only bytes actually sent. At that revision, the same seed range yielded 100,000 passing checker verdicts with 200 identical saved-file replays. The receiving applications checked every requested byte in 99,602 runs, received a prefix in 371 and received zero bytes in 27. The 100,000 verdicts include allowed terminal outcomes under loss and the workload's 300-second application idle timeout.

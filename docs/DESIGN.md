@@ -1280,7 +1280,7 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
 - `Scenario` is generated from one 64-bit seed and serialises to `key=value` lines with a `gen_version`;
   `utcp-sim --scenario file` runs an explicit scenario and `utcp-sim --seed N` regenerates it. Generation and the
   link pipeline use integers only (fixed-point log-uniform table, ppm probabilities, `Rng::below`, no `<random>`).
-- Generator version 3 (the default) uses 2 nodes (a third "router" link segment when MTU < 1500); delay 0.1-100 ms log-uniform, jitter
+- Generator version 3 uses 2 nodes (a third "router" link segment when MTU < 1500); delay 0.1-100 ms log-uniform, jitter
   0-50 % of delay, reorder on in 30 %; loss 0 in 20 % of seeds, else up to 10 %, rarely 30 % (forces aborts); dup
   up to 5 %; bitflip up to 2 %; garbage in 5 % of seeds; rate 1 Mbit/s-10 Gbit/s or unlimited; queue 2-2000
   packets; MTU 576-1500; per side: profile, SACK/TS/WS on/off independently, buffers 4 KiB-8 MiB, nodelay,
@@ -1288,7 +1288,8 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
   down to 8/16 and a host drain limit in 5 %, half of those also with a `chunk_limit` of 16-128 chunks. Workloads: 1-8 connections, bytes per direction 0-4 MiB
   log-uniform, write sizes 1 B-64 KiB, readers that pause (zero windows), close modes {both close, half-close then reverse transfer,
   client abort at a random point, connect to a closed port, simultaneous open}, backlog limits.
-- Select generation 4 or 5 with `--gen-version` on the simulator or sweep. Each direction has a 1–100 Mbit/s
+- Generation 5 is the default for generated seeds in World scenarios, the CLI and the sweep. Select 3, 4 or 5
+  with `--gen-version`. Unversioned scenario files retain generation 3 semantics. In generations 4 and 5 each direction has a 1–100 Mbit/s
   bottleneck, 1–200 ms round-trip propagation, and a quarter- to four-BDP queue holding at least one MTU.
   Directions independently draw no loss, Bernoulli loss or Gilbert–Elliott loss (stationary probability at most
   5%), occasional reordering, and occasional duplication. One bidirectional transfer runs in each seed. A
@@ -1314,7 +1315,8 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
 | `QuiescenceChecker` | after all workload connections end, run until `next_deadline()` is never or only `pmtu_expiry`; then `debug_usage()` must show no live slots, TIME_WAIT entries, queued packets or events, or armed connection timers, and every buffer and chunk free; else `leak` | on |
 | `SelfCheck` | `Stack::debug_check()` after every call; ASan/UBSan in sweep builds | on |
 
-With `--strict-fast-rexmit` the first PRR retransmission is subject to cwnd. A TLP requires RACK-TLP enabled and negotiated
+The default checker subjects the first PRR retransmission to cwnd. Select `--no-strict-fast-rexmit` on the CLI or sweep
+for the historical exemption. A TLP requires RACK-TLP enabled and negotiated
 SACK, may exceed cwnd by one packet, and is forbidden in Recovery or Loss. The probe records wire SND.NXT, including FIN.
 An accepted ACK at or beyond that marker ends a new-data probe. At equality, a retransmitted probe
 requires a pure duplicate ACK or a matching D-SACK. Linux also accepts a duplicate ACK carrying
@@ -1328,7 +1330,7 @@ plus that interval, less lateness credit capped at half the interval. Startup bu
 until a burst reaches ten cumulative payload segments. The entire crossing burst is charged. Older traces
 can omit the initial exempt bursts' gate tags. Subsequent ordinary paced sends report the configured
 fixed rate or the current sender pacing rate. A burst may start up to 1 µs before its deadline. An RTO head or retransmitted TLP bypasses the gate and
-advances the deadline when pacing applies. New-data TLPs pass the gate.
+advances the deadline when pacing applies. New-data TLPs and positive-window data sent on a persist expiry pass the gate.
 
 A survivor whose peer has failed with `timed_out` would wait forever if the peer's RST was lost (no keepalive
 in M1). Workload applications therefore close after an application idle timeout set by the scenario, and the

@@ -268,6 +268,25 @@ class Sweep:
                    {k: v for k, v in expected.items() if k != "wall_ms"} for row in (captured, replay))
 
 
+def transfer_counts(results):
+    """Classify passing protocol scenarios by bytes checked at the receiving applications."""
+    counts = dict(complete=0, partial=0, no_payload=0, synthetic=0, unreported=0)
+    for row in results:
+        if row["verdict"] != "ok":
+            continue
+        if row.get("nodes") == "synthetic":
+            counts["synthetic"] += 1
+        elif row.get("nodes") != "stack" or "a_received" not in row:
+            counts["unreported"] += 1
+        elif not (row["a_received"] or row["b_received"]):
+            counts["no_payload"] += 1
+        elif (row["a_received"], row["b_received"]) == (row["b_requested"], row["a_requested"]):
+            counts["complete"] += 1
+        else:
+            counts["partial"] += 1
+    return counts
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--seeds", type=parse_range, required=True, help="A:B, seeds A..B-1")
@@ -327,6 +346,7 @@ def main():
         "seeds": [a, b],
         "gen_version": args.gen_version,
         "nodes": args.nodes,
+        "ok_transfers": transfer_counts(sweep.results.values()),
         "strict_fast_rexmit": args.strict_fast_rexmit,
         "runs": len(sweep.results),
         "missing": missing,

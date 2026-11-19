@@ -60,7 +60,8 @@ public:
     std::uint64_t udp_sent = 0, udp_echoed = 0, udp_replies = 0;
     std::uint64_t pings_sent = 0, ping_replies = 0;
     std::uint64_t tcp_bytes_sent = 0, tcp_bytes_received = 0;
-    std::uint32_t tcp_errors = 0;
+    std::uint32_t tcp_errors = 0, tcp_idle_closes = 0;
+    std::string first_tcp_error;
     std::string first_sender_cc;  // TCP_INFO at the first successful payload write
   };
   [[nodiscard]] const Counts& counts() const noexcept;
