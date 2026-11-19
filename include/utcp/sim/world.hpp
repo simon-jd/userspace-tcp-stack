@@ -50,7 +50,7 @@ struct WireEvent {
 };
 
 struct WorldOptions {
-  bool strict_fast_rexmit = false;
+  bool strict_fast_rexmit = true;
   // `livelock` limits (§7.1).
   std::uint64_t max_events_per_instant = 1'000'000;
   std::uint64_t max_events = 200'000'000;

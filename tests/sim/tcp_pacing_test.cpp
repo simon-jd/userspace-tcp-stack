@@ -38,7 +38,7 @@ LinkParams bottleneck() {
 // bytes to a StackNode on node 1 over bottleneck() in both directions.
 Outcome paced_bulk(std::uint64_t seed, std::uint64_t total,
                    const std::function<void(StackConfig&)>& tweak, bool keep_trace,
-                   bool keep_wire) {
+                   bool keep_wire, std::optional<CcAlgo> expected_cc = std::nullopt) {
   Scenario s = two_node_scenario(seed, bottleneck(), bottleneck());
   s.conn.push_back(bulk(total, 0));
   BulkClient cl;
@@ -52,7 +52,15 @@ Outcome paced_bulk(std::uint64_t seed, std::uint64_t total,
       return nullptr;
     }
     auto n = std::make_unique<AppNode>(sc, i, tweak);
-    n->script = [&](AppNode& node, Time now) { cl.step(node, now); };
+    n->script = [&](AppNode& node, Time now) {
+      const bool was_connected = cl.connected;
+      cl.step(node, now);
+      if (expected_cc && !was_connected && cl.connected) {
+        const auto info = node.stack().tcp_info(*cl.h);
+        ASSERT_TRUE(info.has_value());
+        EXPECT_EQ(info->cc_name_view(), to_string(*expected_cc));
+      }
+    };
     return n;
   };
   Outcome o = run_sim(s, spec);
@@ -167,20 +175,19 @@ Replay replay(const std::vector<Burst>& bs) {
   return r;
 }
 
-// Pacing::always with NewReno (CUBIC is m2b-cc's; m2-integrate adds it to
-// this test once it is merged), initial ssthresh 100: the gate rate is
+// Pacing::always with initial ssthresh 100: the gate rate is
 // 200 % of mss * cwnd / srtt while cwnd < 50 = ssthresh / 2 and 120 % from
 // there on (tcp_update_pacing_rate), so the transfer crosses the ratio
 // change in slow start. Every paced burst satisfies the replay, many were
 // held by the gate until exactly the modelled departure in both regimes, and
 // the gate rate falls where cwnd reaches ssthresh / 2.
-TEST(TcpPacingSim, PacedBurstsFollowTheEdtReplay) {
-  const auto tweak = [](StackConfig& c) {
-    c.tcp.cc = CcAlgo::newreno;
+void check_paced_bursts(CcAlgo cc) {
+  const auto tweak = [cc](StackConfig& c) {
+    c.tcp.cc = cc;
     c.tcp.pacing = Pacing::always;
     c.tcp.initial_ssthresh = 100;
   };
-  const Outcome o = paced_bulk(9100, 8'000'000, tweak, true, false);
+  const Outcome o = paced_bulk(9100, 8'000'000, tweak, true, false, cc);
   ASSERT_TRUE(o.ok()) << o.violations();
   EXPECT_EQ(o.stats[0].TcpRetransSegs, 0u);
   const std::vector<Burst> bs = bursts(o, 0);
@@ -208,6 +215,14 @@ TEST(TcpPacingSim, PacedBurstsFollowTheEdtReplay) {
   const Burst& after = bs[*cross];
   EXPECT_EQ(before.ssthresh, 100u);
   EXPECT_LT(after.rate * 10, before.rate * 7) << before.rate << " -> " << after.rate;
+}
+
+TEST(TcpPacingSim, PacedBurstsFollowTheEdtReplay) {
+  check_paced_bursts(CcAlgo::newreno);
+}
+
+TEST(TcpPacingSim, CubicPacedBurstsFollowTheEdtReplay) {
+  check_paced_bursts(CcAlgo::cubic);
 }
 
 // The replay is not vacuous: with TestFault::ignore_pacing_gate (the gate

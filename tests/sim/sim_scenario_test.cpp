@@ -134,6 +134,16 @@ TEST(SimScenario, ParseRejectsBadInput) {
   EXPECT_FALSE(parse_kv("garbage line\n").has_value());
 }
 
+TEST(SimScenario, GeneratorDefaultAndUnversionedFileAreIndependent) {
+  EXPECT_EQ(generate_scenario(42), generate_scenario(42, NodeKind::stack, {.version = 5}));
+  const auto old = generate_scenario(42, NodeKind::stack, {.version = 3});
+  std::string text = to_kv(old);
+  text.erase(0, text.find('\n') + 1);
+  const auto parsed = parse_kv(text);
+  ASSERT_TRUE(parsed.has_value()) << parsed.error();
+  EXPECT_EQ(*parsed, old);
+}
+
 TEST(SimScenario, ParseFillsDefaults) {
   // A hand-written scenario: two nodes and the two paths.
   const std::string text =
@@ -216,7 +226,7 @@ TEST(SimScenario, StartTimeIsSeededOffset) {
 TEST(SimScenario, GeneratedRangesMatchDesign) {
   std::uint64_t router = 0, garbage = 0, renege = 0, isn = 0;
   for (std::uint64_t seed = 0; seed < 5000; ++seed) {
-    const Scenario s = generate_scenario(seed);
+    const Scenario s = generate_scenario(seed, NodeKind::stack, {.version = 3});
     ASSERT_EQ(s.node.size(), 2u);
     ASSERT_GE(s.conn.size(), 1u);
     ASSERT_LE(s.conn.size(), 8u);
@@ -257,7 +267,7 @@ TEST(SimScenario, SomeSeedsShareAListenerBeyondItsBacklog) {
   // listener whose backlog is smaller than their number.
   std::uint64_t shared = 0;
   for (std::uint64_t seed = 0; seed < 5000; ++seed) {
-    const Scenario s = generate_scenario(seed);
+    const Scenario s = generate_scenario(seed, NodeKind::stack, {.version = 3});
     std::map<std::pair<std::uint32_t, std::uint16_t>, std::vector<const ConnSpec*>> listeners;
     for (const ConnSpec& c : s.conn) {
       if (listener_mode(c)) {

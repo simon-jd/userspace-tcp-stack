@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 
 #include "utcp/sim/node.hpp"
 #include "utcp/sim/scenario.hpp"
@@ -60,6 +61,7 @@ public:
     std::uint64_t pings_sent = 0, ping_replies = 0;
     std::uint64_t tcp_bytes_sent = 0, tcp_bytes_received = 0;
     std::uint32_t tcp_errors = 0;
+    std::string first_sender_cc;  // TCP_INFO at the first successful payload write
   };
   [[nodiscard]] const Counts& counts() const noexcept;
 

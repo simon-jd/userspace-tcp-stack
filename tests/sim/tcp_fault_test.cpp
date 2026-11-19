@@ -10,6 +10,22 @@
 namespace utcp::sim {
 namespace {
 
+TEST(TcpFaultSim, DefaultWorldChecksFirstPrrRetransmission) {
+  Scenario s = generate_scenario(4);
+  ASSERT_EQ(s.gen_version, 5u);
+  const auto good = run_scenario(s);
+  ASSERT_EQ(good.verdict, Verdict::ok);
+  for (auto& node : s.node) node.test_fault = TestFault::prr_skip_force;
+  const auto broken = run_scenario(s);
+  ASSERT_EQ(broken.verdict, Verdict::inflight);
+  ASSERT_FALSE(broken.violations.empty());
+  EXPECT_NE(broken.violations.front().message.find("fast_rexmit"), std::string::npos);
+  EXPECT_NE(broken.violations.front().message.find("packets_in_flight 20 > cwnd 19"), std::string::npos);
+  WorldOptions comparison;
+  comparison.strict_fast_rexmit = false;
+  EXPECT_EQ(run_scenario(s, comparison).verdict, Verdict::ok);
+}
+
 TEST(TcpFaultSim, OverscaledPeerWindowFiresTheInFlightChecker) {
   std::optional<std::uint64_t> fired;
   for (std::uint64_t seed = 0; seed < 100 && !fired; ++seed) {

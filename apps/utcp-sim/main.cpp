@@ -31,6 +31,7 @@
 #include "common/jsonl.hpp"
 #include "utcp/sim/results.hpp"
 #include "utcp/sim/scenario.hpp"
+#include "utcp/sim/stack_node.hpp"
 #include "utcp/sim/world.hpp"
 
 namespace {
@@ -143,7 +144,7 @@ struct Options {
   std::set<std::uint64_t> plant_fail, plant_abort, plant_hang, plant_segv;
   std::optional<std::uint64_t> plant_after;
   GenOptions generator;
-  bool strict_fast_rexmit = false;
+  bool strict_fast_rexmit = WorldOptions{}.strict_fast_rexmit;
   std::optional<TestFault> test_fault;
   std::string pcap_dir;
   std::string trace_path;
@@ -212,8 +213,24 @@ bool run_one(const Scenario& s, const Options& o, app::JsonlWriter& out) {
   const RunResult r = w.run();
   g_world.store(nullptr);
   const auto wall = std::chrono::steady_clock::now() - t0;
-  out.write(result_line(r, static_cast<std::uint64_t>(
-                               std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count())));
+  auto row = result_line(r, static_cast<std::uint64_t>(
+                                std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count()));
+  row.add("gen_version", s.gen_version).add("nodes", to_string(s.nodes))
+      .add("strict_fast_rexmit", o.strict_fast_rexmit);
+  if (s.nodes == NodeKind::stack) {
+    for (std::uint32_t i = 0; i < w.node_count(); ++i) {
+      const auto& node = static_cast<const StackNode&>(w.node(i));
+      const auto& counts = node.counts();
+      std::uint64_t requested = 0;
+      for (const ConnSpec& c : s.conn) requested += i == c.client ? c.bytes_c2s : c.bytes_s2c;
+      const std::string prefix = node_name(i) + "_";
+      row.add(prefix + "requested", requested).add(prefix + "written", counts.tcp_bytes_sent)
+          .add(prefix + "received", counts.tcp_bytes_received)
+          .add(prefix + "cc", counts.first_sender_cc)
+          .add(prefix + "cc_flavor", to_string(node.stack().config().tcp.cc_flavor));
+    }
+  }
+  out.write(row);
   out.flush();
   if (trace) {
     trace->flush();
@@ -230,7 +247,8 @@ int main(int argc, char** argv) {
       .option("scenario", "FILE", "run a key=value scenario file")
       .option("corpus", "DIR", "run every DIR/*.scenario")
       .option("gen-version", "N", "generator version for --seed and --seed-range (3, 4, 5)")
-      .flag("strict-fast-rexmit", "check PRR first retransmissions against cwnd")
+      .flag("strict-fast-rexmit", "check PRR first retransmissions against cwnd (default)")
+      .flag("no-strict-fast-rexmit", "exempt PRR first retransmissions for comparison")
       .option("nodes", "KIND", "stack or synthetic (generated scenarios)", "stack")
       .option("jsonl", "FILE", "result lines ('-' = stdout)", "-")
       .option("pcap", "DIR", "write DIR/seed-N/{scenario.txt,<node>.egress.pcap,<node>.ingress.pcap}")
@@ -261,7 +279,10 @@ int main(int argc, char** argv) {
   };
 
   Options o;
-  o.strict_fast_rexmit = args->flag("strict-fast-rexmit");
+  if (args->flag("strict-fast-rexmit") && args->flag("no-strict-fast-rexmit")) {
+    return usage_error("strict and no-strict fast retransmit options conflict");
+  }
+  if (args->flag("no-strict-fast-rexmit")) o.strict_fast_rexmit = false;
   if (const auto v = args->get("gen-version")) {
     const auto n = app::parse_u64(*v);
     if (!n || *n < 3 || *n > max_gen_version) return usage_error("--gen-version: expected 3, 4 or 5");

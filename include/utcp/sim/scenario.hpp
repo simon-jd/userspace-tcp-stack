@@ -28,7 +28,7 @@ namespace utcp::sim {
 // Bumped whenever generate_scenario() changes what a seed produces.
 // 2: shared listeners (backlog limits).
 // 3: a small ChunkPool (NodeSpec::chunk_limit) in half of the small-queue seeds.
-inline constexpr std::uint32_t gen_version = 3;  // default until M2 integration
+inline constexpr std::uint32_t gen_version = 5;  // current seed generator
 inline constexpr std::uint32_t max_gen_version = 5;
 
 enum class NodeKind : std::uint8_t {
@@ -149,7 +149,8 @@ struct PingSpec {
 };
 
 struct Scenario {
-  std::uint32_t gen_version = sim::gen_version;
+  // Hand-authored and unversioned scenarios historically use profile-derived TCP settings.
+  std::uint32_t gen_version = 3;
   std::uint64_t seed = 0;  // master seed of every random stream of the run
   NodeKind nodes = NodeKind::stack;
   Plant plant = Plant::none;

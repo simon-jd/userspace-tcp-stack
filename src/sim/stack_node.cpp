@@ -539,6 +539,11 @@ public:
       if (*r == 0) {
         return true;
       }
+      if (counts_.tcp_bytes_sent == 0) {
+        if (const auto info = stack_.tcp_info(e.h)) {
+          counts_.first_sender_cc = info->cc_name_view();
+        }
+      }
       e.sent += *r;
       counts_.tcp_bytes_sent += *r;
       ctx_->stream().on_written(e.conn, e.send_dir, e.sent);
