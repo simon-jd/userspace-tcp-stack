@@ -29,7 +29,9 @@ Goodput and both queue-delay measurements use the registered 10% median differen
 
 The additional metrics preserve sender counters, capture-based retransmissions, DSACKed segments, limited times, application-loop lateness, cwnd samples, pacing and delivery rates, queue drops and backlog, IRQ/softirq work, and sender CPU contention. The minimum, median, maximum and available observation count are reported per side. Rates and ping statistics use the measurement window. Queue and kernel `nstat` deltas span the full transfer and can include startup or drain. Jain fairness and multi-flow convergence are outside this single-sender experiment.
 
-Linux v7.0 increments `TcpExtTCPFullUndo`, `TcpExtTCPPartialUndo`, `TcpExtTCPDSACKUndo` and `TcpExtTCPLossUndo` at distinct congestion-window restoration paths in `net/ipv4/tcp_input.c`. The F-RTO restoration branch of `tcp_try_undo_loss` increments `TcpExtTCPSpuriousRTOs` as well as `TcpExtTCPLossUndo`. These two counts can refer to one event. Sender-container deltas are interpreted only on the Linux sender. Absence of a spurious-RTO restoration count does not count how many times the kernel considered F-RTO.
+Linux v7.0 increments `TcpExtTCPFullUndo`, `TcpExtTCPPartialUndo`, `TcpExtTCPDSACKUndo` and `TcpExtTCPLossUndo` at distinct congestion-window restoration paths in `net/ipv4/tcp_input.c`. The F-RTO restoration branch of `tcp_try_undo_loss` increments `TcpExtTCPSpuriousRTOs` as well as `TcpExtTCPLossUndo`. These two counts can refer to one event. The sixth counter, `TcpExtTCPSpuriousRtxHostQueues`, records an attempted retransmission or probe whose earlier skb clone still occupied a host queue (`skb_still_in_host_queue` in v7.0 `tcp_output.c`). Sender-container deltas are interpreted only on the Linux sender. Absence of a spurious-RTO restoration count does not count how many times the kernel considered F-RTO.
+
+For each Linux sender with a positive between-snapshot timeout delta, the r1 ingress projection preserves capture time, data sequence relative to that flow's original SYN, and segment payload length. The projection stays in the private compact archive. The replay reads every earlier outgoing data segment before classifying a new high sequence end during Loss. `kernel-rto-runs.csv` reports per-run outcomes and `kernel-loss-spans.csv` separates warmup, the primary window, and drain. A segment bracketed by two adjacent observations of Loss is distinguished from one in a leading or trailing transition interval. Individual transitions between the roughly 10 ms socket samples remain unresolved. Multiple timeouts can occur within one sampled Loss span. The whole-transfer timeout total has no individual event timestamps. New sequence data in a sampled Loss interval is compatible with a post-timeout new-data send. These observations alone do not identify the kernel's per-ACK F-RTO decision.
 
 ## Replaying a finished campaign
 
@@ -58,10 +60,11 @@ tar xzf "$archive/$compact" -C "$work"
 camp="$work/m2-matrix"
 (cd "$camp" && sha256sum --quiet -c MANIFEST.sha256)
 python3 -IB "$res/audit.py" "$camp" "$work/observed"
+python3 -IB "$res/loss_replay.py" report "$camp" "$camp/wire-loss-inputs" "$work/wire-report"
 python3 -IB /utcp/tools/m2/plot.py "$camp" "$work/plots" > "$work/plot-selection.log"
 python3 -IB "$res/report.py" "$camp" "$work/native" "$work/observed" \
   "$work/plot-selection.log" "$work/report"
-for f in "$work/observed/"* "$work/report/"* "$camp/physical-replay/"*; do cmp "$f" "$res/${f##*/}"; done
+for f in "$work/observed/"* "$work/report/"* "$work/wire-report/"* "$camp/physical-replay/"*; do cmp "$f" "$res/${f##*/}"; done
 diff -qr "$work/plots" "$res/plots"
 ```
 
@@ -76,4 +79,6 @@ full="$work/full/m2-matrix"
 python3 -IB /utcp/docs/results/m2-checkpoint/verify/physical_checkpoint.py \
   "$full" "$res/evidence.csv" "$work/fresh-physical"
 diff -qr "$work/fresh-physical" "$camp/physical-replay"
+python3 -IB "$res/loss_replay.py" extract "$full" "$res/evidence.csv" "$work/fresh-wire-inputs"
+diff -qr "$work/fresh-wire-inputs" "$camp/wire-loss-inputs"
 ```

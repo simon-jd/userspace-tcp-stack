@@ -12,7 +12,7 @@ import tarfile
 from pathlib import Path
 
 
-def write_archive(campaign, output, physical, source_manifest):
+def write_archive(campaign, output, physical, source_manifest, loss_inputs):
     if not (campaign / "plan.json").is_file() or output.exists():
         raise ValueError("expected a campaign with a plan and a new archive path")
     files = {}
@@ -30,6 +30,18 @@ def write_archive(campaign, output, physical, source_manifest):
             ):
                 raise ValueError(f"unexpected physical receipt {path}")
             name = "physical-replay/" + path.name
+            if name in files:
+                raise ValueError(f"duplicate entry {name}")
+            files[name] = path
+    if loss_inputs:
+        for path in sorted(loss_inputs.iterdir()):
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or not (path.name == "index.csv" or path.name.endswith(".csv.gz"))
+            ):
+                raise ValueError(f"unexpected Linux loss input {path}")
+            name = "wire-loss-inputs/" + path.name
             if name in files:
                 raise ValueError(f"duplicate entry {name}")
             files[name] = path
@@ -68,5 +80,12 @@ if __name__ == "__main__":
     parser.add_argument("output", type=Path)
     parser.add_argument("--physical", type=Path)
     parser.add_argument("--source-manifest", type=Path)
+    parser.add_argument("--loss-inputs", type=Path)
     args = parser.parse_args()
-    write_archive(args.campaign, args.output, args.physical, args.source_manifest)
+    write_archive(
+        args.campaign,
+        args.output,
+        args.physical,
+        args.source_manifest,
+        args.loss_inputs,
+    )

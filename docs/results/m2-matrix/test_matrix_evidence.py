@@ -1,5 +1,6 @@
 """Targeted regressions for an enabled trace sink emitting zero filtered events and for gap boundaries."""
 
+import gzip
 import hashlib
 import json
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit
+import loss_replay as loss
 import report
 
 
@@ -95,6 +97,109 @@ class FilteredTrace(unittest.TestCase):
         self.path.write_text(json.dumps(event) + "\n")
         with self.assertRaises(ValueError):
             self.check()
+
+
+class LossWire(unittest.TestCase):
+    def test_sequence_high_wrap_overlap_and_repeat(self):
+        self.assertEqual(loss.advance(0xFFFFFFF0, 0xFFFFFFF0, 32), (16, 32))
+        self.assertEqual(loss.advance(16, 0xFFFFFFF0, 32), (16, 0))
+        self.assertEqual(loss.advance(16, 8, 16), (24, 8))
+
+    def test_transition_bounds_never_imply_continuous_loss(self):
+        records = [
+            dict(t=t, ca_state=state)
+            for t, state in (
+                (10, "open"),
+                (20, "loss"),
+                (30, "loss"),
+                (40, "open"),
+                (50, "loss"),
+                (60, "open"),
+            )
+        ]
+        spans = loss.sample_spans(records)
+        starts = [r["first_loss_ns"] for r in spans]
+        self.assertEqual(loss.locate(spans, starts, 12), (0, "leading boundary"))
+        self.assertEqual(loss.locate(spans, starts, 25), (0, "interior"))
+        self.assertEqual(loss.locate(spans, starts, 32), (0, "trailing boundary"))
+        self.assertEqual(loss.locate(spans, starts, 40), (None, None))
+        self.assertEqual(loss.locate(spans, starts, 50), (1, "isolated sample"))
+
+    def test_full_report_distinguishes_previous_data_and_phase(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            rd = root / "campaign/fixture"
+            rd.mkdir(parents=True)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            offset = 100 * 10**9
+            t0 = 10**9
+            lo = t0 + 5 * 10**9
+            sender = [dict(ev="clock", monotonic_ns=t0, realtime_ns=t0 + offset)]
+            for delta, state in (
+                (-20, "open"),
+                (-10, "loss"),
+                (0, "loss"),
+                (10, "loss"),
+                (20, "open"),
+            ):
+                sender.append(dict(ev="sample", t=lo + delta * 10**6, ca_state=state))
+            (rd / "snd.jsonl").write_text("".join(json.dumps(r) + "\n" for r in sender))
+            (rd / "summary.json").write_text(
+                json.dumps(dict(t0_ns=t0, window_end_ns=lo + 8 * 10**6))
+            )
+            source = dict(
+                run="fixture",
+                valid="1",
+                counted="1",
+                timeouts=2,
+                spurious_rtos=0,
+                capture_complete=1,
+                capture_sha256="test",
+                input="fixture.csv.gz",
+                segments=5,
+                status="captured",
+            )
+            audit.write_csv(inputs / "index.csv", loss.INDEX, [source])
+            with gzip.open(inputs / source["input"], "wt") as fh:
+                for dt, seq, length in (
+                    (-21, 1, 100),
+                    (-15, 101, 20),
+                    (-5, 1, 100),
+                    (5, 121, 25),
+                    (15, 146, 20),
+                ):
+                    fh.write(f"{offset + lo + dt * 10**6},{seq},{length}\n")
+            loss.report(root / "campaign", inputs, root / "result")
+            spans = loss.rows(root / "result/kernel-loss-spans.csv")
+            result = loss.rows(root / "result/kernel-rto-runs.csv")[0]
+            self.assertEqual(
+                (result["interior_new_segments"], result["boundary_new_segments"]),
+                ("1", "2"),
+            )
+            self.assertTrue(
+                any(
+                    r["phase"] == "measurement"
+                    and r["position"] == "interior"
+                    and r["new_sequence_bytes"] == "25"
+                    for r in spans
+                )
+            )
+            self.assertTrue(
+                any(
+                    r["phase"] == "drain" and r["position"] == "trailing boundary"
+                    for r in spans
+                )
+            )
+            for r in sender:
+                if r["ev"] == "sample":
+                    r["ca_state"] = "open"
+            (rd / "snd.jsonl").write_text("".join(json.dumps(r) + "\n" for r in sender))
+            loss.report(root / "campaign", inputs, root / "no-sample")
+            self.assertIn(
+                "no sampled Loss",
+                loss.rows(root / "no-sample/kernel-rto-runs.csv")[0]["summary"],
+            )
 
 
 class GapBoundaries(unittest.TestCase):

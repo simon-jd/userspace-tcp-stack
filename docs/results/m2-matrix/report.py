@@ -78,7 +78,7 @@ def per_run(summary, diagnostic, controls, impl):
         metrics[k] = float(diagnostic[k]) if diagnostic[k] else None
     for k, v in summary["sender_counters"].items():
         metrics["sender_" + k] = v
-    for k in audit.UNDO:
+    for k in audit.LINUX_COUNTERS:
         metrics["kernel_sender_" + k] = int(controls[k]) if impl == "linux" else None
     for interface, counts in summary["capture"].items():
         for k in ("captured", "kernel_dropped", "received_by_filter"):

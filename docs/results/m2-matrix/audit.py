@@ -26,12 +26,13 @@ SOURCE = "4f9c9b89e16188fd65f3961af967cc3d83370d12"
 GATE = "m2c-bbr/769311e-calib-a1-s0"
 PLAN_SHA = "9a418b50e2d15530ceb9fe429467498bf5c177e6b93609d81b24258af02661ba"
 EXPANDED_SHA = "18be22c23775f69ad508fcaf26cd21fd87d3f19f36488842c21e2d8972a95d23"
-UNDO = (
+LINUX_COUNTERS = (
     "TcpExtTCPFullUndo",
     "TcpExtTCPPartialUndo",
     "TcpExtTCPDSACKUndo",
     "TcpExtTCPLossUndo",
     "TcpExtTCPSpuriousRTOs",
+    "TcpExtTCPSpuriousRtxHostQueues",
 )
 read = checkpoint.load
 write_csv = checkpoint.write_csv
@@ -82,6 +83,20 @@ def check_spec(directory, meta, spec, freeze, valid):
             meta["stack_set"] == verify_profile_trace.BASE_SETS
             and meta["profile"] == "linux"
         )
+
+
+def optional_sender_deltas(directory, meta, fields):
+    """Keep available counters for an interrupted run. An absent snapshot leaves its delta unknown."""
+    samples = []
+    for phase in ("pre", "post"):
+        path = directory / phase / "record.txt"
+        rec = analyze.parse_record(path.read_text()) if path.is_file() else {}
+        sender = meta.get("containers", {}).get("snd")
+        samples.append(analyze.parse_nstat(rec.get((sender, "nstat -asz"), [])))
+    return {
+        k: samples[1][k] - samples[0][k] if all(k in x for x in samples) else None
+        for k in fields
+    }
 
 
 def check_records(directory, meta, freeze):
@@ -137,7 +152,9 @@ def check_records(directory, meta, freeze):
         )
     before, after = snapshots
     assert before[1] == after[1], directory
-    return {name: after[0][name] - before[0][name] for name in UNDO}, before[1]
+    return {name: after[0][name] - before[0][name] for name in LINUX_COUNTERS}, before[
+        1
+    ]
 
 
 def endpoint_details(rd, meta, summary, counted):
@@ -448,6 +465,17 @@ def main(campaign, out, live=False):
             directory = campaign / name
             if not summary["valid"]:
                 rows.append(partial_row(directory, meta, summary))
+                if meta["impl"] == "linux":
+                    controls.append(
+                        dict(
+                            run=name,
+                            impl="linux",
+                            seed=meta["seed"],
+                            configured_burst_bytes=meta.get("burst_bytes"),
+                            kernel_burst=None,
+                            **optional_sender_deltas(directory, meta, LINUX_COUNTERS),
+                        )
+                    )
                 continue
             row = endpoint_details(directory, meta, summary, name in counted)
             controls_delta, burst = check_records(directory, meta, frozen)
