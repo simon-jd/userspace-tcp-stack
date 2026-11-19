@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit
 import loss_replay as loss
 import report
+from replay_captures import SequenceCoverage
 
 
 class FilteredTrace(unittest.TestCase):
@@ -120,6 +121,25 @@ class FilteredTrace(unittest.TestCase):
         self.path.write_text(json.dumps(event) + "\n")
         with self.assertRaises(ValueError):
             self.check()
+
+
+class IngressSequenceHistory(unittest.TestCase):
+    def test_first_seen_repeat_resegmented_and_partial_below_high_end(self):
+        covered = SequenceCoverage()
+        self.assertIsNone(covered.add(1, 10))
+        self.assertIsNone(covered.add(31, 10))
+        self.assertEqual(covered.add(1, 10), "exact_repeat")
+        self.assertEqual(covered.add(2, 4), "all_bytes_previously_seen")
+        self.assertEqual(covered.add(12, 5), "all_bytes_first_seen")
+        self.assertEqual(covered.add(8, 8), "partly_previously_seen")
+        self.assertIsNone(covered.add(40, 5))
+
+    def test_relative_sequence_wrap_near_previous_high(self):
+        covered = SequenceCoverage()
+        covered.high = 2**32 - 8
+        self.assertIsNone(covered.add(2**32 - 8, 16))
+        self.assertEqual(covered.add(0, 8), "all_bytes_previously_seen")
+        self.assertIsNone(covered.add(8, 20))
 
 
 class LossWire(unittest.TestCase):
