@@ -247,8 +247,10 @@ The receiver first saw that range on the third copy and then ACKed it. The silen
 samples, so attribution of an individual retry to its timer relies on its wire timing.
 
 All eight captures used a 128-byte snapshot length. Each covers the full payload sequence interval,
-reports zero kernel capture drops, and shows both FINs acknowledged with zero resets. The endpoint hashes verify payload
-contents. On N4 with the Linux sender, packet replay also reproduced 2,186 `TCPDSACKIgnoredDubious`
+has matching parsed, captured and received-by-filter counts, reports zero kernel capture drops, and
+shows both FINs acknowledged with zero resets. These checks support claims about absent packets.
+The endpoint hashes verify payload contents. All eight endpoint durations were positive and consistent
+with the recorded byte counts and goodputs at their published precision. On N4 with the Linux sender, packet replay also reproduced 2,186 `TCPDSACKIgnoredDubious`
 and 1,894 `TCPSACKDiscard`. The private volume `utcp-data:/m2/m2-integrate/5bd1315-4gb/` holds
 `a1/<case>/{peer,utcp0}.pcap`, `evidence/frames/<case>.json` with offsets and frame numbers, and
 `evidence/compact-evidence.tar.gz` with the endpoint records and replay programs (SHA-256

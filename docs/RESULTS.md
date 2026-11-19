@@ -436,7 +436,12 @@ upstream and downstream packets found
 all 96 intended drops, including the avoidance warm-ups, and no additional drops of the test flows.
 All 120 captures agreed with their filter counts and recorded zero kernel drops. An independent
 decoder verified all 350,412 capture records, then reproduced 2,222 ACK groups and 3,627 data
-transmissions in the measured intervals. The run count and these short episodes are independent of
+transmissions in the measured intervals. In 978 groups the ACK was followed by no send. The analyzer
+uses capture record order at both ends of each interval and checks observed losses against the
+selected workload's byte count, offset ranges and copy numbers. New run summaries store the ledger's
+SHA-256. The paired report checks the digest, group count, opening transmission and closing ACK.
+Original summaries retain the count and interval endpoints for checking the archived ledgers.
+The run count and these short episodes are independent of
 the calibration and throughput tables above.
 
 | Case | Algorithm | Post-exit cwnd, r1 | Post-exit cwnd, r2 | First repair to covering ACK, RTTs, r1 | First repair to covering ACK, RTTs, r2 | ACK groups, r1 | ACK groups, r2 |

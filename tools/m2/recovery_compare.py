@@ -9,6 +9,7 @@ Offline: recovery_compare.py analyze RUNDIR or recovery_compare.py report CAMPAI
 import argparse
 import bisect
 import collections
+import hashlib
 import itertools
 import json
 import re
@@ -20,13 +21,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze as A
 import dropcheck as D
 
-CASES = {"slow": ("18000", "1"), "avoidance": ("18000,1500000", "1"),
-         "burst": ("120000:5", "1"), "lost-retrans": ("120000", "1,2"),
-         "tail": ("97104:2", "1")}
+CASES = {"slow": ("18000", "1", 3000000), "avoidance": ("18000,1500000", "1", 3000000),
+         "burst": ("120000:5", "1", 3000000), "lost-retrans": ("120000", "1,2", 3000000),
+         "tail": ("97104:2", "1", 100000)}
 CCS = ("newreno", "cubic")
 IMPLS = ("utcp", "linux")
 COUNTERS = ("TcpExtTCPSackRecovery", "TcpExtTCPLossProbes", "TcpExtTCPLossProbeRecovery",
             "TcpExtTCPTimeouts")
+# Observed Linux-compatible selectors governing the measured flight and timers.
+LINUX_RECOVERY_CONFIG = {
+    "cc_flavor": "linux", "quickack": "linux", "recovery_reduction": "prr", "rack_tlp": "true",
+    "rtt_estimator": "linux", "rtt_sample_rule": "linux", "adaptive_reordering": "true",
+    "hystart": "hystart_classic", "pacing": "cc_requested", "pacing_ss_ratio": "200",
+    "pacing_ca_ratio": "120", "cwnd_growth_needs_cwnd_limited": "true",
+}
 MOD = 1 << 32
 
 
@@ -34,10 +42,10 @@ def plan(campaign, cases, ccs, impls, reps):
     if not all(re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]*", x) for x in campaign.split("/")):
         raise ValueError("campaign must be a relative path of named components")
     for case, cc, rep, impl in itertools.product(cases, ccs, reps, impls):
-        offsets, copies = CASES[case]
+        offsets, copies, size = CASES[case]
         name = f"{case}-{cc}-r{rep}-{impl}"
         yield name, dict(case=case, rep=rep, impl=impl, cc=cc, bw=100, rtt=20, queue_bdp=40,
-                         loss=0, duration=30, bytes=100000 if case == "tail" else 3000000,
+                         loss=0, duration=30, bytes=size,
                          profile="linux", extra_capture=True, stack_args="--trace-kinds ack,tx,rto",
                          drops=[["arm", "--router", "r1", "--offsets", offsets, "--copies", copies,
                                  "--log", f"/data/m2/{campaign}/{name}/drop-r1.log"]])
@@ -96,7 +104,7 @@ def wire_stream(path, dst, isn):
             rows.append((t, "tx", (seq - isn - 1) % MOD, payload))
     if not peer:
         raise ValueError("missing opening SYN")
-    return sorted(rows, key=lambda x: x[0]), keys
+    return rows, keys
 
 
 def add_interval(covered, lo, hi):
@@ -131,6 +139,7 @@ def wire_episode(rows, targets, size):
             groups.append(group)
             if repair is not None and finish is None and off >= high:
                 finish = t
+                end_group = len(groups) - 1
             continue
         old_high = coverage[-1][1] if coverage else 0
         repeat = add_interval(coverage, off, off + value)
@@ -139,16 +148,15 @@ def wire_episode(rows, targets, size):
             originals.append((off, value))
         if off == hole and starts[off] == 1:
             drop = t
+            start_group, start_tx = len(groups) - 1, len(group["tx"])
         if drop is not None and repair is None and repeat and any(off <= target < off + value for target in targets):
             repair, high = t, old_high
         group["tx"].append(dict(t_ns=t, off=off, length=value, copy=starts[off], repeat_bytes=repeat))
     if None in (drop, repair, high, finish):
         raise ValueError(f"incomplete wire episode: loss={drop}, repair={repair}, high={high}, ACK={finish}")
-    start_idx = max(i for i, a in enumerate(groups) if (a["t_ns"] or 0) <= drop)
-    after_idx = next(i for i, a in enumerate(groups) if a["t_ns"] == finish)
-    kept = groups[start_idx:after_idx + 1]
-    for a in kept:
-        a["tx"] = [p for p in a["tx"] if drop <= p["t_ns"] <= finish]
+    kept = groups[start_group:end_group + 1]
+    kept[0]["tx"] = kept[0]["tx"][start_tx:]
+    kept[-1]["tx"] = []  # The closing ACK itself is the last included record.
     return dict(drop_ns=drop, repair_ns=repair, recovery_ack_ns=finish, high_at_repair=high,
                 ack_groups=kept, originals=originals, coverage=coverage,
                 all_bytes_covered=coverage == [(0, size)])
@@ -272,8 +280,16 @@ def analyze_run(rd):
                                 for k in ("netem", "tbf")))
     checks["non_timing"] = (meta["slot"] == 2 and not meta["timing"] and len(meta["cpusets"]) == 4
                             and all(set(A.cpu_list(x)) == set(range(16, 32)) for x in meta["cpusets"].values()))
-    drops = meta["drops"][0]
-    offsets, copies_text = drops[drops.index("--offsets") + 1], drops[drops.index("--copies") + 1]
+    # Reconstruct the prescribed losses from the case and capture. The command
+    # recorded by the run is separate evidence and must agree with that case.
+    offsets, copies_text, planned_bytes = CASES[case]
+    arm, = meta["drops"]
+    def option(key, default=None):
+        return arm[arm.index(key) + 1] if key in arm else default
+    checks["case_plan"] = (arm[0] == "arm" and option("--router") == "r1"
+                           and option("--offsets") == offsets and option("--copies") == copies_text
+                           and int(option("--span", 1448)) == 1448 and int(option("--dport", 5201)) == 5201
+                           and size == planned_bytes)
     copies = [int(k) for k in copies_text.split(",")]
     capstats = {}
     keyed, reverse, rows = [], [], None
@@ -310,8 +326,8 @@ def analyze_run(rd):
     armed_ms = float(armed[2]) if armed else None
     checks["watcher"] = bool(armed and int(armed[1]) == isn and armed_ms < meta["rtt"])
     targets = latched[-1]
-    if not targets:
-        raise ValueError("no latched comparison target")
+    if not targets or not checks["r1_drop_selection"]:
+        raise ValueError(f"observed losses do not match {case}: expected {expected}, observed {missing}")
     e = wire_episode(rows, targets, size)
     originals = e.pop("originals")
     checks["workload"] = valid_targets(case, targets, originals, size) and e["all_bytes_covered"]
@@ -332,8 +348,7 @@ def analyze_run(rd):
     source = "10ms TCP_INFO; first subsequent sample in Open/Disorder covering the recovery ACK"
     if meta["impl"] == "utcp":
         config = A.find_event(snd, "config") or {}
-        checks["linux_config"] = (config.get("quickack") == "linux" and config.get("rack_tlp") == "true"
-                                  and config.get("recovery_reduction") == "prr")
+        checks["linux_config"] = all(config.get(k) == v for k, v in LINUX_RECOVERY_CONFIG.items())
         trace = A.read_jsonl(rd / "trace.jsonl")
         state_events = (v for v in trace if v["ev"] in ("ack", "tx", "rto"))
         tx = collections.defaultdict(list)
@@ -349,6 +364,7 @@ def analyze_run(rd):
         # All traffic is on one flow. Number equal sequence/length sends
         # separately from the nft copy number (which is per sequence).
         occurrences = collections.Counter()
+        wire_copies = collections.Counter()
         lookup = {}
         for t, kind, off, n in rows:
             if kind == "tx":
@@ -356,10 +372,11 @@ def analyze_run(rd):
                 index = occurrences[k]
                 occurrences[k] += 1
                 candidates = tx.get(k, [])
-                lookup[t, off, n] = candidates[index] if index < len(candidates) else None
+                wire_copies[off] += 1
+                lookup[off, wire_copies[off]] = candidates[index] if index < len(candidates) else None
         for a in e["ack_groups"]:
             for p in a["tx"]:
-                tr = lookup.get((p["t_ns"], p["off"], p["length"]))
+                tr = lookup.get((p["off"], p["copy"]))
                 p["trace_tx"] = ({k: tr[k] for k in ("t", "tx", "ca", "cwnd", "ssthresh")} if tr else None)
         checks["trace_matches_wire"] = bool(original) and all(p["trace_tx"] for a in e["ack_groups"] for p in a["tx"])
     if case in ("slow", "avoidance"):
@@ -373,7 +390,8 @@ def analyze_run(rd):
     sample_gaps = [b["t"] - a["t"] for a, b in zip(samples, samples[1:])]
 
     groups = e.pop("ack_groups")
-    with (rd / "recovery-acks.jsonl").open("w") as out:
+    ledger_path = rd / "recovery-acks.jsonl"
+    with ledger_path.open("w") as out:
         for g in groups:
             print(json.dumps(g, separators=(",", ":")), file=out)
     if meta["impl"] == "utcp":
@@ -390,7 +408,7 @@ def analyze_run(rd):
                   post_cwnd=sample_view(post), post_cwnd_source=source,
                   post_ms_from_wire_ack=(post["t"] - tend) / 1e6 if post else None,
                   srtt_before_drop_us=srtt, counters=counters, undo_counters=undo,
-                  ack_groups=len(groups), wire=e, state_interval=state, stack_probe_rto_tx=loss_signals,
+                  ack_groups=len(groups), ledger_sha256=hashlib.sha256(ledger_path.read_bytes()).hexdigest(), wire=e, state_interval=state, stack_probe_rto_tx=loss_signals,
                   sample_count=len(samples), max_sample_gap_ms=max(sample_gaps, default=0) / 1e6,
                   wire_rtts={
                       k: (e["recovery_ack_ns"] - e[k]) / (srtt * 1000) if srtt else None
@@ -399,14 +417,31 @@ def analyze_run(rd):
     return result
 
 
-def decisions(rd, hole):
+def decisions(rd, result):
     """Compare at first-hole-relative offsets. Preserve ACK order, empty ACK groups and repacketization."""
+    hole = result["latched"][-1][0]
+    path = rd / "recovery-acks.jsonl"
+    data = path.read_bytes()
+    # Original campaigns recorded the group count and interval endpoints.
+    if ("ledger_sha256" in result or "case_plan" in result.get("checks", {})) and (
+            hashlib.sha256(data).hexdigest() != result.get("ledger_sha256")):
+        raise ValueError("ACK ledger digest mismatch")
+    groups = [json.loads(line) for line in data.splitlines() if line.strip()]
+    if not groups or len(groups) != result["ack_groups"]:
+        raise ValueError("ACK ledger group count mismatch")
+    wire = result["wire"]
+    first_tx = groups[0]["tx"][0]
+    last = groups[-1]
+    if ((first_tx["off"], first_tx["copy"], first_tx["t_ns"]) != (hole, 1, wire["drop_ns"])
+            or last["tx"] or last["ack"] < wire["high_at_repair"] or last["t_ns"] != wire["recovery_ack_ns"]):
+        raise ValueError("ACK ledger does not span the recorded recovery interval")
+
     def relative(groups):
         for g in groups:
             yield dict(ack=None if g["ack"] is None else g["ack"] - hole,
                        sack=[[a - hole, b - hole] for a, b in g["sack"]],
                        tx=[[p["off"] - hole, p["length"], p["copy"], p["repeat_bytes"]] for p in g["tx"]])
-    return list(relative(A.read_jsonl(rd / "recovery-acks.jsonl")))
+    return list(relative(groups))
 
 
 def pair_report(base):
@@ -422,7 +457,11 @@ def pair_report(base):
             continue
         for x in (a, b):
             provenance.add((x["commit"], x["bulk_sha256"]))
-        left, right = [decisions(base / n, r["latched"][-1][0]) for n, r in zip(names, (a, b))]
+        try:
+            left, right = [decisions(base / n, r) for n, r in zip(names, (a, b))]
+        except (OSError, ValueError, IndexError, KeyError, TypeError) as err:
+            pairs.append(dict(runs=names, comparable=False, reason=f"invalid ACK ledger: {err}"))
+            continue
         def first_difference(l, r):
             return next(({"index": i, "utcp": x, "linux": y} for i, (x, y) in
                          enumerate(itertools.zip_longest(l, r)) if x != y), None)

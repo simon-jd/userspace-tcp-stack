@@ -769,6 +769,10 @@ below the sender SWS threshold, the same timer is the SWS override and sends min
 ordinary data (RFC 9293 §3.8.6.2.1; Linux `tcp_write_wakeup`); that data is in flight, so `probes_out` and the
 probing backoff are reset and the RTO covers it (`tcp_send_probe0`).
 
+When the local TX queue is full at persist expiry, the stack counts the attempt and advances its
+backoff. Linux `tcp_send_probe0` also counts the attempt, but local congestion leaves the exponent
+unchanged and schedules `TCP_RESOURCE_PROBE_INTERVAL` (half a second).
+
 ### 4.10 Receive side
 
 ```cpp
