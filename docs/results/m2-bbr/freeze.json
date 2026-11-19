@@ -1,0 +1,50 @@
+{
+  "slots": {
+    "0": {
+      "cpus": {
+        "utcp-m2-bbr-live-s0-r1": "11",
+        "utcp-m2-bbr-live-s0-r2": "11",
+        "utcp-m2-bbr-live-s0-rcv": "10",
+        "utcp-m2-bbr-live-s0-snd": "8,9"
+      },
+      "ifaces": {
+        "r1_a": "eth0",
+        "r1_b": "eth1",
+        "r2_b": "eth0",
+        "r2_c": "eth1",
+        "rcv": "eth0",
+        "snd": "eth0"
+      },
+      "reuse_key": "f0ecf3e4882789e261bb9fa8a3da91adf519b7b0f8f2c8d9b8dbfee286c1013e",
+      "sysctl_sha256": "795239ee27aa80ccc53bfffd887dddc48aaba8497ce72e08c1f23e1320cbadcf"
+    },
+    "1": {
+      "cpus": {
+        "utcp-m2-bbr-live-s1-r1": "15",
+        "utcp-m2-bbr-live-s1-r2": "15",
+        "utcp-m2-bbr-live-s1-rcv": "14",
+        "utcp-m2-bbr-live-s1-snd": "12,13"
+      },
+      "ifaces": {
+        "r1_a": "eth0",
+        "r1_b": "eth1",
+        "r2_b": "eth0",
+        "r2_c": "eth1",
+        "rcv": "eth0",
+        "snd": "eth0"
+      },
+      "reuse_key": "f0ecf3e4882789e261bb9fa8a3da91adf519b7b0f8f2c8d9b8dbfee286c1013e",
+      "sysctl_sha256": "795239ee27aa80ccc53bfffd887dddc48aaba8497ce72e08c1f23e1320cbadcf"
+    }
+  },
+  "static": {
+    "build": "build/tb-gcc-release",
+    "bulk_sha256": "6bf415a2a5745d356e4583d633327bc3d58f7b49a4ae2c47078fb54405acbc7d",
+    "commit": "769311e157dea0e7983a2cd5bd086736339dc62b",
+    "core_sha256": "c3d0fa75effdfc6215e5eb80db0e96cb196ccf79c4c3bffc0b2bce54e2e35d53",
+    "image": "utcp-testbed:dev",
+    "image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "scripts_sha256": "43bf359c7ba1bf5d40f3a58ef7c4c9e5ba82737038b6d25ba35aa52d55b72912",
+    "uname_r": "7.0.0-42-generic"
+  }
+}

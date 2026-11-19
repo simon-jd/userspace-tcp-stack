@@ -114,6 +114,25 @@ runs and marks a cell with more than one "mixed reuse keys" (no verdict).
 
 ## Calibration
 
+### Calibration for the BBRv1 release build
+
+The measured source was `769311e157dea0e7983a2cd5bd086736339dc62b`. Each slot independently
+produced reuse key `f0ecf3e4882789e261bb9fa8a3da91adf519b7b0f8f2c8d9b8dbfee286c1013e`.
+Slot 0 ran first, followed by slot 1. Both live consumers accepted all 62 source fingerprints.
+Each gate ran 26 transfers and ten 200-ping idle tests. The 52 endpoint checksum pairs matched,
+all 4,000 pings returned, and every receiver window reproduced its reported goodput.
+
+| Slot | Checks passed | NewReno default / capped (Mbit/s) | Gate minimum (Mbit/s) | Physical / filter packets in 68 transfer captures | Kernel capture drops | Transfers flagged for foreign CPU |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 67/67 | 95.625717 / 95.617610 | 93.727873 | 8,414,337 / 8,414,337 | 0 | 20/26 |
+| 1 | 67/67 | 95.625493 / 95.617741 | 93.727873 | 8,420,356 / 8,420,356 | 0 | 16/26 |
+
+The deliberate 400,000-byte send-buffer cap flagged 4.194% and 4.038% send-buffer-limited
+time on slots 0 and 1. The default path measured zero on each slot. The gate applied its capture
+accounting to the individual interfaces on each transfer. Compact receipts include the original
+campaign paths, source-index digests, capture replay digests and archive SHA-256 values.
+[Calibration and restore records](results/m2-bbr/README.md)
+
 The calibration gate (M2 design §5.4, DESIGN §14.4), Linux to Linux (CUBIC) for items 1-5 and the stack
 for item 6, run on slot 0 and then on slot 1 on 2026-11-14 with commit d713941, kernel 7.0.0-42-generic,
 image `utcp-testbed:dev` (`sha256:42acf2a264d9`), `utcp-bulk` from `build/tb-gcc-release`:
@@ -393,6 +412,25 @@ Implemented in `tools/m2/analyze.py` (`summarize_run`, `select_runs`) and `tools
   the number of values per metric.
 
 ## Timing hygiene
+
+### CUBIC concurrency proof on the BBRv1 release build
+
+The official proof on the new BBRv1 binary passed on 15 valid CUBIC transfers. Five ran on
+slot 0 alone. The other ten formed five simultaneous two-slot pairs, with measured window
+overlaps from 24.964315 to 24.979737 seconds. Trace replay reproduced the histogram and
+exact maximum for every sender. Neither send-buffer nor receive-window limitation accrued
+during any measured window. Foreign CPU activity exceeded the reporting threshold in
+4/15 transfers.
+
+| Five-transfer phase | Median goodput (Mbit/s) | Median queue p99 (ms) | Pooled loop lateness p99 (ns) | Exact maximum loop lateness (ns) |
+|---|---:|---:|---:|---:|
+| Serial, slot 0 | 95.625746 | 39.721311 | 16,383 | 2,618,527 |
+| Concurrent, slot 0 | 95.625954 | 39.761922 | 32,767 | 4,022,165 |
+| Concurrent, slot 1 | 95.625953 | 39.773191 | 32,767 | 4,058,306 |
+
+Independent replay read 11,170,199 packets across 30 capture files, with
+0 kernel capture drops. The historical NewReno maximum keeps ordinary measurements
+serial. The BBR smoke uses slot 0. [Proof and archive receipts](results/m2-bbr/cubic-proof.json)
 
 Fixed parts (M2 design §6):
 - Slot 0 uses CPUs 8-11 (sender 8,9; receiver 10; routers 11), slot 1 CPUs 12-15 (12,13; 14; 15).
@@ -897,3 +935,58 @@ python3 -IB "$res/verify/compare_overlay.py" "$res/overlay-runs.csv" "$work/plot
 for file in "$res"/plots/*.png; do cmp "$file" "$work/plots/${file##*/}"; done
 python3 -IB "$res/render_tables.py" "$res"
 ```
+
+## BBRv1 paired smoke
+
+The five preregistered pairs at 100 Mbit/s, 20 ms, zero configured random loss and two BDPs of
+queue all completed on slot 0. Each pair used the same netem seed on both senders. The 30-second
+runs yielded measured windows of 24.979469–24.979968 seconds. Sender and receiver agreed on
+payload length and SHA-256 for all ten transfers. The stack sent 1,771,730,192 verified bytes
+across its five runs and Linux sent 1,793,513,072. Every sampled and terminal sender reported
+BBR. Every receiving socket reported CUBIC through the kernel backend. The stack's full effective
+Linux-compatible configuration also matched its reference.
+
+| Measured statistic | Stack BBR median [min, max] | Linux BBR median [min, max] | Frozen gap rule |
+|---|---:|---:|---|
+| Receiver goodput (Mbit/s) | 93.9774 [93.9559, 93.9797] | 93.9761 [93.9737, 93.9806] | no gap |
+| Retransmitted data segments (%) | 0.000000 [0.000000, 0.000000] | 0.000000 [0.000000, 0.000000] | no gap |
+| Queueing delay p50 (ms) | 2.447 [2.369, 2.700] | 2.269 [2.261, 2.346] | no gap |
+| Queueing delay p99 (ms) | 7.663 [7.572, 7.807] | 7.900 [7.654, 10.802] | no gap |
+
+The stack had a higher median queueing delay at p50. Its range lay above the Linux range, and
+the median difference was about 7.8% of Linux's median. The registered rule requires more than
+10% and disjoint ranges. Each primary metric met the recorded “no gap” rule for this cell.
+
+| Additional observation | Stack median [min, max] | Linux median [min, max] |
+|---|---:|---:|
+| TBF drops, whole run | 121 [119, 131] | 126 [118, 130] |
+| Maximum sampled TBF backlog (bytes) | 125,662 [105,980, 151,400] | 107,592 [105,980, 204,390] |
+| Sender application loop lateness p99 (µs) | 32.767 [32.767, 65.535] | 65.535 [32.767, 131.071] |
+| Sender application maximum lateness (ms) | 3.261 [1.820, 4.303] | 2.279 [0.819, 3.384] |
+| Estimated foreign CPU, lower bound (%) | 2.46 [1.25, 3.15] | 4.12 [1.59, 5.19] |
+
+For both senders, all five measured windows had zero spurious retransmissions, capture-based
+retransmission rate, lost probe pings and send-buffer- or receive-window-limited time. The
+configured netem dropped zero packets in every run. The TBF drops in the table use the whole
+run, including startup. Seven transfers exceeded the foreign-CPU reporting threshold
+(three stack, four Linux). One Linux run also flagged softnet time squeeze. All ten transfers
+contribute to the statistics. Per-run metadata includes CPU, softirq and IRQ observations.
+
+The five stack traces contained 613 filtered retransmission events. Their BBR records showed
+STARTUP on 608 events and PROBE_BW on five, with long-term bandwidth selection false throughout
+the recorded events. Observed bandwidth estimates ranged from 140,275 to 142,433 in Q24 units
+(0.00836–0.00849 packets/µs), and min RTT from 20,013 to 20,015 µs. No DRAIN or PROBE_RTT event
+appeared under this trace mask. The directed simulator separately records those transitions.
+[Per-run trace observations](results/m2-bbr/bbr-trace.json)
+
+The two selected median runs are stack repetition 3 and Linux repetition 0. Physical replay
+verified 20 original and restored capture files, 7,574,469 packets, 927,822,304 capture bytes
+and zero kernel drops. Both archives regenerated byte-identical CSVs and the overlay. The full
+archive also restored all captured bytes. The final live gate consumer accepted both slots
+again and the timing topologies were removed at 09:26:19 PST.
+
+![BBR congestion window, pacing and delivery rates, and receiver goodput](results/m2-bbr/plots/100-20-0-2-bbr.png)
+
+[Per-run measurements](results/m2-bbr/runs.csv) · [Aggregates](results/m2-bbr/cells.csv) ·
+[Endpoint checks](results/m2-bbr/endpoint-cc.csv) · [Diagnostics](results/m2-bbr/diagnostics.csv) ·
+[Archive and replay instructions](results/m2-bbr/README.md)

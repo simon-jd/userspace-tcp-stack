@@ -1,0 +1,11 @@
+run,impl,requested_sender_cc,receiver_sysctl,sender_samples,sender_samples_in_window,sender_median_interval_ms,sender_terminal_cc,receiver_samples,receiver_samples_in_window,receiver_median_interval_ms,receiver_terminal_cc
+100-20-0-2-bbr-r0-linux,linux,bbr,cubic,3057,2497,9.999962,bbr,3055,2498,9.9999585,cubic
+100-20-0-2-bbr-r0-utcp,utcp,bbr,cubic,3016,2497,9.99999,bbr,3014,2498,9.999886,cubic
+100-20-0-2-bbr-r1-linux,linux,bbr,cubic,3041,2497,9.999891,bbr,3039,2498,10.000024,cubic
+100-20-0-2-bbr-r1-utcp,utcp,bbr,cubic,3021,2497,9.99999,bbr,3019,2498,9.9999295,cubic
+100-20-0-2-bbr-r2-linux,linux,bbr,cubic,3079,2497,9.999951,bbr,3077,2498,9.999993,cubic
+100-20-0-2-bbr-r2-utcp,utcp,bbr,cubic,3016,2497,9.999996,bbr,3014,2498,9.999941,cubic
+100-20-0-2-bbr-r3-linux,linux,bbr,cubic,3053,2498,9.999899,bbr,3051,2498,10.000031,cubic
+100-20-0-2-bbr-r3-utcp,utcp,bbr,cubic,3017,2497,9.999993,bbr,3015,2498,9.9999115,cubic
+100-20-0-2-bbr-r4-linux,linux,bbr,cubic,3080,2497,10.000049,bbr,3078,2498,9.999991,cubic
+100-20-0-2-bbr-r4-utcp,utcp,bbr,cubic,3015,2497,9.9999965,bbr,3013,2498,9.999914,cubic

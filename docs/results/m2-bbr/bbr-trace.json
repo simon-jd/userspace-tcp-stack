@@ -1,0 +1,577 @@
+{
+  "100-20-0-2-bbr-r0-utcp": {
+    "config": {
+      "ack_every_full_segments": "2",
+      "adaptive_reordering": "true",
+      "cc": "newreno",
+      "cc_flavor": "linux",
+      "cwnd_growth_needs_cwnd_limited": "true",
+      "data_retries": "15",
+      "default_snd_mss": "536",
+      "delack_ato": "adaptive",
+      "delack_ato_min": "40ms",
+      "delack_max": "200ms",
+      "dsack": "true",
+      "dupthresh": "3",
+      "ephemeral_ports": "32768-60999",
+      "ev": "config",
+      "gso_max_size": "65215",
+      "hystart": "hystart_classic",
+      "hystart_ack_delta": "2ms",
+      "hystart_low_window": "16",
+      "idle_restart": "linux",
+      "initial_cwnd": "10",
+      "initial_ssthresh": "2147483647",
+      "iw_after_syn_loss": "after_more_than_one",
+      "max_reordering": "300",
+      "min_pmtu": "552",
+      "min_snd_mss": "48",
+      "mss_clamp": "none",
+      "nagle": "minshall",
+      "nodelay": "false",
+      "oow_ack_interval": "500ms",
+      "orphan_fin_wait2_timeout": "1min",
+      "orphan_retries": "0",
+      "pacing": "cc_requested",
+      "pacing_ca_ratio": "120",
+      "pacing_ss_ratio": "200",
+      "paws_disordered_ack": "linux",
+      "pmtu_expiry": "10min",
+      "quickack": "linux",
+      "quickack_max": "16",
+      "rack_tlp": "true",
+      "rcv_buf_init": "131072",
+      "rcv_buf_max": "33554432",
+      "rcv_window_growth": "linux",
+      "rcv_wscale": "none",
+      "recovery_reduction": "prr",
+      "rst_in_time_wait": "accept",
+      "rto_after_syn_rexmit": "3s",
+      "rto_initial": "1s",
+      "rto_max": "2min",
+      "rto_min": "200ms",
+      "rtt_estimator": "linux",
+      "rtt_sample_rule": "linux",
+      "sack": "true",
+      "sender_sws": "true",
+      "set": "snd_buf_max=64Mi rcv_buf_max=32Mi gso_max_size=65215",
+      "snd_buf_init": "16384",
+      "snd_buf_max": "67108864",
+      "syn_linear_timeouts": "4",
+      "syn_retries": "6",
+      "syn_window": "linux",
+      "synack_retries": "5",
+      "test_fault": "none",
+      "test_fixed_pacing_rate": "none",
+      "test_isn": "none",
+      "test_renege_ppm": "0",
+      "time_wait": "1min",
+      "timestamps": "true",
+      "ts_offset_random": "true",
+      "window_scaling": "true",
+      "window_update_after_read": "linux",
+      "zero_window_probe": "linux_zero_length"
+    },
+    "counts": {
+      "tx": 123
+    },
+    "fields": {
+      "bbr_bandwidth_q24": [
+        141122,
+        141122
+      ],
+      "bbr_cwnd_gain_q8": [
+        512,
+        739
+      ],
+      "bbr_min_rtt_us": [
+        20013,
+        20013
+      ],
+      "bbr_pacing_gain_q8": [
+        256,
+        739
+      ]
+    },
+    "lt_use_bw": {
+      "False": 123
+    },
+    "mode_transitions": [
+      [
+        986174933077298,
+        "STARTUP"
+      ],
+      [
+        986175174538455,
+        "PROBE_BW"
+      ]
+    ],
+    "modes": {
+      "PROBE_BW": 1,
+      "STARTUP": 122
+    },
+    "profile_fields": 70,
+    "sha256": "8e630940e8954c0e8bc49f64fe51265130dcfa154b5cfee8ac1da4c4c5404b33",
+    "stats_trace_events": 123
+  },
+  "100-20-0-2-bbr-r1-utcp": {
+    "config": {
+      "ack_every_full_segments": "2",
+      "adaptive_reordering": "true",
+      "cc": "newreno",
+      "cc_flavor": "linux",
+      "cwnd_growth_needs_cwnd_limited": "true",
+      "data_retries": "15",
+      "default_snd_mss": "536",
+      "delack_ato": "adaptive",
+      "delack_ato_min": "40ms",
+      "delack_max": "200ms",
+      "dsack": "true",
+      "dupthresh": "3",
+      "ephemeral_ports": "32768-60999",
+      "ev": "config",
+      "gso_max_size": "65215",
+      "hystart": "hystart_classic",
+      "hystart_ack_delta": "2ms",
+      "hystart_low_window": "16",
+      "idle_restart": "linux",
+      "initial_cwnd": "10",
+      "initial_ssthresh": "2147483647",
+      "iw_after_syn_loss": "after_more_than_one",
+      "max_reordering": "300",
+      "min_pmtu": "552",
+      "min_snd_mss": "48",
+      "mss_clamp": "none",
+      "nagle": "minshall",
+      "nodelay": "false",
+      "oow_ack_interval": "500ms",
+      "orphan_fin_wait2_timeout": "1min",
+      "orphan_retries": "0",
+      "pacing": "cc_requested",
+      "pacing_ca_ratio": "120",
+      "pacing_ss_ratio": "200",
+      "paws_disordered_ack": "linux",
+      "pmtu_expiry": "10min",
+      "quickack": "linux",
+      "quickack_max": "16",
+      "rack_tlp": "true",
+      "rcv_buf_init": "131072",
+      "rcv_buf_max": "33554432",
+      "rcv_window_growth": "linux",
+      "rcv_wscale": "none",
+      "recovery_reduction": "prr",
+      "rst_in_time_wait": "accept",
+      "rto_after_syn_rexmit": "3s",
+      "rto_initial": "1s",
+      "rto_max": "2min",
+      "rto_min": "200ms",
+      "rtt_estimator": "linux",
+      "rtt_sample_rule": "linux",
+      "sack": "true",
+      "sender_sws": "true",
+      "set": "snd_buf_max=64Mi rcv_buf_max=32Mi gso_max_size=65215",
+      "snd_buf_init": "16384",
+      "snd_buf_max": "67108864",
+      "syn_linear_timeouts": "4",
+      "syn_retries": "6",
+      "syn_window": "linux",
+      "synack_retries": "5",
+      "test_fault": "none",
+      "test_fixed_pacing_rate": "none",
+      "test_isn": "none",
+      "test_renege_ppm": "0",
+      "time_wait": "1min",
+      "timestamps": "true",
+      "ts_offset_random": "true",
+      "window_scaling": "true",
+      "window_update_after_read": "linux",
+      "zero_window_probe": "linux_zero_length"
+    },
+    "counts": {
+      "tx": 119
+    },
+    "fields": {
+      "bbr_bandwidth_q24": [
+        140275,
+        140275
+      ],
+      "bbr_cwnd_gain_q8": [
+        512,
+        739
+      ],
+      "bbr_min_rtt_us": [
+        20013,
+        20013
+      ],
+      "bbr_pacing_gain_q8": [
+        256,
+        739
+      ]
+    },
+    "lt_use_bw": {
+      "False": 119
+    },
+    "mode_transitions": [
+      [
+        986489770729155,
+        "STARTUP"
+      ],
+      [
+        986490011599812,
+        "PROBE_BW"
+      ]
+    ],
+    "modes": {
+      "PROBE_BW": 1,
+      "STARTUP": 118
+    },
+    "profile_fields": 70,
+    "sha256": "f7e0f2bfc41144c5429ce5588b32b8a336a6a1838e6318e007b9191003f55c9c",
+    "stats_trace_events": 119
+  },
+  "100-20-0-2-bbr-r2-utcp": {
+    "config": {
+      "ack_every_full_segments": "2",
+      "adaptive_reordering": "true",
+      "cc": "newreno",
+      "cc_flavor": "linux",
+      "cwnd_growth_needs_cwnd_limited": "true",
+      "data_retries": "15",
+      "default_snd_mss": "536",
+      "delack_ato": "adaptive",
+      "delack_ato_min": "40ms",
+      "delack_max": "200ms",
+      "dsack": "true",
+      "dupthresh": "3",
+      "ephemeral_ports": "32768-60999",
+      "ev": "config",
+      "gso_max_size": "65215",
+      "hystart": "hystart_classic",
+      "hystart_ack_delta": "2ms",
+      "hystart_low_window": "16",
+      "idle_restart": "linux",
+      "initial_cwnd": "10",
+      "initial_ssthresh": "2147483647",
+      "iw_after_syn_loss": "after_more_than_one",
+      "max_reordering": "300",
+      "min_pmtu": "552",
+      "min_snd_mss": "48",
+      "mss_clamp": "none",
+      "nagle": "minshall",
+      "nodelay": "false",
+      "oow_ack_interval": "500ms",
+      "orphan_fin_wait2_timeout": "1min",
+      "orphan_retries": "0",
+      "pacing": "cc_requested",
+      "pacing_ca_ratio": "120",
+      "pacing_ss_ratio": "200",
+      "paws_disordered_ack": "linux",
+      "pmtu_expiry": "10min",
+      "quickack": "linux",
+      "quickack_max": "16",
+      "rack_tlp": "true",
+      "rcv_buf_init": "131072",
+      "rcv_buf_max": "33554432",
+      "rcv_window_growth": "linux",
+      "rcv_wscale": "none",
+      "recovery_reduction": "prr",
+      "rst_in_time_wait": "accept",
+      "rto_after_syn_rexmit": "3s",
+      "rto_initial": "1s",
+      "rto_max": "2min",
+      "rto_min": "200ms",
+      "rtt_estimator": "linux",
+      "rtt_sample_rule": "linux",
+      "sack": "true",
+      "sender_sws": "true",
+      "set": "snd_buf_max=64Mi rcv_buf_max=32Mi gso_max_size=65215",
+      "snd_buf_init": "16384",
+      "snd_buf_max": "67108864",
+      "syn_linear_timeouts": "4",
+      "syn_retries": "6",
+      "syn_window": "linux",
+      "synack_retries": "5",
+      "test_fault": "none",
+      "test_fixed_pacing_rate": "none",
+      "test_isn": "none",
+      "test_renege_ppm": "0",
+      "time_wait": "1min",
+      "timestamps": "true",
+      "ts_offset_random": "true",
+      "window_scaling": "true",
+      "window_update_after_read": "linux",
+      "zero_window_probe": "linux_zero_length"
+    },
+    "counts": {
+      "tx": 121
+    },
+    "fields": {
+      "bbr_bandwidth_q24": [
+        140459,
+        140459
+      ],
+      "bbr_cwnd_gain_q8": [
+        512,
+        739
+      ],
+      "bbr_min_rtt_us": [
+        20013,
+        20013
+      ],
+      "bbr_pacing_gain_q8": [
+        256,
+        739
+      ]
+    },
+    "lt_use_bw": {
+      "False": 121
+    },
+    "mode_transitions": [
+      [
+        986445212016705,
+        "STARTUP"
+      ],
+      [
+        986445452801364,
+        "PROBE_BW"
+      ]
+    ],
+    "modes": {
+      "PROBE_BW": 1,
+      "STARTUP": 120
+    },
+    "profile_fields": 70,
+    "sha256": "f8aa3908a91e90ea2c3675dbc3bd0734e6faba8b72b611df77b56286c7d7f955",
+    "stats_trace_events": 121
+  },
+  "100-20-0-2-bbr-r3-utcp": {
+    "config": {
+      "ack_every_full_segments": "2",
+      "adaptive_reordering": "true",
+      "cc": "newreno",
+      "cc_flavor": "linux",
+      "cwnd_growth_needs_cwnd_limited": "true",
+      "data_retries": "15",
+      "default_snd_mss": "536",
+      "delack_ato": "adaptive",
+      "delack_ato_min": "40ms",
+      "delack_max": "200ms",
+      "dsack": "true",
+      "dupthresh": "3",
+      "ephemeral_ports": "32768-60999",
+      "ev": "config",
+      "gso_max_size": "65215",
+      "hystart": "hystart_classic",
+      "hystart_ack_delta": "2ms",
+      "hystart_low_window": "16",
+      "idle_restart": "linux",
+      "initial_cwnd": "10",
+      "initial_ssthresh": "2147483647",
+      "iw_after_syn_loss": "after_more_than_one",
+      "max_reordering": "300",
+      "min_pmtu": "552",
+      "min_snd_mss": "48",
+      "mss_clamp": "none",
+      "nagle": "minshall",
+      "nodelay": "false",
+      "oow_ack_interval": "500ms",
+      "orphan_fin_wait2_timeout": "1min",
+      "orphan_retries": "0",
+      "pacing": "cc_requested",
+      "pacing_ca_ratio": "120",
+      "pacing_ss_ratio": "200",
+      "paws_disordered_ack": "linux",
+      "pmtu_expiry": "10min",
+      "quickack": "linux",
+      "quickack_max": "16",
+      "rack_tlp": "true",
+      "rcv_buf_init": "131072",
+      "rcv_buf_max": "33554432",
+      "rcv_window_growth": "linux",
+      "rcv_wscale": "none",
+      "recovery_reduction": "prr",
+      "rst_in_time_wait": "accept",
+      "rto_after_syn_rexmit": "3s",
+      "rto_initial": "1s",
+      "rto_max": "2min",
+      "rto_min": "200ms",
+      "rtt_estimator": "linux",
+      "rtt_sample_rule": "linux",
+      "sack": "true",
+      "sender_sws": "true",
+      "set": "snd_buf_max=64Mi rcv_buf_max=32Mi gso_max_size=65215",
+      "snd_buf_init": "16384",
+      "snd_buf_max": "67108864",
+      "syn_linear_timeouts": "4",
+      "syn_retries": "6",
+      "syn_window": "linux",
+      "synack_retries": "5",
+      "test_fault": "none",
+      "test_fixed_pacing_rate": "none",
+      "test_isn": "none",
+      "test_renege_ppm": "0",
+      "time_wait": "1min",
+      "timestamps": "true",
+      "ts_offset_random": "true",
+      "window_scaling": "true",
+      "window_update_after_read": "linux",
+      "zero_window_probe": "linux_zero_length"
+    },
+    "counts": {
+      "tx": 131
+    },
+    "fields": {
+      "bbr_bandwidth_q24": [
+        142433,
+        142433
+      ],
+      "bbr_cwnd_gain_q8": [
+        512,
+        739
+      ],
+      "bbr_min_rtt_us": [
+        20013,
+        20013
+      ],
+      "bbr_pacing_gain_q8": [
+        256,
+        739
+      ]
+    },
+    "lt_use_bw": {
+      "False": 131
+    },
+    "mode_transitions": [
+      [
+        986313405095363,
+        "STARTUP"
+      ],
+      [
+        986313645730578,
+        "PROBE_BW"
+      ]
+    ],
+    "modes": {
+      "PROBE_BW": 1,
+      "STARTUP": 130
+    },
+    "profile_fields": 70,
+    "sha256": "b69dc59b92e6fde1e9a8a54af9c526dda6d0cf3313b17a17de7e63136b821dd0",
+    "stats_trace_events": 131
+  },
+  "100-20-0-2-bbr-r4-utcp": {
+    "config": {
+      "ack_every_full_segments": "2",
+      "adaptive_reordering": "true",
+      "cc": "newreno",
+      "cc_flavor": "linux",
+      "cwnd_growth_needs_cwnd_limited": "true",
+      "data_retries": "15",
+      "default_snd_mss": "536",
+      "delack_ato": "adaptive",
+      "delack_ato_min": "40ms",
+      "delack_max": "200ms",
+      "dsack": "true",
+      "dupthresh": "3",
+      "ephemeral_ports": "32768-60999",
+      "ev": "config",
+      "gso_max_size": "65215",
+      "hystart": "hystart_classic",
+      "hystart_ack_delta": "2ms",
+      "hystart_low_window": "16",
+      "idle_restart": "linux",
+      "initial_cwnd": "10",
+      "initial_ssthresh": "2147483647",
+      "iw_after_syn_loss": "after_more_than_one",
+      "max_reordering": "300",
+      "min_pmtu": "552",
+      "min_snd_mss": "48",
+      "mss_clamp": "none",
+      "nagle": "minshall",
+      "nodelay": "false",
+      "oow_ack_interval": "500ms",
+      "orphan_fin_wait2_timeout": "1min",
+      "orphan_retries": "0",
+      "pacing": "cc_requested",
+      "pacing_ca_ratio": "120",
+      "pacing_ss_ratio": "200",
+      "paws_disordered_ack": "linux",
+      "pmtu_expiry": "10min",
+      "quickack": "linux",
+      "quickack_max": "16",
+      "rack_tlp": "true",
+      "rcv_buf_init": "131072",
+      "rcv_buf_max": "33554432",
+      "rcv_window_growth": "linux",
+      "rcv_wscale": "none",
+      "recovery_reduction": "prr",
+      "rst_in_time_wait": "accept",
+      "rto_after_syn_rexmit": "3s",
+      "rto_initial": "1s",
+      "rto_max": "2min",
+      "rto_min": "200ms",
+      "rtt_estimator": "linux",
+      "rtt_sample_rule": "linux",
+      "sack": "true",
+      "sender_sws": "true",
+      "set": "snd_buf_max=64Mi rcv_buf_max=32Mi gso_max_size=65215",
+      "snd_buf_init": "16384",
+      "snd_buf_max": "67108864",
+      "syn_linear_timeouts": "4",
+      "syn_retries": "6",
+      "syn_window": "linux",
+      "synack_retries": "5",
+      "test_fault": "none",
+      "test_fixed_pacing_rate": "none",
+      "test_isn": "none",
+      "test_renege_ppm": "0",
+      "time_wait": "1min",
+      "timestamps": "true",
+      "ts_offset_random": "true",
+      "window_scaling": "true",
+      "window_update_after_read": "linux",
+      "zero_window_probe": "linux_zero_length"
+    },
+    "counts": {
+      "tx": 119
+    },
+    "fields": {
+      "bbr_bandwidth_q24": [
+        140675,
+        140675
+      ],
+      "bbr_cwnd_gain_q8": [
+        512,
+        739
+      ],
+      "bbr_min_rtt_us": [
+        20015,
+        20015
+      ],
+      "bbr_pacing_gain_q8": [
+        256,
+        739
+      ]
+    },
+    "lt_use_bw": {
+      "False": 119
+    },
+    "mode_transitions": [
+      [
+        986269015672436,
+        "STARTUP"
+      ],
+      [
+        986269256376078,
+        "PROBE_BW"
+      ]
+    ],
+    "modes": {
+      "PROBE_BW": 1,
+      "STARTUP": 118
+    },
+    "profile_fields": 70,
+    "sha256": "1beb44eb32498a3b9e55171a6033680851741ff9474590035aa3b241a94a683f",
+    "stats_trace_events": 119
+  }
+}

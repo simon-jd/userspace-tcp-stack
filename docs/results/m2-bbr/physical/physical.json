@@ -1,0 +1,10 @@
+{
+ "attempts_without_endpoint_start": [],
+ "capture_bytes": 927822304,
+ "counted_pairs": 5,
+ "counted_runs": 10,
+ "kernel_drops": 0,
+ "observed_transfer_intervals": 10,
+ "packets": 7574469,
+ "verified_pcaps": 20
+}
