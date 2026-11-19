@@ -261,15 +261,29 @@ def trace_row(directory, meta, summary, profile):
         directory / "trace.jsonl", meta, conn, stats, summary
     )
     modes = Counter()
+    lt = Counter()
+    ranges = {}
     for event in diagnostics.rows(directory / "trace.jsonl"):
-        if "bbr_mode" in event:
-            assert meta["cc"] == "bbr" and event["bbr_mode"] in {
-                "STARTUP",
-                "DRAIN",
-                "PROBE_BW",
-                "PROBE_RTT",
-            }
-            modes[event["bbr_mode"]] += 1
+        assert ("bbr_mode" in event) == (meta["cc"] == "bbr"), (
+            directory,
+            "per-connection BBR trace model",
+        )
+        if "bbr_mode" not in event:
+            continue
+        assert event["bbr_mode"] in {"STARTUP", "DRAIN", "PROBE_BW", "PROBE_RTT"}
+        modes[event["bbr_mode"]] += 1
+        assert type(event["bbr_lt_use_bw"]) is bool
+        lt[str(event["bbr_lt_use_bw"]).lower()] += 1
+        for key in (
+            "bbr_bandwidth_q24",
+            "bbr_min_rtt_us",
+            "bbr_cwnd_gain_q8",
+            "bbr_pacing_gain_q8",
+        ):
+            value = event[key]
+            assert type(value) is int and value >= 0
+            low, high = ranges.get(key, (value, value))
+            ranges[key] = (min(low, value), max(high, value))
     return dict(
         run=meta["run"],
         algo=meta["algo"],
@@ -280,6 +294,8 @@ def trace_row(directory, meta, summary, profile):
         trace_blocks=stats["trace_blocks"],
         trace_sha256=digest,
         bbr_modes=json.dumps(modes, sort_keys=True),
+        bbr_lt_selection=json.dumps(lt, sort_keys=True),
+        bbr_observed_ranges=json.dumps(ranges, sort_keys=True),
         **{"trace_" + k: counts[k] for k in sorted(verify_profile_trace.TRACE_KINDS)},
     )
 
