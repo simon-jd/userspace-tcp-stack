@@ -13,6 +13,21 @@ previous=/utcp/docs/results/m2-checkpoint/verify
 ops=/utcp/build/ablation-ops
 receipts=/store/m2/m2d-ablation/acquisition
 mkdir -p "$receipts"
+python3 -B - >"$receipts/final-runtime.sha256" <<'PY_RUNTIME'
+import sys
+from pathlib import Path
+sys.path.insert(0, "/utcp/docs/results/m2-ablation")
+import audit as a
+root=Path("/utcp")
+checks = {
+    "apps/utcp-bulk/utcp-bulk": (a.BULK, a.matrix.sha256_file(root/"build/tb-gcc-release/apps/utcp-bulk/utcp-bulk")),
+    "src/core/libutcp_core.a": (a.CORE, a.matrix.sha256_file(root/"build/tb-gcc-release/src/core/libutcp_core.a")),
+    "testbed/m2+tools/m2": (a.SCRIPTS, a.matrix.tree_hash(root/"testbed/m2",root/"tools/m2")),
+}
+for name,(expected,observed) in checks.items():
+    assert observed == expected, (name,observed)
+    print(observed,name)
+PY_RUNTIME
 cp -p "$docs/plan.toml" "$docs/rfc-profile.json" "$ops/restore-checkpoint.sh" "$ops/launch.sh" "$ops/session.sh" "$ops"/start*.log "$ops"/start*.status "$receipts/"
 for attempt in "$ops"/launch.*; do cp -a "$attempt" "$receipts/"; done
 (cd /data/m2/archive && sha256sum -c /utcp/docs/results/m2-checkpoint/archives.sha256) >"$stage/checkpoint-checksums.txt"
@@ -49,7 +64,7 @@ python3 -B "$docs/plot_selection.py" "$camp" "$stage/raw-audit/evidence.csv" "$s
 digest=$(sha256sum "$stage/analysis.tar.gz" | cut -d' ' -f1)
 analysis="$dest/m2d-ablation-analysis-$digest.tar.gz"
 if ! ln "$stage/analysis.tar.gz" "$analysis"; then cmp "$analysis" "$stage/analysis.tar.gz"; fi
-cp -p "$stage/native/"*.csv "$stage/raw-audit/"* "$stage/raw-physical/"* "$stage/raw-tables/"* "$stage/plot-selection.csv" "$stage/checkpoint-checksums.txt" /out/
+cp -p "$receipts/final-runtime.sha256" "$stage/native/"*.csv "$stage/raw-audit/"* "$stage/raw-physical/"* "$stage/raw-tables/"* "$stage/plot-selection.csv" "$stage/checkpoint-checksums.txt" /out/
 cp -a "$stage/raw-plots" /out/plots
 { head -2 "$stage/raw-receipt"; sha256sum "$analysis"; } | sed 's@/store/m2/archive/@@' >/out/archives.sha256
 cat "$stage/raw-receipt" /out/archives.sha256 "$stage/raw-physical/physical.json"

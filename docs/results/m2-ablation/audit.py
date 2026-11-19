@@ -107,6 +107,14 @@ def check_run(rd, meta, spec):
         meta["scripts_sha256"],
     ) == (SOURCE, KEY, GATE, BULK, CORE, SCRIPTS)
     assert meta["campaign"] == "m2d-ablation" and meta["duration_s"] == spec["duration"]
+    assert (
+        meta["uname_r"] == "7.0.0-42-generic"
+        and meta["build"] == "build/tb-gcc-release"
+    )
+    assert (
+        meta["image_id"]
+        == "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66"
+    )
     for phase in ("pre", "post"):
         lines = (rd / phase / "record.txt").read_text().splitlines()
         (tbf,) = [line for line in lines if line.startswith("qdisc tbf ")]
@@ -176,7 +184,9 @@ def main(campaign, out):
         counted = {m["run"] for pair in pairs for m, s in pair}
         assert len(counted) == 2 * len(pairs)
         reps = [pair[0][0]["rep"] for pair in pairs]
-        assert len(set(reps)) == len(reps), "a repeated valid pair would overweight its seed"
+        assert len(set(reps)) == len(reps), (
+            "a repeated valid pair would overweight its seed"
+        )
         if status == "ok":
             assert set(reps) == set(range(5))
         statuses[cell + "/" + variant] = {
