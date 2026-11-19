@@ -247,7 +247,7 @@ void check_ignored_gate(CcAlgo cc) {
   const Replay r = replay(bursts(o, 0));
   ASSERT_TRUE(r.first_early_at.has_value());
   EXPECT_EQ(*r.first_early_at, violation.t) << r.first_early;
-  RecordProperty("first_early", r.first_early);
+  ::testing::Test::RecordProperty("first_early", r.first_early);
 }
 
 TEST(TcpPacingSim, ReplayCatchesAnIgnoredGate) {
