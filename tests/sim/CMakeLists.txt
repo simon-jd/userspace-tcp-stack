@@ -31,6 +31,9 @@ if(utcp_sim_test_sources)
     DISCOVERY_MODE PRE_TEST)
 endif()
 
+add_test(NAME sim.RecoveryFaultControls
+  COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/recovery_controls.py" $<TARGET_FILE:utcp-sim>)
+
 add_test(NAME sim.SweepReplay
   COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/sweep_replay.py" $<TARGET_FILE:utcp-sim>
     "${PROJECT_SOURCE_DIR}/tools/sim_sweep.py")

@@ -13,6 +13,9 @@ add_executable(utcp_unit_tests ${utcp_unit_test_sources} ${utcp_app_test_sources
 target_link_libraries(utcp_unit_tests PRIVATE
   utcp_core_internal utcp_backend utcp_appkit utcp_test_support ${utcp_app_logic_libs}
   GTest::gtest_main)
+# Only the event-loop fixture intercepts monotonic time and epoll sleep.
+# All other test threads and clocks call the real Linux functions.
+target_link_options(utcp_unit_tests PRIVATE LINKER:--wrap=clock_gettime LINKER:--wrap=epoll_pwait2)
 utcp_target_warnings(utcp_unit_tests)
 
 # One ctest entry per test case, listed by running the binary at test time.

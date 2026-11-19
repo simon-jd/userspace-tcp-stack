@@ -729,24 +729,30 @@ Duration retry_abort_time(std::uint8_t retries, Duration rto_base, Duration rto_
 
 `tcp_output.cpp` has one entry, `transmit(Tcb&, Time now)`, called after input, timer and API events. Order:
 
-1. Lost-and-not-yet-retransmitted segments from `SendQueue` in sequence order (M1: what recovery marks lost; M2a:
-   RFC 6675 NextSeg rules 1-4) while `packets_in_flight < cwnd`. Only three transmissions skip the cwnd gate: the
-   `fast_rexmit` on entering recovery when cwnd is set to ssthresh (M1, `rfc6675`; RFC 6675 §5 (4.3)), the head
-   `rto_rexmit` (Linux `tcp_retransmit_timer`) and `tlp` (RFC 8985 §7.3). PMTU retransmissions are ordinary lost
-   segments. A segment longer than the current MSS (`mss_now`: `mss_cache` less the SACK blocks our segments now
-   carry) is split before it is resent and the tail stays lost (Linux `tcp_retransmit_skb`, `tcp_fragment`).
+1. Walk the send queue in sequence order. Resend segments marked lost that are neither SACKed nor already
+   retransmitted in flight. When pacing is active, test the departure deadline before each burst of adjacent lost
+   segments (§5.5). Check `packets_in_flight < cwnd` for each segment. RFC 6675 §5 (4.3) exempts the first
+   fast retransmit of the head on recovery entry. With PRR, the first retransmission gets room in cwnd (§5.1).
+   NewReno and CUBIC use the same gates. PMTU retransmissions follow the lost queue. Split a segment longer
+   than the current MSS before resending it and leave its tail marked lost.
 2. New data while all gates pass:
    - congestion: `packets_in_flight < cwnd`, the only congestion gate (PRR writes cwnd, §5.1);
    - receive window: segment end ≤ SND.UNA + SND.WND;
-   - sender SWS (RFC 9293 §3.8.6.2.1): send if a full `mss_cache` segment fits, or the usable window is
-     ≥ max_snd_wnd/2, or all queued data fits and nothing is unacked (or Nagle is off);
-   - Nagle (§3.9 variants) unless `nodelay`; FIN-bearing segments are exempt;
+   - sender SWS (RFC 9293 §3.8.6.2.1): a full current MSS fits, all queued data fits, or the amount that
+     can be sent is at least half the largest window the peer has advertised. The last two cases must also
+     pass the configured Nagle rule (§3.9), which permits FIN-bearing segments and `nodelay`;
    - pacing (§5.5): `now ≥ pacing_next`, else arm the `pace` timer;
    - transmit queue and pool space (§3.4).
 3. FIN when the queue is empty and `fin_queued`; it rides on the last data segment when possible. A bare FIN is
    exempt from the cwnd gate (Linux `tcp_cwnd_test`) and, as a deviation, is also sent with no usable receive
    window: it carries no payload and needs no persist timer.
-4. A pure ACK if `AckPolicy` wants one and nothing above carried it.
+4. With RFC 6675 loss detection in Recovery, once new data is exhausted or the receive window limits sending,
+   try NextSeg rules 3 and 4 (including a rescue retransmission). Both cwnd and pacing apply.
+5. A pure ACK if `AckPolicy` wants one and nothing above carried it.
+
+The RTO handler resends the head. A tail loss probe can send one segment beyond cwnd. A probe carrying new
+data checks the receive window and pacing deadline. A probe resending the last segment and an RTO head
+retransmission can leave immediately. Their payload counts toward the next paced departure (§5.5).
 
 Payload size is `mss_cache − sack_option_bytes` when SACK blocks are being sent (Linux `tcp_current_mss`).
 Every data segment carries the current ACK and window, so a pending delayed ACK is cancelled by it. Every data
@@ -762,6 +768,10 @@ the window takes the next segment, or when the timer finds data in flight or not
 below the sender SWS threshold, the same timer is the SWS override and sends min(D, U) bytes inside the window as
 ordinary data (RFC 9293 §3.8.6.2.1; Linux `tcp_write_wakeup`); that data is in flight, so `probes_out` and the
 probing backoff are reset and the RTO covers it (`tcp_send_probe0`).
+
+When the local TX queue is full at persist expiry, the stack counts the attempt and advances its
+backoff. Linux `tcp_send_probe0` also counts the attempt, but local congestion leaves the exponent
+unchanged and schedules `TCP_RESOURCE_PROBE_INTERVAL` (half a second).
 
 ### 4.10 Receive side
 
@@ -796,11 +806,17 @@ class SackGenerator {                               // RFC 2018 §4, RFC 2883 §
   block containing it, if any), then the block containing the most recently received segment, then the other
   blocks in order of most recent report. Blocks are recomputed against the current interval set (merged,
   clipped above RCV.NXT) and truncated to `max_blocks`.
-- `AckPolicy` (RFC 9293 §3.8.6.3, RFC 5681 §4.2; Linux `__tcp_ack_snd_check`, `tcp_event_data_recv`): ACK
-  immediately for out-of-order data, a hole-filling segment, a D-SACK, FIN, quick-ack mode (Linux profile), or
-  when ≥ `ack_every_full_segments` full segments (judged against `rcv_mss`, Linux `tcp_measure_rcv_mss`, which
-  takes `meta.gso_size` when set) are
-  unacknowledged; else arm `delack` at `now + ato`.
+- `AckPolicy` (RFC 9293 §3.8.6.3, RFC 5681 §4.2) requests an immediate ACK for accepted out-of-order data,
+  a filled hole, a pending D-SACK, FIN or Linux quick-ack mode. For regular in-order data the threshold is more
+  than `(ack_every_full_segments − 1) × rcv_mss` bytes since the last ACK. In Linux mode it also requires an
+  empty read queue or a candidate advertised window at least as large as the previous window. Otherwise the
+  delayed-ACK timer or an application read can release the ACK (§6). The receive MSS estimate uses
+  `meta.gso_size` when present (Linux `tcp_measure_rcv_mss`).
+- The receiver makes that decision on each arrival. For the free-space calculation it treats in-order bytes
+  accepted earlier in the current host batch as read. Unread bytes from previous batches still consume space.
+  The bytes stay in the receive buffer until the application reads them. The bulk regression compares
+  the complete ACK sequence for host batches of 1 and 44 segments. The N0 testbed counts are in
+  [INTEROP](INTEROP.md#ack-frequency-of-the-stacks-receiver).
 - `RcvWindow::select(...)`: window = `right_edge − RCV.NXT` subject to the receiver SWS rule (advance the edge only
   by ≥ min(rcv_buf/2, rcv_mss), RFC 9293 §3.8.6.2.2) and, in the Linux profile, the `rcv_ssthresh` clamp.
   The value is rounded down to a multiple of `2^rcv_wscale`. RCV.NXT moves by arbitrary amounts, so the previous
@@ -1225,9 +1241,9 @@ order and runs their handlers with `now` (not the deadline). A handler may not a
 
 | Owner | Kind | Armed when | On expiry |
 |---|---|---|---|
-| connection | `xmit` | one timer whose kind and deadline come from `LossRecovery::xmit_timer` (RFC 8985 §8, Linux `icsk_pending`): `rto` with data/FIN outstanding (§4.8; while SYN/SYN-ACK is unacknowledged the engine arms `rto` itself with the SYN schedule), `persist` at zero window or for the SWS override (§4.9), `reo`/`pto` in M2a | retransmit, back off, maybe abort; probe; RACK detect / TLP |
-| connection | `delack` | `AckPolicy` delays an ACK | send ACK |
-| connection | `pace` | pacing gate closed with data sendable (§5.5) | run `transmit` |
+| connection | `xmit` | During the handshake the engine sets the SYN retransmission schedule. After it, recovery selects one kind and deadline (§5.1). | `rto` resends the head and backs off (§4.8). `persist` probes a closed window or overrides sender SWS (§4.9). With RACK and negotiated SACK, `reo` checks outstanding segments against the reordering window and runs transmit. `pto` attempts a tail loss probe in Open or CWR and rearms the RTO for outstanding data. |
+| connection | `delack` | `AckPolicy` has a pending delayed ACK (§4.10). An earlier pending deadline is retained. | Send the pending ACK. An outgoing segment carrying the ACK clears it. |
+| connection | `pace` | A paced burst must wait for its earliest departure time (§5.5). | Run `transmit` and recheck the send gates. |
 | connection | `fin_wait2` | orphan enters FIN-WAIT-2 | free connection |
 | connection | `keepalive` | reserved, never armed in M1 | |
 | TIME_WAIT entry | `time_wait` | entry created or FIN retransmission seen | free entry |
@@ -1280,7 +1296,7 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
 - `Scenario` is generated from one 64-bit seed and serialises to `key=value` lines with a `gen_version`;
   `utcp-sim --scenario file` runs an explicit scenario and `utcp-sim --seed N` regenerates it. Generation and the
   link pipeline use integers only (fixed-point log-uniform table, ppm probabilities, `Rng::below`, no `<random>`).
-- Generator version 3 (the default) uses 2 nodes (a third "router" link segment when MTU < 1500); delay 0.1-100 ms log-uniform, jitter
+- Generator version 3 uses 2 nodes (a third "router" link segment when MTU < 1500); delay 0.1-100 ms log-uniform, jitter
   0-50 % of delay, reorder on in 30 %; loss 0 in 20 % of seeds, else up to 10 %, rarely 30 % (forces aborts); dup
   up to 5 %; bitflip up to 2 %; garbage in 5 % of seeds; rate 1 Mbit/s-10 Gbit/s or unlimited; queue 2-2000
   packets; MTU 576-1500; per side: profile, SACK/TS/WS on/off independently, buffers 4 KiB-8 MiB, nodelay,
@@ -1288,7 +1304,8 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
   down to 8/16 and a host drain limit in 5 %, half of those also with a `chunk_limit` of 16-128 chunks. Workloads: 1-8 connections, bytes per direction 0-4 MiB
   log-uniform, write sizes 1 B-64 KiB, readers that pause (zero windows), close modes {both close, half-close then reverse transfer,
   client abort at a random point, connect to a closed port, simultaneous open}, backlog limits.
-- Select generation 4 or 5 with `--gen-version` on the simulator or sweep. Each direction has a 1–100 Mbit/s
+- Generation 5 is the default for generated seeds in World scenarios, the CLI and the sweep. Select 3, 4 or 5
+  with `--gen-version`. Unversioned scenario files retain generation 3 semantics. In generations 4 and 5 each direction has a 1–100 Mbit/s
   bottleneck, 1–200 ms round-trip propagation, and a quarter- to four-BDP queue holding at least one MTU.
   Directions independently draw no loss, Bernoulli loss or Gilbert–Elliott loss (stationary probability at most
   5%), occasional reordering, and occasional duplication. One bidirectional transfer runs in each seed. A
@@ -1314,7 +1331,8 @@ class World { public: explicit World(const Scenario&); RunResult run(); };   // 
 | `QuiescenceChecker` | after all workload connections end, run until `next_deadline()` is never or only `pmtu_expiry`; then `debug_usage()` must show no live slots, TIME_WAIT entries, queued packets or events, or armed connection timers, and every buffer and chunk free; else `leak` | on |
 | `SelfCheck` | `Stack::debug_check()` after every call; ASan/UBSan in sweep builds | on |
 
-With `--strict-fast-rexmit` the first PRR retransmission is subject to cwnd. A TLP requires RACK-TLP enabled and negotiated
+The default checker subjects the first PRR retransmission to cwnd. Select `--no-strict-fast-rexmit` on the CLI or sweep
+for the historical exemption. A TLP requires RACK-TLP enabled and negotiated
 SACK, may exceed cwnd by one packet, and is forbidden in Recovery or Loss. The probe records wire SND.NXT, including FIN.
 An accepted ACK at or beyond that marker ends a new-data probe. At equality, a retransmitted probe
 requires a pure duplicate ACK or a matching D-SACK. Linux also accepts a duplicate ACK carrying
@@ -1328,7 +1346,7 @@ plus that interval, less lateness credit capped at half the interval. Startup bu
 until a burst reaches ten cumulative payload segments. The entire crossing burst is charged. Older traces
 can omit the initial exempt bursts' gate tags. Subsequent ordinary paced sends report the configured
 fixed rate or the current sender pacing rate. A burst may start up to 1 µs before its deadline. An RTO head or retransmitted TLP bypasses the gate and
-advances the deadline when pacing applies. New-data TLPs pass the gate.
+advances the deadline when pacing applies. New-data TLPs and positive-window data sent on a persist expiry pass the gate.
 
 A survivor whose peer has failed with `timed_out` would wait forever if the peer's RST was lost (no keepalive
 in M1). Workload applications therefore close after an application idle timeout set by the scenario, and the

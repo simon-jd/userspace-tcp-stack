@@ -293,6 +293,7 @@ public:
 
   // A connection error ended the connection: close the handle.
   void end_error(TcpEnd& e, std::string_view call, Error err) {
+    if (counts_.tcp_errors == 0) counts_.first_tcp_error = to_string(err);
     ++counts_.tcp_errors;
     tolerate(call, err);
     end_close(e, false);
@@ -351,6 +352,7 @@ public:
       }
       if ((e.phase == Phase::open || e.phase == Phase::connecting) &&
           e.last_activity + s_.app_idle_timeout <= t) {
+        ++counts_.tcp_idle_closes;
         tolerate("idle timeout", Error::timed_out);
         end_close(e, false);
         continue;
@@ -538,6 +540,11 @@ public:
       }
       if (*r == 0) {
         return true;
+      }
+      if (counts_.tcp_bytes_sent == 0) {
+        if (const auto info = stack_.tcp_info(e.h)) {
+          counts_.first_sender_cc = info->cc_name_view();
+        }
       }
       e.sent += *r;
       counts_.tcp_bytes_sent += *r;

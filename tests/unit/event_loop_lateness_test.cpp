@@ -16,6 +16,38 @@
 #include "utcp/event_loop.hpp"
 
 namespace {
+using namespace std::chrono_literals;
+
+struct ScheduledWake {
+  explicit ScheduledWake(utcp::Duration first) : sleep_elapsed(first) {}
+  utcp::Time now{1'000'000'000};
+  utcp::Duration sleep_elapsed;
+  std::vector<utcp::Duration> waits;
+};
+thread_local ScheduledWake* schedule = nullptr;
+}  // namespace
+
+// Scope the substituted clock to one test thread. Even a controlled wait
+// polls the real epoll fd for readiness; only the time spent blocked is scripted.
+extern "C" int __real_clock_gettime(clockid_t, timespec*);
+extern "C" int __wrap_clock_gettime(clockid_t clock, timespec* out) {
+  if (!schedule || clock != CLOCK_MONOTONIC) return __real_clock_gettime(clock, out);
+  out->tv_sec = schedule->now.ns / 1'000'000'000;
+  out->tv_nsec = schedule->now.ns % 1'000'000'000;
+  return 0;
+}
+extern "C" int __real_epoll_pwait2(int, epoll_event*, int, const timespec*, const sigset_t*);
+extern "C" int __wrap_epoll_pwait2(int fd, epoll_event* events, int count, const timespec* timeout,
+                                   const sigset_t* mask) {
+  if (!schedule || !timeout) return __real_epoll_pwait2(fd, events, count, timeout, mask);
+  const utcp::Duration requested{timeout->tv_sec * 1'000'000'000 + timeout->tv_nsec};
+  schedule->waits.push_back(requested);
+  schedule->now += requested == utcp::Duration::zero() ? 1ms : schedule->sleep_elapsed;
+  const timespec zero{};
+  return __real_epoll_pwait2(fd, events, count, &zero, mask);
+}
+
+namespace {
 
 using namespace std::chrono_literals;
 using utcp::Duration;
@@ -178,10 +210,43 @@ TEST(EventLoopLateness, NoSpinByDefault) {
   EXPECT_GT(loop.stats().last_timeout_ns, 0);
 }
 
-// The loop sleeps until spin_us before the deadline and busy-polls only
-// then: the busy-poll starts at most spin_us early, and the thread's CPU time
-// for a 40 ms wait is far below 40 ms.
+// Drive the actual run_once wait, readiness, spin and dispatch paths. A
+// 37 ms sleep can end on time, after the deadline or early (e.g. EINTR).
 TEST(EventLoopLateness, SpinsOnlyInTheLastMicroseconds) {
+  for (const Duration elapsed : {37ms, 43ms, 34ms}) {
+    SCOPED_TRACE(elapsed.count());
+    ScheduledWake clock(elapsed);
+    EventLoop loop(spin_options(3000));
+    const Time deadline = clock.now + 40ms;
+    int calls = 0;
+    loop.set_deadline_source([&] { return deadline; });
+    loop.set_deadline_handler([&](Time now) {
+      ++calls;
+      EXPECT_EQ(now, clock.now);
+      EXPECT_GE(now, deadline);
+    });
+    schedule = &clock;
+    loop.run_once();
+    schedule = nullptr;
+    const auto& st = loop.stats();
+    const bool timely = elapsed == 37ms;
+    const bool early = elapsed < 37ms;
+    const std::vector<Duration> expected = timely ? std::vector<Duration>{37ms, 0ms, 0ms, 0ms}
+                                                  : std::vector<Duration>{37ms};
+    EXPECT_EQ(clock.waits, expected);
+    EXPECT_EQ(st.last_timeout_ns, Duration{37ms}.count());
+    EXPECT_EQ(st.spin_polls, timely ? 3u : 0u);
+    EXPECT_EQ(st.spin_waits, timely ? 1u : 0u);
+    EXPECT_EQ(st.spin_lead_max, timely ? 3ms : 0ms);
+    EXPECT_EQ(st.spin_time, timely ? 3ms : 0ms);
+    EXPECT_EQ(st.lateness.count, early ? 0u : 1u);
+    EXPECT_EQ(st.lateness.max, elapsed > 40ms ? elapsed - 40ms : 0ms);
+    EXPECT_EQ(calls, early ? 0 : 1);
+  }
+}
+
+// Exercise the real blocking syscall, clock and CPU cost under host scheduling.
+TEST(EventLoopLateness, RealWaitSleepsBeforeTheSpinWindow) {
   constexpr std::uint32_t spin_us = 3000;
   EventLoop loop(spin_options(spin_us));
   const Time before = mono_now();
@@ -201,11 +266,11 @@ TEST(EventLoopLateness, SpinsOnlyInTheLastMicroseconds) {
   EXPECT_GE(fired, deadline);
   EXPECT_EQ(st.lateness.count, 1u);
   // The sleep before the spin.
-  EXPECT_GT(st.last_timeout_ns, 0);
+  EXPECT_GE(st.last_timeout_ns, 0);
   EXPECT_LE(st.last_timeout_ns, Duration{40ms - std::chrono::microseconds{spin_us}}.count());
-  EXPECT_EQ(st.spin_waits, 1u);
-  EXPECT_GE(st.spin_polls, 1u);
-  EXPECT_GT(st.spin_lead_max, Duration{0});
+  EXPECT_LE(st.spin_waits, 1u);
+  EXPECT_EQ(st.spin_waits == 1, st.spin_polls > 0);
+  EXPECT_EQ(st.spin_waits == 1, st.spin_lead_max > Duration{0});
   EXPECT_LE(st.spin_lead_max, std::chrono::microseconds{spin_us});
   EXPECT_GE(st.spin_time, st.spin_lead_max);  // spun from its start up to the deadline
   EXPECT_LT(cpu, 20ms) << "spun for most of the wait";

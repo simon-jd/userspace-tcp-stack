@@ -62,7 +62,7 @@ std::uint32_t le32(const std::vector<unsigned char>& b, std::size_t at) {
 // capture), loss, duplication and reordering, but no bit flips or garbage.
 Scenario clean_scenario() {
   for (std::uint64_t seed = 0;; ++seed) {
-    Scenario s = generate_scenario(seed, NodeKind::synthetic);
+    Scenario s = generate_scenario(seed, NodeKind::synthetic, {.version = 3});
     if (s.link.size() != 4 || s.conn.size() < 2) {
       continue;
     }

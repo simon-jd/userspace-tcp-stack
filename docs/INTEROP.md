@@ -218,6 +218,44 @@ Linux->Linux reference (tests/interop/m1_linux_ref.sh; not acceptance cases):
 | R-N4-100M-sack0-ts1-ws0-l2l | run3 | sack0-ts1-ws0 | N4 | 100 MB | yes | 36.774 | 721 / 721 | SACKDiscard 0, SACKReneging 0, Timeouts 38 | 0 / 0, 0, 0 | pass |
 | R-N4-100M-sack0-ts1-ws1-l2l | run3 | sack0-ts1-ws1 | N4 | 100 MB | yes | 35.366 | 1426 / 1426 | SACKDiscard 0, SACKReneging 0, Timeouts 34 | 0 / 0, 0, 0 | pass |
 
+## M2 integration with CUBIC on N1 and N4
+
+On 2026-11-18 Pacific, commit `5bd13159f8412786d8f619848ac24d0aa19a1641` completed
+one functional transfer in each direction on N1 and N4. Each sender and receiver reported
+1,000,000,000 bytes, observed CUBIC on the connected socket, and matched the independently generated
+payload SHA-256 `57c114707df855575bf7f97161237ef9ece1c41ebd58c104b1a344115d707969`.
+The stack used `linux_compat`. The command ran on CPUs 16–31.
+
+```sh
+M1_PROFILE=linux M1_CC=cubic tests/interop/m1_bulk.sh A-N1-s2l A-N1-l2s A-N4-s2l A-N4-l2s
+```
+
+| Profile | Sender → receiver | Sender retransmitted segments | Sender timeouts | Retries after a prior covering ACK at the receiver | First deliveries on a retry after silence |
+|---|---|---:|---:|---:|---:|
+| N1 | Stack → Linux | 7,031 | 16 | 15 | 1 |
+| N1 | Linux → stack | 6,985 | 2 | 2 | 0 |
+| N4 | Stack → Linux | 6,840 | 7 | 6 | 1 |
+| N4 | Linux → stack | 6,913 | 0 | 0 | 0 |
+
+Retransmission and timeout counts come from stack statistics or Linux namespace `nstat` deltas.
+The last two columns classify repeated data after at least 180 ms of outbound data silence. In each
+of the 23 prior-ACK cases the receiver had emitted a cumulative ACK covering the interval. The sender
+capture showed no covering ACK before the retry. In the two first-delivery cases, at byte offsets
+612,425,808 (N1) and 325,027,224 (N4), the sender had transmitted the 1,448-byte range twice before.
+The receiver first saw that range on the third copy and then ACKed it. The silences were 202.926 and
+205.173 ms. The counts agree with the sender timeout totals in each row. M1 records 100 ms sender
+samples, so attribution of an individual retry to its timer relies on its wire timing.
+
+All eight captures used a 128-byte snapshot length. Each covers the full payload sequence interval,
+has matching parsed, captured and received-by-filter counts, reports zero kernel capture drops, and
+shows both FINs acknowledged with zero resets. These checks support claims about absent packets.
+The endpoint hashes verify payload contents. All eight endpoint durations were positive and consistent
+with the recorded byte counts and goodputs at their published precision. On N4 with the Linux sender, packet replay also reproduced 2,186 `TCPDSACKIgnoredDubious`
+and 1,894 `TCPSACKDiscard`. The private volume `utcp-data:/m2/m2-integrate/5bd1315-4gb/` holds
+`a1/<case>/{peer,utcp0}.pcap`, `evidence/frames/<case>.json` with offsets and frame numbers, and
+`evidence/compact-evidence.tar.gz` with the endpoint records and replay programs (SHA-256
+`25a71bca7b8549a0e005b5997c753fef609ec8c657fc8a899234cdaa4812bc67`).
+
 ## Results that need an explanation
 
 Linux source references are to the server's Ubuntu 7.0.0-42 kernel tree
@@ -281,9 +319,9 @@ two receiver differences:
    ACKs while the socket backlog is processed (`tcp_backlog_ack_defer`), so a later duplicate
    replaces the earlier range before an ACK leaves: 13826 recorded, 6460 arrived.
 2. 3658 of the Linux receiver's 6460 D-SACK ACKs reached the sender after an ACK with a higher
-   number and were skipped. About 4.2 times fewer of the stack's ACKs reached the sender (34871
-   against 145567 in the peer captures, both including netem's duplicates; see "ACK frequency"
-   below), and none of its D-SACK ACKs was overtaken (1 in run3b).
+   number and were skipped. The sender-side captures counted 34871 reverse segments with the stack
+   receiver and 145567 with Linux (4.17 times as many). Both include netem's N3 duplicates. None of
+   the stack's D-SACK ACKs was overtaken in run5 (1 in run3b).
 
 Under N4 (1 % loss and 1 % duplication) the sender's running D-SACK count (`dsack_dups`) and
 its running retransmission count (`total_retrans`) grow at about the same rate, and a D-SACK
@@ -389,7 +427,7 @@ Run3 of this case showed a stack bug, fixed in 3fc5bb1. The stack's sender repor
 reported 0 s and 18.9 s. After the fix (run5): A-pause200-s2l `rwnd_limited` 18.90 s,
 `sndbuf_limited` 0 s; A-pause-s2l 46.60 s and 0 s.
 
-### Stack sender: spurious fast retransmissions and RTOs (known, M2a)
+### Stack sender: spurious fast retransmissions and RTOs
 
 - A-N3-s2l (duplication only, no loss): 432 fast retransmissions in 1 recovery (run5; 921 in 7
   in run3, 795 in 3 in run1), all spurious: nothing was lost. They come from M1's NewReno head marking with SACK, which M2a
@@ -397,11 +435,11 @@ reported 0 s and 18.9 s. After the fix (run5): A-pause200-s2l `rwnd_limited` 18.
 - A-N2-s2l (reordering, no loss): 1800 fast retransmissions in 73 recoveries, and Linux's
   receiver sent 1800 D-SACKs (`TCPDSACKOldSent`): every one was spurious. M1 uses a
   fixed dupthresh of 3 in both profiles; adaptive reordering is M2a's (M2-DESIGN §1.9).
-- A-N1-s2l and A-N4-s2l: the stack counted 150 and 133 `TCPTimeouts`. A Linux sender in
-  A-N1-l2s had 9 (R-N1-l2l: 12). M1 recovery has no lost-retransmission detection, so a lost
-  retransmission is repaired by an RTO; RACK in M2a repairs it without one (M2-TASKS m2a-recovery).
-  The stack also counts every RTO expiry, where Linux counts differently (open item from
-  m1-tcp-core); this affects the counter, not the wire.
+- A-N1-s2l and A-N4-s2l: the stack counted 150 and 133 `TCPTimeouts`. M1 lacked lost-retransmission
+  detection and counted every RTO expiry. In the opposite direction (A-N1-l2s), the Linux sender
+  counted 9 timeouts and 7 loss undos in run5, and 13 timeouts in run3. The Linux→Linux reference
+  (R-N1-l2l) counted 12 timeouts. Later paired captures show which timeout retransmissions repaired loss.
+  [M2 recovery follow-ups](RESULTS.md#comparison-with-linux-traces).
 
 ### Linux sender with SACK off and window scaling on (B-sack0-*-ws1-l2s)
 
@@ -436,18 +474,25 @@ rows' Linux→stack retransmissions are the same kind: the stack D-SACKed every 
 `TCPDSACKRecv` in the matrix; the peer counted 107 and 221 `TCPLossProbes`, which include probes
 with new data). Linux→Linux had 193 (R-pause200-l2l) and 191 (R-pause500-l2l), also all D-SACKed.
 
-### ACK frequency of the stack's receiver (seen on the wire)
+### ACK frequency of the stack's receiver
 
-In A-N0-l2s (run5) the stack sent 16014 segments for 694245 received (one per 43), in 15151
-TUN read batches. The Linux receiver in R-N0-l2l (GRO off)
-sent 46363 for 694279 (one per 15). Both follow Linux's `__tcp_ack_snd_check`: with more than one
-full segment unacknowledged, ACK at once only if the right window edge advances (or nothing is
-unread); otherwise the read sends it (`tcp_cleanup_rbuf`). The stack's application reads after the
-backend has passed it a whole TUN batch, so the edge does not move within a batch, and about one
-ACK leaves per batch read. DESIGN §3 says host batching does not change protocol decisions such as
-ACK frequency. On this receive path it does, through the window rule. This is reported to the
-coordinator, not changed here. Under N1 (1 % ACK loss) the Linux sender's RTOs were no more than
-Linux→Linux: 9 (7 undone) in A-N1-l2s (13 in run3), 12 in R-N1-l2l.
+The 1 GB N0 transfers have a Linux sender and no configured loss, reordering or duplication. Its last
+`TCP_INFO` sample gives `data_segs_out` (segments carrying payload) and `segs_in` (all reverse TCP
+segments, including connection control). The last column uses the latter as the ACK count for these
+one-way transfers.
+
+| Run | Receiver | Data segments sent | Reverse segments | Data segments per reverse segment |
+|---|---|---:|---:|---:|
+| M1 run5 A-N0-l2s | stack | 694241 | 16014 | 43.35 |
+| M1 run3 R-N0-l2l | Linux | 694275 | 46363 | 14.97 |
+| M2 foundation verification, `e02b6b2`, A-N0-l2s | stack | 690710 | 343775 | 2.01 |
+| Same verification, R-N0-l2l | Linux | 694275 | 47981 | 14.47 |
+
+The M1 peer captures also include four forward control segments in each run, giving the original totals of
+694245 and 694279. The M1 stack handled 15151 TUN receive batches, and the application read after each
+batch. At `e02b6b2` the stack evaluates available space per arrival and accounts for data already received
+in that batch. Its reverse segments per data segment were 7.20 times the Linux receiver's rate in the
+paired N0 runs. The M2 comparison matrix uses a Linux receiver. [Receiver ACK policy](DESIGN.md#410-receive-side).
 
 ### Other differences checked against Linux
 
@@ -525,13 +570,10 @@ counted 999). E prechecks each public site up to 3 times and records a replaceme
 - E-neverssl.com is unreliable from this host: SYNs from both the stack and the kernel went
   unanswered in run3 and run5 (above). It passed in run3b and run5b. Not a stack failure as far
   as the captures show, but not explained further.
-- DESIGN §3 says host batching does not change protocol decisions such as ACK frequency. On the
-  receive path it does (one ACK per TUN batch, "ACK frequency" above). Reported to the
-  coordinator; DESIGN is not changed here. Coordinator decision (2026-11-14): assigned to M2
-  (m2-found): the receiver's ACK frequency must not depend on the host's batch size.
-- Known and assigned to M2a, not fixed here: spurious fast retransmissions of the stack sender
-  under duplication and reordering (A-N3-s2l, A-N2-s2l) and RTO repair of lost retransmissions
-  (A-N1-s2l, A-N4-s2l).
+- The [N0 receiver comparison](#ack-frequency-of-the-stacks-receiver) shows a higher ACK rate with
+  the M2 foundation stack than with Linux.
+- [M2 recovery follow-ups](RESULTS.md#comparison-with-linux-traces) found spurious retransmissions
+  under N2 reordering and RTO repair of lost retransmissions under N4.
 - The D-SACK-related `TCPSACKDiscard` of a Linux sender is 5.0 times the Linux→Linux count
   under N3, explained above (the stack sends every D-SACK and fewer ACKs, so none are merged or
   overtaken). Under N4 the count is a race between two running counters and varied from 4 to

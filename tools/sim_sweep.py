@@ -83,7 +83,7 @@ class Sweep:
         return ["taskset", "-c", self.args.cpus, "nice", "-n", "10"]
 
     def checker_args(self):
-        return ["--strict-fast-rexmit"] if self.args.strict_fast_rexmit else []
+        return ["--strict-fast-rexmit" if self.args.strict_fast_rexmit else "--no-strict-fast-rexmit"]
 
     def sim_args(self):
         a = ["--nodes", self.args.nodes]
@@ -198,15 +198,18 @@ class Sweep:
 
     # --- Re-runs with pcap and trace.
 
-    def rerun(self, seed, dirpath, tag, sim=None):
+    def rerun(self, seed, dirpath, tag, sim=None, from_file=False):
         """One run of `seed` into dirpath (with pcap and trace unless `sim` is
         given); returns its result."""
         dirpath.mkdir(parents=True, exist_ok=True)
         jsonl = dirpath / f"{tag}.jsonl"
-        outputs = [] if sim else ["--pcap", str(dirpath.parent), "--trace",
-                                  str(dirpath / "trace.jsonl")]
-        cmd = self.prefix() + [sim or self.args.sim, "--seed", str(seed), "--jsonl", str(jsonl)] + \
-            outputs + self.sim_args()
+        if from_file:
+            run_args = ["--scenario", str(dirpath / "scenario.txt"), *self.checker_args()]
+        else:
+            run_args = ["--seed", str(seed), *self.sim_args()]
+        outputs = [] if sim or from_file else ["--pcap", str(dirpath.parent), "--trace",
+                                               str(dirpath / "trace.jsonl")]
+        cmd = self.prefix() + [sim or self.args.sim, "--jsonl", str(jsonl), *run_args, *outputs]
         t0 = time.monotonic()
         with open(dirpath / f"{tag}.stderr", "wb") as err:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err,
@@ -232,7 +235,7 @@ class Sweep:
     def confirm(self, seed):
         first = self.results[seed]
         d = self.out / "failures" / f"seed-{seed}"
-        runs = [self.rerun(seed, d, f"run{i}") for i in (1, 2)]
+        runs = [self.rerun(seed, d, "run1"), self.rerun(seed, d, "run2", from_file=True)]
         keys = [(r.get("verdict"), r.get("digest"), r.get("events")) for r in [first] + runs]
         no_digest = False
         if first["verdict"] == "timeout":
@@ -258,8 +261,30 @@ class Sweep:
 
     def sample(self, seed):
         d = self.out / "samples" / f"seed-{seed}"
-        r = self.rerun(seed, d, "run1")
-        return r.get("digest") == self.results[seed].get("digest")
+        captured = self.rerun(seed, d, "run1")
+        replay = self.rerun(seed, d, "replay", from_file=True)
+        expected = self.results[seed]
+        return all(row.get("digest") and {k: v for k, v in row.items() if k != "wall_ms"} ==
+                   {k: v for k, v in expected.items() if k != "wall_ms"} for row in (captured, replay))
+
+
+def transfer_counts(results):
+    """Classify passing protocol scenarios by bytes checked at the receiving applications."""
+    counts = dict(complete=0, partial=0, no_payload=0, synthetic=0, unreported=0)
+    for row in results:
+        if row["verdict"] != "ok":
+            continue
+        if row.get("nodes") == "synthetic":
+            counts["synthetic"] += 1
+        elif row.get("nodes") != "stack" or "a_received" not in row:
+            counts["unreported"] += 1
+        elif not (row["a_received"] or row["b_received"]):
+            counts["no_payload"] += 1
+        elif (row["a_received"], row["b_received"]) == (row["b_requested"], row["a_requested"]):
+            counts["complete"] += 1
+        else:
+            counts["partial"] += 1
+    return counts
 
 
 def main():
@@ -271,8 +296,10 @@ def main():
                    help="utcp-sim to run (default: the gcc-sweep build, Release with UTCP_DCHECK)")
     p.add_argument("--asan-sim", help="utcp-sim of an ASan/UBSan build to replay failing seeds")
     p.add_argument("--timeout", type=float, default=120.0, help="wall-clock seconds per seed")
-    p.add_argument("--gen-version", type=int, choices=(3, 4, 5))
-    p.add_argument("--strict-fast-rexmit", action="store_true")
+    p.add_argument("--gen-version", type=int, choices=(3, 4, 5), default=5)
+    strict = p.add_mutually_exclusive_group()
+    strict.add_argument("--strict-fast-rexmit", action="store_true", default=True)
+    strict.add_argument("--no-strict-fast-rexmit", dest="strict_fast_rexmit", action="store_false")
     p.add_argument("--nodes", choices=("stack", "synthetic"), default="stack")
     p.add_argument("--plant-fail", default="", help="seeds that fail (tests the tooling)")
     p.add_argument("--plant-abort", default="", help="seeds that abort")
@@ -317,6 +344,9 @@ def main():
         verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
     summary = {
         "seeds": [a, b],
+        "gen_version": args.gen_version,
+        "nodes": args.nodes,
+        "ok_transfers": transfer_counts(sweep.results.values()),
         "strict_fast_rexmit": args.strict_fast_rexmit,
         "runs": len(sweep.results),
         "missing": missing,

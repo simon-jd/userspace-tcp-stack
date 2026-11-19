@@ -120,6 +120,21 @@ class Zero(dict):
         return 0
 
 
+def bulk_metrics(summary):
+    """Return supported duration_us and goodput_bps from a bulk endpoint."""
+    us, rate, size = (summary.get(k) for k in ("duration_us", "goodput_bps", "bytes"))
+    if type(us) is not int or us <= 0:
+        return None, None
+    if type(rate) is not int or rate <= 0 or type(size) is not int or size <= 0:
+        return us, None
+    # BulkApp truncates nanoseconds to microseconds and bits/second to an
+    # integer. Test every possible duration via its two monotone endpoints.
+    bits_ns = size * 8e9
+    if not int(bits_ns / (us * 1000 + 999)) <= rate <= int(bits_ns / (us * 1000)):
+        return None, None
+    return us, rate
+
+
 def main():
     res, case = sys.argv[1], sys.argv[2]
     d = os.path.join(res, case)
@@ -174,15 +189,18 @@ def main():
         except Exception as e:  # a missing field is a failed check, with the reason
             results.append({"check": c, "ok": False, "error": f"{type(e).__name__}: {e}"})
     sender = send
+    duration_us, goodput_bps = bulk_metrics(sender)
+    duration_s = round(duration_us / 1e6, 3) if duration_us is not None else None
+    if not sender:
+        duration_s = extra.get("time_total_s") or None
     row = dict(meta)
     row.update({
         "case": case,
         "sha_ok": sha_ok,
         "sha256": send.get("sha256") or recv.get("sha256"),
         "bytes": send.get("bytes", recv.get("bytes")),
-        "duration_s": round(sender.get("duration_us", 0) / 1e6, 3) if sender
-        else extra.get("time_total_s") or None,
-        "goodput_mbps": round(sender.get("goodput_bps", 0) / 1e6, 1) if sender else None,
+        "duration_s": duration_s,
+        "goodput_mbps": round(goodput_bps / 1e6, 1) if goodput_bps is not None else None,
         "sender_total_retrans": sender.get("total_retrans"),
         "sender_rwnd_limited_us": sender.get("rwnd_limited_us"),
         "peer_TcpRetransSegs": peer["TcpRetransSegs"],

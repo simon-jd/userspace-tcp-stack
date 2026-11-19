@@ -20,11 +20,22 @@
 #
 # Usage: tests/interop/m1_bulk.sh [PATTERN...]   cases whose name matches a
 #        shell pattern (default: all, in the order above); `list` prints them.
+# Optionally set M1_PROFILE=linux|rfc and M1_CC=newreno|cubic|bbr. These
+# select the stack profile and both endpoints' CC; both established connection
+# summaries must report the requested CC. Unset variables preserve the M1 defaults.
 # Needs: testbed/m1/build.sh gcc-release utcp-bulk. Starts the testbed if it
 # is not running and leaves it running (testbed/m1/down.sh removes it).
 # Exit status 1 if any case failed.
 source "$(dirname "${BASH_SOURCE[0]}")/m1_lib.sh"
 
+case ${M1_CC:-} in
+  ""|newreno|cubic|bbr) ;;
+  *) tb_die "M1_CC must be newreno, cubic or bbr" ;;
+esac
+case ${M1_PROFILE:-} in
+  ""|linux|rfc) ;;
+  *) tb_die "M1_PROFILE must be linux or rfc" ;;
+esac
 port=5001
 stack_ip=$tb_tun_stack
 
@@ -173,6 +184,17 @@ bulk_case() {
   local B=$m1_bin/apps/utcp-bulk/utcp-bulk
   local stack_args=(--backend utcp --stats /run/utcp-stats.json --sample-ms 100 --jsonl -)
   local kern_args=(--backend kernel --sample-ms 100 --jsonl -)
+  if [[ -n ${M1_PROFILE:-} ]]; then
+    stack_args+=(--profile "$M1_PROFILE")
+    opts+=" profile=$M1_PROFILE"
+    checks+=("check:extra['stack_quickack']=='$M1_PROFILE'")
+  fi
+  if [[ -n ${M1_CC:-} ]]; then
+    stack_args+=(--cc "$M1_CC")
+    kern_args+=(--cc "$M1_CC")
+    opts+=" cc=$M1_CC"
+    checks+=("check:send.get('cc')=='$M1_CC' and recv.get('cc')=='$M1_CC'")
+  fi
   local t0 t1 rpid spid
   t0=$(date +%s.%N)
   tb_exec "$tb_dut" rm -f /run/utcp-stats.json
@@ -206,16 +228,19 @@ bulk_case() {
   m1_analyze "$c" peer "$stack_ip"
   m1_analyze "$c" utcp0 "$stack_ip" 1348
   ((dsack)) && m1_dsack "$c" "$peer_addr" peer utcp0
-  python3 -I - "$r" "$metrics" "$src" "$rrc" "$t0" "$t1" <<'PY'
+  python3 -I - "$r" "$metrics" "$src" "$rrc" "$t0" "$t1" "$dir" <<'PY'
 import json, sys
 r, metrics, src, rrc, t0, t1 = sys.argv[1:7]
+stack_file = "send.out" if sys.argv[7] == "s2l" else "recv.out"
+with open(f"{r}/{stack_file}") as stream:
+    config = next((json.loads(s) for s in stream if '"ev":"config"' in s), {})
 def last_sample(path):
     s = None
     for ln in open(path):
         if '"ev":"sample"' in ln:
             s = ln
     return json.loads(s) if s else {}
-json.dump({"metrics_before": int(metrics), "send_exit": int(src), "recv_exit": int(rrc),
+json.dump({"stack_quickack": config.get("quickack"), "metrics_before": int(metrics), "send_exit": int(src), "recv_exit": int(rrc),
            "wall_s": round(float(t1) - float(t0), 3),
            "send_last_sample": last_sample(f"{r}/send.out"),
            "recv_last_sample": last_sample(f"{r}/recv.out")}, open(f"{r}/extra.json", "w"))
