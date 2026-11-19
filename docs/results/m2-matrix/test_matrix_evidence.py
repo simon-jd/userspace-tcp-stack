@@ -317,6 +317,45 @@ class AttemptLedger(unittest.TestCase):
         self.assertIn("pre/record.txt", h["available_inputs"])
         self.assertEqual(ledger["bad_pairs"], [])
 
+    def split(self, index):
+        meta, _ = self.members.pop(index)
+        source = self.campaign / meta["run"]
+        dest = self.path(meta, meta["rerun"], 12)
+        dest.parent.mkdir(parents=True)
+        source.rename(dest)
+
+    def test_split_valid_pair_is_one_observed_pair_and_zero_failures(self):
+        self.pair(100)
+        self.split(0)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (
+                len(ledger["split_pairs"]),
+                len(ledger["bad_pairs"]),
+                ledger["counted_pairs"],
+            ),
+            (1, 0, 0),
+        )
+        self.assertEqual(ledger["status"], "indeterminate (attempt association)")
+        self.assertTrue(
+            any("possibly valid" in msg for msg in ledger["association_issues"])
+        )
+
+    def test_split_failed_pair_counts_once_and_allows_supported_retry(self):
+        self.pair(100, good=False)
+        self.split(1)
+        self.pair(200, retry=1)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (
+                len(ledger["split_pairs"]),
+                len(ledger["bad_pairs"]),
+                ledger["counted_pairs"],
+            ),
+            (1, 1, 1),
+        )
+        self.assertEqual(ledger["bad_pairs"], ledger["split_pairs"])
+
     def test_rerun_requires_supported_invalid_predecessors(self):
         self.pair(200, retry=1)
         _, ledger = self.ledger()

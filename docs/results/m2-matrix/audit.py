@@ -503,6 +503,7 @@ def main(campaign, out, live=False):
             "in_group",
             "valid",
             "attempted",
+            "payload_observed",
             "first_ns",
             "last_ns",
             "position",

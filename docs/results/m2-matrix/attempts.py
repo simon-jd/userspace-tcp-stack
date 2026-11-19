@@ -222,6 +222,9 @@ def timeline(campaign, families, history):
                     rerun=meta["rerun"],
                     in_group=meta["in_group"],
                     valid=summary["valid"],
+                    payload_observed=bool(
+                        obs["endpoint_payload"] or obs["wire_payload"]
+                    ),
                     attempted=bool(
                         obs["endpoint_starts"]
                         or obs["terminals"]
@@ -240,6 +243,7 @@ def timeline(campaign, families, history):
             rerun=h["rerun"],
             in_group=h["in_group"],
             valid=h["saved_validity"],
+            payload_observed=bool(h["endpoint_payload"] or h["wire_payload"]),
             attempted=bool(
                 h["endpoint_starts"]
                 or h["terminals"]
@@ -279,6 +283,7 @@ def historical_pairs(items, canonical, chronology):
     """Recover contiguous physical first/second intervals. Never group two runs by their random suffix."""
     failures = []
     issues = []
+    split_pairs = []
     confirmed = []
     for item in items:
         if item["physical"] == "setup only; transfer unobserved":
@@ -294,7 +299,7 @@ def historical_pairs(items, canonical, chronology):
     confirmed.sort(key=lambda r: (r["first_ns"], r["last_ns"], r["path"]))
     if any(a["last_ns"] >= b["first_ns"] for a, b in zip(confirmed, confirmed[1:])):
         issues.append("overlapping, duplicate or unordered archived transfer intervals")
-        return failures, issues
+        return failures, issues, split_pairs
     if (
         confirmed
         and canonical
@@ -303,7 +308,7 @@ def historical_pairs(items, canonical, chronology):
         issues.append(
             "archived interval interleaves with or follows a current member of the same ordinal"
         )
-        return failures, issues
+        return failures, issues, split_pairs
     i = 0
     while i < len(confirmed):
         first = confirmed[i]
@@ -322,6 +327,8 @@ def historical_pairs(items, canonical, chronology):
                 issues.append(
                     f"intervening acquisition separates preserved partners {first['path']} and {second['path']}"
                 )
+                i += 1
+                continue
             members.append(second)
             i += 1
         pair = dict(
@@ -332,6 +339,12 @@ def historical_pairs(items, canonical, chronology):
             first_ns=members[0]["first_ns"],
             last_ns=members[-1]["last_ns"],
         )
+        sources = {chronology[m["path"]]["source"] for m in members}
+        if len(sources) > 1:
+            pair["source"] = "split between current and preserved"
+            split_pairs.append(pair)
+        elif sources == {"current"}:
+            pair["source"] = "current"
         if len(members) == 2 and all(
             m["saved_validity"] is True
             or (
@@ -345,7 +358,7 @@ def historical_pairs(items, canonical, chronology):
             )
         else:
             failures.append(pair)
-    return failures, issues
+    return failures, issues, split_pairs
 
 
 def qualify(members, history, independent_count, chronology):
@@ -358,6 +371,7 @@ def qualify(members, history, independent_count, chronology):
         archives[h["group"], h["rerun"]].append(h)
     failed = []
     issues = []
+    split_pairs = []
     known_failures = set()
     bad = set(bad)
     seen_valid = set()
@@ -373,7 +387,21 @@ def qualify(members, history, independent_count, chronology):
         for row in active_rows + [chronology[h["path"]] for h in originals]:
             if row["order_issue"]:
                 issues.append(f"{row['path']}: {row['order_issue']}")
-        if key in bad:
+        # A two-member preservation move can stop after either rename. Resolve the
+        # physical chronology across roots before charging the incomplete named group.
+        combine = len(active_rows) == 1 and any(
+            h["physical"] != "setup only; transfer unobserved" for h in originals
+        )
+        if combine:
+            row = active_rows[0]
+            physical = (
+                "payload observed" if row["payload_observed"] else "indeterminate"
+            )
+            originals = [
+                *originals,
+                dict(row, physical=physical, saved_validity=row["valid"], terminals={}),
+            ]
+        if key in bad and not combine:
             if any(r["attempted"] for r in active_rows):
                 failed.append(dict(group=group, rerun=retry, source="current"))
                 known_failures.add(key)
@@ -392,7 +420,10 @@ def qualify(members, history, independent_count, chronology):
                     f"group {group} retry {retry} lacks ordered contiguous original endpoints"
                 )
         times = [r["first_ns"] for r in timed]
-        older, uncertain = historical_pairs(originals, times, chronology)
+        older, uncertain, split = historical_pairs(
+            originals, [] if combine else times, chronology
+        )
+        split_pairs.extend(split)
         failed.extend(older)
         issues.extend(uncertain)
         if older:
@@ -446,6 +477,7 @@ def qualify(members, history, independent_count, chronology):
         bad_pairs=failed,
         counted_pairs=len(allowed),
         candidate_pairs=len(pairs),
+        split_pairs=split_pairs,
         native_status=native_status,
         association_issues=issues,
     )
