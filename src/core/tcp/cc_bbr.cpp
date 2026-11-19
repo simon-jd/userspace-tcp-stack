@@ -337,7 +337,9 @@ void Bbr::probe_rtt(CcConn& c, const RateSample& rs) {
     probe_deadline_ = 0;
   }
   if (mode_ == Mode::probe_rtt) {
-    c.app_limited = std::max<U64>(1, c.delivered + c.in_flight);
+    // Lift Linux's nonzero u32 marker into the stack's absolute delivery space.
+    const U64 marker = c.delivered + c.in_flight;
+    c.app_limited = static_cast<U32>(marker) == 0 ? marker + 1 : marker;
     if (!probe_deadline_ && c.in_flight <= min_window) {
       probe_deadline_ = now + 200;
       probe_round_ = false;

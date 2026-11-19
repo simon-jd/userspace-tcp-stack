@@ -675,5 +675,53 @@ TEST_F(CcBbrModel, AggregationExpectedPacketCountWrapsBeforeTheEpochComparison) 
   EXPECT_EQ(c.cwnd, 38783u);
 }
 
+TEST_F(CcBbrModel, ProbeRttZeroLowWordMarkerSurvivesTheNextAck) {
+  constexpr std::uint64_t wrap = 1ULL << 32;
+  for (const std::uint64_t delivered_on_exit : {wrap - 1, wrap, wrap + 1}) {
+    c.now = c.delivered_time = Time{} + 100ms;
+    c.delivered = delivered_on_exit - 2;
+    c.in_flight = 1;
+    c.cwnd = 10;
+    c.mss = 1000;
+    b.init(c);
+    rs.delivered = rs.acked_sacked = 1;
+    rs.prior_in_flight = 2;
+    rs.interval = rs.rtt = 20ms;
+    ack(10001ms);
+    ASSERT_EQ(b.info().mode, Bbr::Mode::probe_rtt);
+    c.in_flight = 0;
+    rs.prior_in_flight = 1;
+    rs.interval = 201ms;
+    ack(201ms);
+    ASSERT_NE(b.info().mode, Bbr::Mode::probe_rtt);
+    ASSERT_EQ(c.delivered, delivered_on_exit);
+    const bool at_wrap = delivered_on_exit == wrap;
+    EXPECT_EQ(c.app_limited, at_wrap ? wrap + 1 : delivered_on_exit);
+    RateState rate;
+    rate.delivered = c.delivered;
+    rate.app_limited = c.app_limited;
+    ChunkPool pool(4);
+    SendQueue queue(pool, 8192);
+    std::array<std::byte, 2000> payload{};
+    queue.write(payload);
+    for (std::uint64_t offset : {0u, 1000u}) {
+      rate_on_send(rate, queue.counters().packets_out, c.now);
+      queue.on_transmit(offset, 1000, false, c.now, rate);
+      c.now += 20ms;
+      RateAck newest;
+      queue.on_cumulative_ack(offset + 1000, c.now, [&](const TxSeg& segment, bool) {
+        rate_on_delivered(rate, newest, segment, c.now);
+      });
+      ++rate.delivered;
+      const auto sample = rate_gen(rate, newest, 1, 0, 1, false, 20ms, 20ms, false, c.now);
+      EXPECT_TRUE(sample.valid);
+      EXPECT_EQ(sample.is_app_limited, offset == 0 || at_wrap) << delivered_on_exit;
+      if (offset == 0) {
+        EXPECT_EQ(rate.app_limited, at_wrap ? wrap + 1 : 0);
+      }
+    }
+  }
+}
+
 }  // namespace
 }  // namespace utcp
