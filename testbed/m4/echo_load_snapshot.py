@@ -72,6 +72,13 @@ def snapshot(directory, phase, role, ip, port, check_sockets):
             "sockstat6": read("/proc/net/sockstat6"),
             "page_bytes": os.sysconf("SC_PAGE_SIZE"),
             "netns": os.readlink(proc / "ns/net")}
+    counter = directory / "cpp-new-count"
+    if counter.is_file():
+        sample_ns = time.monotonic_ns()
+        data = counter.read_bytes()
+        if len(data) != 8:
+            raise ValueError(f"invalid C++ allocation counter length: {len(data)}")
+        info["cpp_new"] = {"sample_ns": sample_ns, "calls": int.from_bytes(data, sys.byteorder)}
     slab = Path("/proc/slabinfo")
     try:
         lines = slab.read_text().splitlines()

@@ -46,6 +46,12 @@ class Trial:
                              "client": (ROOT / (args.client_binary or args.binary)).resolve()}
         self.binaries = {role: "/utcp/" + path.relative_to(ROOT).as_posix()
                          for role, path in self.binary_paths.items()}
+        self.allocation_counter = None
+        if args.allocation_counter:
+            library = (ROOT / args.allocation_counter).resolve()
+            if not library.is_file():
+                raise ValueError(f"allocation counter library is missing: {library}")
+            self.allocation_counter = "/utcp/" + library.relative_to(ROOT).as_posix()
         self.tag = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
         self.name = "utcp-m4-echo-" + self.tag.lower()
         self.net = self.name + "-net"
@@ -72,7 +78,12 @@ class Trial:
 
     def save_manifest(self):
         a = self.args
-        self.source = run("git", "-C", str(ROOT), "rev-parse", "HEAD")
+        self.runner_source = run("git", "-C", str(ROOT), "rev-parse", "HEAD")
+        self.source = a.binary_source or self.runner_source
+        self.sources = {"server": self.source, "client": a.client_source or self.source}
+        for source in set(self.sources.values()):
+            observed = run("git", "-C", str(ROOT), "rev-parse", "--verify", f"{source}^{{commit}}")
+            require(observed == source, f"binary source must name a full commit SHA: {source}")
         self.dirty = run("git", "-C", str(ROOT), "status", "--porcelain")
         require(a.purpose != "timing" or not self.dirty, "timing requires a clean source tree")
         self.binary_shas = {}
@@ -84,6 +95,7 @@ class Trial:
         self.manifest = {"run_id": self.tag, "source": self.source, "git_status": self.dirty,
                          "binary_sha256": self.binary_shas["server"], "arguments": vars(a),
                          "binary_sha256_by_role": self.binary_shas,
+                         "binary_source_by_role": self.sources, "runner_source": self.runner_source,
                          "docker_image_id": self.image, "net": self.subnet, "ips": self.ips,
                          "transport_address": STACK_IP, "port": PORT, "mtu": MTU,
                          "nofile_requested": NOFILE, "uname": run("uname", "-a"),
@@ -144,6 +156,9 @@ class Trial:
         cmd = (self.binaries[role], *args)
         self.capture_json(role, role + "/argv.json", cmd)
         pinned = ("taskset", "-c", str(self.affinity[role]), "nice", "-n", str(self.nice))
+        if role == "server" and self.allocation_counter:
+            pinned += ("env", f"LD_PRELOAD={self.allocation_counter}",
+                       f"UTCP_NEW_COUNTER={prefix}/cpp-new-count")
         self.processes[role] = subprocess.Popen(
             ("docker", "exec", self.container(role), "sh", "-c",
              'p=$1; shift; printf "%s\\n" "$$" > "$p/pid"; exec "$@" >"$p/events.jsonl" 2>"$p/stderr"',
@@ -364,11 +379,18 @@ class Trial:
             require(stack_stats["dev_tun_offload"] == a.offload, "negotiated offload mode differs")
         elif a.offload != "legacy":
             raise RuntimeError("requested offload has no runtime counter readback")
+        allocation = None
+        if self.allocation_counter:
+            first, last = (s["memory"]["server"]["cpp_new"] for s in (active_samples[0], active_samples[-1]))
+            require(last["calls"] >= first["calls"], "C++ allocation counter went backwards")
+            allocation = {"scope": "server_process_replaced_cpp_new",
+                          "start": first, "end": last, "calls": last["calls"] - first["calls"]}
         return {"ok": True, "purpose": a.purpose, "source": self.source, "backend": a.backend,
                 "held_ns": held_ns, "connections": a.connections, "offload": a.offload,
                 "client_summary": client, "server_summary": server,
                 "stack_stats": stack_stats, "steady": {"client_app": idle_client, "server_app": idle_server},
                 "active_process_cpu": active_process_cpu(active_samples),
+                "active_cpp_new": allocation,
                 "active_app": [{k: v for k, v in sample.items() if k != "memory"}
                                for sample in active_samples],
                 "memory": memory_results(a, base, idle, active_samples, drained, runtime, idle_server),
@@ -450,7 +472,10 @@ def arguments():
     parser.add_argument("--offload", choices=("legacy", "checksum", "tcpv4"), default="legacy")
     parser.add_argument("--image", default=os.environ.get("UTCP_IMAGE", "utcp-testbed:dev"))
     parser.add_argument("--binary", default="build/gcc-release/apps/utcp-echo/utcp-echo")
+    parser.add_argument("--binary-source", help="full source SHA for a separately built server")
     parser.add_argument("--client-binary", help="optional separate kernel client, under this checkout")
+    parser.add_argument("--client-source", help="full source SHA for the separate kernel client")
+    parser.add_argument("--allocation-counter", help="functional server only, path to the preload library")
     parser.add_argument("--connections", type=int, default=10000)
     parser.add_argument("--open-batch", type=int, default=32)
     parser.add_argument("--backlog", type=int, default=4096)
@@ -476,6 +501,10 @@ def arguments():
         parser.error("invalid concurrency, backlog, subnet, workload or hold; allow at least four seconds of active work")
     if args.purpose == "timing" and (args.connections != 10000 or args.hold_s < 5):
         parser.error("timing requires 10,000 sockets and a hold of at least five seconds")
+    if bool(args.client_binary) != bool(args.client_source):
+        parser.error("--client-binary requires --client-source and vice versa")
+    if args.allocation_counter and (args.purpose != "functional" or args.backend != "utcp"):
+        parser.error("--allocation-counter requires a functional userspace server")
     if args.backend == "kernel" and args.offload != "legacy":
         parser.error("--offload requires the utcp server")
     return args
