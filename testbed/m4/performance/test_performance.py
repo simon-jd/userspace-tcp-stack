@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from model import measure, schedule
-from run import tun_features
+from run import ethernet_settings, tun_features
 
 
 def endpoint(role, backend, cpu):
@@ -63,6 +63,10 @@ class ModelTest(unittest.TestCase):
 
 
 class TopologyTest(unittest.TestCase):
+    def test_aggregation_uses_same_tso_and_gso_policy_on_both_endpoints(self):
+        self.assertEqual(list(ethernet_settings(False).values()), ["off", "off", "off"])
+        self.assertEqual(list(ethernet_settings(True).values()), ["on", "on", "off"])
+
     def test_tun_flags_keep_matching_ioctl_mode(self):
         self.assertEqual(tun_features(0x1801), [])
         self.assertEqual(tun_features(0x5801), ["vnet_hdr"])

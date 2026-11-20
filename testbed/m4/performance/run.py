@@ -66,6 +66,11 @@ def load_cgroup(state):
     return {key: int(value) for key, value in (line.split() for line in rows.splitlines())}
 
 
+def ethernet_settings(aggregation):
+    segmentation = "on" if aggregation else "off"
+    return {"tso": segmentation, "gso": segmentation, "gro": "off"}
+
+
 def tun_features(flags):
     return [name for bit, name in ((0x4000, "vnet_hdr"), (0x0100, "multi_queue")) if flags & bit]
 
@@ -171,6 +176,7 @@ class Campaign:
             "runner_sha256": sources, "order": self.order, "bytes": self.args.bytes,
             "sha256": self.digest, "cpus": self.cpus, "addresses": self.addresses,
             "stack_ip": STACK_IP, "mtu": MTU, "app_options": APP_OPTIONS,
+            "ethernet_aggregation": self.args.ethernet_aggregation,
             "functional": self.args.functional, "volume": VOLUME, "host_pre": info()})
         if self.args.probe_perf:
             command = ("perf", "stat", "-e", "task-clock,cycles,instructions", "--", "/usr/bin/true")
@@ -199,14 +205,19 @@ class Campaign:
                                "-v", f"{VOLUME}:/data", *forwarding)
             self.put(f"{role}.container.json", invoke("docker", "container", "inspect", name).stdout)
             self.docker_exec(role, "ip", "route", "del", "default")
-            self.docker_exec(role, "ethtool", "-K", "eth0", "tso", "off", "gso", "off", "gro", "off")
+            feature_states = ethernet_settings(self.args.ethernet_aggregation)
+            feature_args = [item for pair in feature_states.items() for item in pair]
+            self.docker_exec(role, "ethtool", "-K", "eth0", *feature_args)
             links = json.loads(self.docker_exec(role, "ip", "-j", "link", "show", "dev", "eth0").stdout)
             if links[0]["mtu"] != MTU:
                 raise RuntimeError(f"{role} ethernet MTU differs from {MTU}")
             offloads = self.docker_exec(role, "ethtool", "-k", "eth0").stdout.decode()
-            for feature in ("tcp-segmentation-offload", "generic-segmentation-offload", "generic-receive-offload"):
-                if not re.search(rf"(?m)^{feature}: off(?: |$)", offloads):
-                    raise RuntimeError(f"{role} ethernet feature {feature} is not off")
+            names = {"tso": "tcp-segmentation-offload", "gso": "generic-segmentation-offload",
+                     "gro": "generic-receive-offload"}
+            for short, value in feature_states.items():
+                feature = names[short]
+                if not re.search(rf"(?m)^{feature}: {value}(?: |$)", offloads):
+                    raise RuntimeError(f"{role} ethernet feature {feature} did not read back {value}")
         self.docker_exec("peer", "ip", "route", "add", f"{STACK_IP}/32", "via", self.addresses["dut"])
         for role, other in (("dut", "peer"), ("peer", "dut")):
             mac = self.docker_exec(other, "cat", "/sys/class/net/eth0/address").stdout.decode().strip()
@@ -372,6 +383,8 @@ def parse():
     p.add_argument("--subnet", type=int, default=220, help="third octet for a dedicated 198.19.X.0/24 bridge")
     p.add_argument("--functional", action="store_true", help="use CPUs 28 and 30 for untimed testing")
     p.add_argument("--probe-perf", action="store_true", help="retain an ordinary process-scoped perf attempt")
+    p.add_argument("--ethernet-aggregation", action="store_true",
+                   help="enable ethernet TSO/GSO in every arm so aggregates can reach TUN")
     for option in ("candidate", "reference"):
         p.add_argument(f"--{option}-bulk", type=Path)
         p.add_argument(f"--{option}-source")
