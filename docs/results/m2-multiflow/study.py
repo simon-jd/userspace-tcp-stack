@@ -326,6 +326,21 @@ def lateness_evidence(stats, summary):
     )
     observed = sum(buckets.values())
     maximum = stats["loop_lateness_max_ns"]
+    require(
+        all(
+            type(value) is int and value >= 0
+            for value in (
+                maximum,
+                stats["loop_lateness_count"],
+                summary["lateness_count"],
+                summary["lateness_max_ns"],
+                summary["lateness_p99_ns"],
+            )
+        )
+        and observed > 0
+        and maximum.bit_length() == max(k for k, v in buckets.items() if v),
+        "maximum or observation count disagrees with occupied lateness buckets",
+    )
     upper = M.hist_percentile(buckets, 0.99, maximum)
     require(
         observed > 0

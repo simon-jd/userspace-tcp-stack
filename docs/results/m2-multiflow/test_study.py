@@ -195,6 +195,17 @@ class LatenessExposure(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disagree"):
                 S.lateness_evidence(st, {**end, field: value})
 
+    def test_maximum_must_be_in_highest_nonempty_bucket(self):
+        counts = {
+            "loop_lateness_bucket_3": 99,
+            "loop_lateness_bucket_12": 1,
+            "loop_lateness_count": 100,
+            "loop_lateness_max_ns": 8,
+        }
+        summary = {"lateness_count": 100, "lateness_p99_ns": 7, "lateness_max_ns": 8}
+        with self.assertRaisesRegex(ValueError, "occupied"):
+            S.lateness_evidence(counts, summary)
+
 
 class RoleReports(unittest.TestCase):
     def build(self):
