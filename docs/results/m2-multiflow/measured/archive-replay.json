@@ -1,0 +1,43 @@
+{
+  "archives": {
+    "compact": {
+      "archive_bytes": 207357821,
+      "files": 6497,
+      "manifest_sha256": "125cbdd1d207616884fa5f9881faaaccac03e888867a408d61ff34503dcbdf5c",
+      "name": "m2d-multiflow-compact-dc7df02e84d46cba046a995f03dcdcfc9314d02879a4fea4a741414316e8ad4b.tar.zst",
+      "sha256": "dc7df02e84d46cba046a995f03dcdcfc9314d02879a4fea4a741414316e8ad4b"
+    },
+    "full": {
+      "archive_bytes": 9788747713,
+      "files": 6889,
+      "manifest_sha256": "2dde7765df8598e1a31d78c0c4674d85f8d93c262a5bc45e2efd0936e8f03094",
+      "name": "m2d-multiflow-full-4fd1c2b513b2b2f30710f13f402e529e18faf5f31d1998deec1546574b1d6e1b.tar.zst",
+      "sha256": "4fd1c2b513b2b2f30710f13f402e529e18faf5f31d1998deec1546574b1d6e1b"
+    }
+  },
+  "connections": {
+    "production": {
+      "counted_matching": 300,
+      "directories": 100,
+      "linux_connected": 175,
+      "matching": 300,
+      "receiver_accepts": 300,
+      "sender_connects": 300,
+      "stack_connected": 125
+    },
+    "rehearsal": {
+      "counted_matching": 0,
+      "directories": 3,
+      "linux_connected": 6,
+      "matching": 16,
+      "receiver_accepts": 16,
+      "sender_connects": 16,
+      "stack_connected": 10
+    }
+  },
+  "physical_sha256": "4bf8df6f9d419223426f74bf52f8f249b2bca1c23d24ba0a2c49b3f7564ac53f",
+  "raw_pcap_files": 392,
+  "reprojected_scenarios": 103,
+  "table_files": 20,
+  "tables_sha256": "1a9c3d9c6b02051f65b44df5a08b3fe9472851363904712ff9c36d449304608f"
+}

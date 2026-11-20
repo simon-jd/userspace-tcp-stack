@@ -1,0 +1,10 @@
+{
+ "gates": [
+  "m2d-multiflow/acquisition-q1/gate-s0",
+  "m2d-multiflow/acquisition-q1/gate-s1"
+ ],
+ "key": "ad713cad0d39dcec867c31937a0c902094b4e72c515dbef985e04b03abf0935e",
+ "parallel_proof_passed": true,
+ "production_slot": 0,
+ "proof": "m2d-multiflow/acquisition-q1/proof"
+}

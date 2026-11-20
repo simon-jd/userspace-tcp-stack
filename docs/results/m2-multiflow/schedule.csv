@@ -1,0 +1,51 @@
+pair_order,scenario,rep,side_first,pair_seed,mbit_s,rtt_ms,loss_pct,queue_bdp,wall_duration_s,flow_roles_test_by_id,flow_roles_baseline_by_id,flow_join_offsets_s,listener_ports
+1,4,4,baseline,327845693,100,20,0,2,60,stack/newreno stack/newreno,linux/newreno linux/newreno,0 20,5201 5202
+2,5,4,test,1005183855,100,20,0,2,60,stack/bbr stack/bbr,linux/bbr linux/bbr,0 20,5201 5202
+3,8,1,test,1083172527,100,20,0,2,60,linux/cubic stack/bbr,linux/cubic linux/bbr,0 20,5201 5202
+4,3,1,baseline,1986999033,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 0 0 0 0 20,5201 5202 5203 5204 5205 5206 5207 5208
+5,6,3,baseline,504347506,100,20,0,2,60,linux/cubic stack/newreno,linux/cubic linux/newreno,0 20,5201 5202
+6,1,4,baseline,1518737354,100,20,0,2,60,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+7,1,1,test,2106650306,100,20,0,2,60,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+8,1,3,test,988874822,100,20,0,2,60,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+9,6,1,test,1045757906,100,20,0,2,60,linux/cubic stack/newreno,linux/cubic linux/newreno,0 20,5201 5202
+10,8,2,test,1516768585,100,20,0,2,60,linux/cubic stack/bbr,linux/cubic linux/bbr,0 20,5201 5202
+11,6,2,baseline,1127073867,100,20,0,2,60,linux/cubic stack/newreno,linux/cubic linux/newreno,0 20,5201 5202
+12,3,4,test,1990250504,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 0 0 0 0 20,5201 5202 5203 5204 5205 5206 5207 5208
+13,1,5,test,2045653446,100,20,0,2,60,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+14,5,3,test,2093974228,100,20,0,2,60,stack/bbr stack/bbr,linux/bbr linux/bbr,0 20,5201 5202
+15,9,1,test,1076418899,10,100,0,2,120,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+16,2,1,baseline,157262253,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+17,7,5,test,1055497747,100,20,0,2,60,linux/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+18,9,4,test,1575770041,10,100,0,2,120,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+19,1,2,baseline,940309189,100,20,0,2,60,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+20,10,2,test,1652253592,100,20,0,2,60,stack/cubic linux/cubic linux/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+21,5,2,test,120498399,100,20,0,2,60,stack/bbr stack/bbr,linux/bbr linux/bbr,0 20,5201 5202
+22,8,3,baseline,1630462852,100,20,0,2,60,linux/cubic stack/bbr,linux/cubic linux/bbr,0 20,5201 5202
+23,10,5,baseline,1489129001,100,20,0,2,60,stack/cubic linux/cubic linux/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+24,7,2,test,759059825,100,20,0,2,60,linux/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+25,2,5,baseline,1748572734,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+26,2,3,baseline,995240212,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+27,4,5,baseline,745305638,100,20,0,2,60,stack/newreno stack/newreno,linux/newreno linux/newreno,0 20,5201 5202
+28,6,4,test,903992510,100,20,0,2,60,linux/cubic stack/newreno,linux/cubic linux/newreno,0 20,5201 5202
+29,3,3,test,2057198132,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 0 0 0 0 20,5201 5202 5203 5204 5205 5206 5207 5208
+30,7,1,baseline,830859735,100,20,0,2,60,linux/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+31,9,2,baseline,1144247390,10,100,0,2,120,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+32,3,5,test,2025030467,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 0 0 0 0 20,5201 5202 5203 5204 5205 5206 5207 5208
+33,7,3,baseline,1472930338,100,20,0,2,60,linux/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+34,10,4,test,1716080210,100,20,0,2,60,stack/cubic linux/cubic linux/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+35,10,3,baseline,1294442887,100,20,0,2,60,stack/cubic linux/cubic linux/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+36,8,4,baseline,1187998123,100,20,0,2,60,linux/cubic stack/bbr,linux/cubic linux/bbr,0 20,5201 5202
+37,4,2,test,147370770,100,20,0,2,60,stack/newreno stack/newreno,linux/newreno linux/newreno,0 20,5201 5202
+38,8,5,baseline,1778549250,100,20,0,2,60,linux/cubic stack/bbr,linux/cubic linux/bbr,0 20,5201 5202
+39,4,1,baseline,1298403596,100,20,0,2,60,stack/newreno stack/newreno,linux/newreno linux/newreno,0 20,5201 5202
+40,5,5,baseline,1754117693,100,20,0,2,60,stack/bbr stack/bbr,linux/bbr linux/bbr,0 20,5201 5202
+41,5,1,baseline,1408605056,100,20,0,2,60,stack/bbr stack/bbr,linux/bbr linux/bbr,0 20,5201 5202
+42,2,2,test,121789652,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+43,2,4,test,1738348791,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+44,3,2,baseline,394260479,100,20,0,2,60,stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 0 0 0 0 20,5201 5202 5203 5204 5205 5206 5207 5208
+45,9,3,baseline,1815939643,10,100,0,2,120,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+46,4,3,test,2049897155,100,20,0,2,60,stack/newreno stack/newreno,linux/newreno linux/newreno,0 20,5201 5202
+47,10,1,baseline,2095519549,100,20,0,2,60,stack/cubic linux/cubic linux/cubic stack/cubic,linux/cubic linux/cubic linux/cubic linux/cubic,0 0 0 20,5201 5202 5203 5204
+48,9,5,test,1614312193,10,100,0,2,120,stack/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
+49,6,5,baseline,1648653825,100,20,0,2,60,linux/cubic stack/newreno,linux/cubic linux/newreno,0 20,5201 5202
+50,7,4,test,2002601223,100,20,0,2,60,linux/cubic stack/cubic,linux/cubic linux/cubic,0 20,5201 5202
