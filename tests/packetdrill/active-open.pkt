@@ -1,0 +1,14 @@
+// RFC 9293 §§3.5, 3.6: nonblocking active open, one write, and FIN exchange.
+0 socket(..., SOCK_STREAM|SOCK_NONBLOCK, IPPROTO_TCP) = 3
++0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)
++0 > S 0:0(0) <mss 1460>
++0.010 < S. 0:0(0) ack 1 win 32768 <mss 1460>
++0 > . 1:1(0) ack 1
++0 getsockopt(3, SOL_SOCKET, SO_ERROR, [0], [4]) = 0
++0 write(3, ..., 5) = 5
++0 > P. 1:6(5) ack 1
++0.010 < . 1:1(0) ack 6 win 32768
++0 close(3) = 0
++0 > F. 6:6(0) ack 1
++0.010 < F. 1:1(0) ack 7 win 32768
++0 > . 7:7(0) ack 2

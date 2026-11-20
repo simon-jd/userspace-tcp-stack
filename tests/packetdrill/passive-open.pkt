@@ -1,0 +1,21 @@
+// RFC 9293 §§3.5, 3.6 and 3.8.6.3: accept, read, delayed ACK, and peer-first close.
+0 socket(..., SOCK_STREAM|SOCK_NONBLOCK, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 4) = 0
++0 accept(3, ..., ...) = -1 EAGAIN (Resource temporarily unavailable)
++0.010 < S 0:0(0) win 32768 <mss 1460>
++0 > S. 0:0(0) ack 1 <mss 1460>
++0.010 < . 1:1(0) ack 1 win 32768
++0 accept(3, ..., ...) = 4
++0 fcntl(4, F_SETFL, O_NONBLOCK) = 0
++0 read(4, ..., 4) = -1 EAGAIN (Resource temporarily unavailable)
++0.010 < P. 1:5(4) ack 1 win 32768
++0 read(4, ..., 4) = 4
++0.195~+0.205 > . 1:1(0) ack 5
++0.010 < F. 5:5(0) ack 1 win 32768
++0 > . 1:1(0) ack 6
++0 read(4, ..., 1) = 0
++0 close(4) = 0
++0 > F. 1:1(0) ack 6
++0.010 < . 6:6(0) ack 2 win 32768
++0 close(3) = 0
