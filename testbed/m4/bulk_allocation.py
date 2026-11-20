@@ -39,7 +39,18 @@ def measure(trial, direction):
     trial.launch("server", "--backend", "utcp", "--listen", f"{STACK_IP}:{PORT}",
                  "--tun", "utcp0", "--addr", STACK_IP, "--profile", "linux", "--seed", "1",
                  "--stats", f"{trial.out}/server/stack-stats.jsonl", *common, *listen_extra)
-    trial.wait("server", lambda row: row.get("ev") == "config", "bulk configuration")
+    # The bulk JSON writer buffers output, so the config record alone cannot
+    # synchronize a listener that has not yet accepted a connection.
+    trial.docker("server", "sh", "-c", """
+for i in $(seq 1 100); do
+    if p=$(cat "$1/pid" 2>/dev/null) && test -s "$1/cpp-new-count" &&
+       find "/proc/$p/fd" -lname /dev/net/tun -print -quit 2>/dev/null | grep -q .; then
+        exit 0
+    fi
+    sleep 0.05
+done
+exit 1
+""", "sh", f"{trial.out}/server")
     trial.launch("client", "--backend", "kernel", "--connect", f"{STACK_IP}:{PORT}",
                  *common, *connect_extra)
     byte_field, seg_field = (("bytes_sent", "data_segs_out") if direction == "send" else
