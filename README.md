@@ -11,7 +11,7 @@ comparison. [Protocol design](docs/DESIGN.md) · [Linux interoperability](docs/I
 |---|---|
 | M0 and M1 | Toolchain, deterministic core, simulator, TUN backend and TCP interoperability complete |
 | M2a and M2b | Loss recovery, delivery-rate sampling, pacing, NewReno and CUBIC complete |
-| M2c and M2d | BBRv1 and the full 24-cell matrix pending |
+| M2c and M2d | [BBRv1 paired smoke](docs/RESULTS.md#bbrv1-paired-smoke) and the [24-cell NewReno/CUBIC/BBRv1 matrix](docs/RESULTS.md#core-matrix) complete |
 | M3–M5 | Pending |
 
 The implementation covers the TCP state machine (RFC 9293), timestamps and window scaling

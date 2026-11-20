@@ -2,6 +2,8 @@
 
 The [registered experiment](plan.toml) compares NewReno, CUBIC and BBRv1 on the userspace stack and Linux. On the private Ubuntu host, the acquisition writes into `utcp-data:/m2/m2-matrix/`. The measured checkout is `4f9c9b89e16188fd65f3961af967cc3d83370d12` and its executable sources match `769311e157dea0e7983a2cd5bd086736339dc62b`. The [runtime freeze](../m2-bbr/README.md) identifies the two restored binaries, image, script tree and both slot calibrations. The earlier checkpoint used a different binary fingerprint. Every observation in this schedule comes from a new transfer.
 
+The finished campaign contains 720 valid transfers, 360 contiguous same-seed pairs and 72 median-run overlays. All 12,257 source files are covered by the full archive manifest. The separate capture-free archive has 10,844 input hashes. Each archive is stored under its content digest on Ubuntu. [Core comparison tables](../../RESULTS.md#core-matrix) · [Per-run results](runs.csv) · [Gap evidence](gap-attribution.md) · [Archive names and hashes](archives.sha256)
+
 ## Acquisition
 
 Seed `2026111905` schedules 360 consecutive stack/Linux pairs across 24 conditions. Bandwidth is 10 or 100 Mbit/s, RTT is 20 or 100 ms, forward-path random loss is 0%, 0.1% or 1%, and queue size is 0.5 or 2 bandwidth-delay products. Five distinct seeds cover each condition and algorithm. Endpoint order varies by pair. Send time is 30 s at 20 ms RTT and 60 s at 100 ms RTT. The analysis window begins five seconds after the receiver accepts and ends at the earlier endpoint's start plus send time.
