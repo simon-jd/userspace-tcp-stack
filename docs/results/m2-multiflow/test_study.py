@@ -88,7 +88,9 @@ class MissingIntervals(unittest.TestCase):
     def test_blind_part_followed_by_real_hold(self):
         flows = [flow(0, 0, 0, 60, 100), flow(1, 20, 20, 40, 100)]
         for f in flows:
-            f["series"] = [p for p in f["series"] if p[0] == 25 * N or not 21 * N < p[0] < 32 * N]
+            f["series"] = [
+                p for p in f["series"] if p[0] == 25 * N or not 21 * N < p[0] < 32 * N
+            ]
         run, _ = S.windows(flows, 60, 1600)
         self.assertEqual(run["convergence_status"], "converged")
         self.assertEqual(run["earliest_possible_s"], 1)
@@ -221,6 +223,18 @@ class RoleReports(unittest.TestCase):
         rows[-1]["flows"][0]["cc"] = "bbr"
         with self.assertRaisesRegex(ValueError, "role"):
             T.aggregate(1, rows, 0)
+
+    def test_exact_jain_threshold(self):
+        import study_tables as T
+
+        rows = self.build()
+        for r in rows:
+            r["jain_nominal"] = 0.9 if r["side"] == "test" else 0.85
+        self.assertFalse(T.aggregate(1, rows, 0)[0]["jain_nominal_difference_gt_0.05"])
+        for r in rows:
+            if r["side"] == "test":
+                r["jain_nominal"] += 1e-10
+        self.assertTrue(T.aggregate(1, rows, 0)[0]["jain_nominal_difference_gt_0.05"])
 
 
 class CalibratedCapacity(unittest.TestCase):

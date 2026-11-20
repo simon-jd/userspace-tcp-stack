@@ -359,7 +359,25 @@ def endpoint(folder, meta, f):
         launches.append(launched)
         records = A.read_jsonl(folder / f"{side}.jsonl")
         clock, start, summary = (one(records, k) for k in ("clock", "start", "summary"))
+        if backend == "utcp":
+            reference = read(HERE.parent / "m2-checkpoint/verify/linux-profile.json")
+            require(
+                one(records, "config") == reference,
+                "measured stack profile differs from linux_compat baseline",
+            )
+            for flag, filename in (
+                ("--trace", "trace.jsonl"),
+                ("--stats", "stats.json"),
+            ):
+                require(
+                    option(argv, flag).endswith(f"/flows/{f['id']}/{filename}"),
+                    "trace/stats argv identity mismatch",
+                )
         rows = [r for r in records if r["ev"] == "sample"]
+        require(
+            len({r["conn_id"] for r in rows}) == 1,
+            f"{side} sample connection identity changed",
+        )
         require(
             start["role"] == summary["role"] == role
             and summary["backend"] == backend
@@ -428,6 +446,7 @@ def endpoint(folder, meta, f):
         receiver_pid=launches[1]["pid"],
         series=series,
         sender_samples=samples[0],
+        receiver_last=samples[1][-1],
         clock=clocks[0],
         bytes=snd["bytes"],
         sha256=snd["sha256"],
@@ -499,7 +518,8 @@ def record_check(rd, meta, fs):
     require(
         int(params["seed"]) == meta["pair_seed"]
         and meta["bdp_bytes"] == int(meta["bw_mbit"] * meta["rtt_ms"] * 125)
-        and meta["queue_bytes"] == 2 * meta["bdp_bytes"],
+        and meta["queue_bytes"] == 2 * meta["bdp_bytes"]
+        and meta["burst_bytes"] == max(3028, int(meta["bw_mbit"] * 125)),
         "shaping seed/BDP mismatch",
     )
     for name in ("pre", "post"):
@@ -521,6 +541,13 @@ def record_check(rd, meta, fs):
         require(
             snap["qdisc"][roles["r2"]][meta["ifaces"]["r2_c"]]["kind"] == "tbf",
             f"{name} missing forward TBF",
+        )
+        tbf_line = snap["qdisc"][roles["r2"]][meta["ifaces"]["r2_c"]]["line"]
+        require(
+            re.findall(r"\brate (\d+)Mbit\b", tbf_line) == [str(int(meta["bw_mbit"]))]
+            and re.findall(r"\bburst (\d+)b\b", tbf_line) == [str(meta["burst_bytes"])]
+            and re.findall(r"\blimit (\d+)b\b", tbf_line) == [str(meta["queue_bytes"])],
+            f"{name} kernel TBF disagrees with registered cell",
         )
         missing = A.missing_gate_counters(snap, roles, meta["ifaces"], cpus)
         require(not missing, f"{name} missing network counters {missing}")
@@ -616,6 +643,13 @@ def summarize(rd, sched, gatedir, pilot=False, capture_data=None):
         else {}
     )
     require(gate or pilot, "production requires same-key calibration")
+    for who in ("snd", "rcv"):
+        require(
+            (rd / f"{who}.done").read_text().strip() == "done"
+            and (rd / f"{who}.closed").read_text().strip()
+            == "socket tables contain no connected non-TIME_WAIT sockets",
+            f"{who} endpoint supervisor closure missing",
+        )
     outputs = []
     for f in fs:
         try:
@@ -670,6 +704,29 @@ def summarize(rd, sched, gatedir, pilot=False, capture_data=None):
         )
         r.update(wires[f["id"]])
         r["tun_counters"] = tuns.get(f["id"])
+        for cap_key, last, field, tolerance in (
+            (
+                "r1-in_data_segments",
+                f["sender_samples"][-1],
+                "data_segs_out",
+                A.CAPTURE_SEGS_TOL,
+            ),
+            (
+                "r1-in_retrans_segments",
+                f["sender_samples"][-1],
+                "total_retrans",
+                A.CAPTURE_RETRANS_TOL,
+            ),
+            (
+                "r2-out_data_segments",
+                f["receiver_last"],
+                "data_segs_in",
+                A.CAPTURE_SEGS_TOL,
+            ),
+        ):
+            r["endpoint_total_" + field] = last[field]
+            if not A.counts_agree(r[cap_key], last[field], tolerance):
+                flags.append(f"{f['id']}/capture_run_mismatch:{field}")
         for field in ("rwnd_limited_us", "sndbuf_limited_us"):
             counter = A.series(f["sender_samples"], field)
             require(
@@ -705,9 +762,30 @@ def summarize(rd, sched, gatedir, pilot=False, capture_data=None):
                 and st["loop_lateness_max_ns"] >= 0,
                 f"{f['id']} missing loop lateness",
             )
+            src, sport, dst, dport, _ = r["identity"]
+            socket_tuple = f"{src}:{sport}>{dst}:{dport}"
+            trace_counts = {}
+            prev = None
+            with (folder / "trace.jsonl").open() as trace:
+                for line in trace:
+                    event = json.loads(line)
+                    require(
+                        event["tuple"] == socket_tuple
+                        and event["conn"] == f["sender_samples"][0]["conn_id"]
+                        and (prev is None or prev <= event["t"])
+                        and event["ev"] in ("cwnd", "tx", "rto", "recovery"),
+                        f"{f['id']} observed trace tuple/connection/time/kind mismatch",
+                    )
+                    prev = event["t"]
+                    kind = event["tx"] if event["ev"] == "tx" else event["ev"]
+                    trace_counts[kind] = trace_counts.get(kind, 0) + 1
             require(
-                (folder / "trace.jsonl").stat().st_size > 0, f"{f['id']} missing trace"
+                sum(trace_counts.values()) == st["trace_events"],
+                f"{f['id']} trace count mismatch",
             )
+            # A completely event-free traced connection is possible. Its identity
+            # is established by both captured TCP streams and endpoint observations.
+            r["trace_events"] = trace_counts
             if st["loop_pending_calls"]:
                 flags.append(f"{f['id']}/stack_blocked")
     clk = outputs[0]["clock"]

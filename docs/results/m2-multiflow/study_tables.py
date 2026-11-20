@@ -4,6 +4,7 @@ import csv
 import json
 from collections import Counter, defaultdict
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import study as S
@@ -220,6 +221,14 @@ def aggregate(scenario, runs, invalid):
             f"{side}_conditional_convergence_s",
             distribution(converged, "convergence_s"),
         )
+        summary[side + "_convergence_onset_intervals_s"] = [
+            dict(
+                rep=r["rep"],
+                earliest_possible_s=r.get("earliest_possible_s"),
+                first_confirmed_s=r["convergence_s"],
+            )
+            for r in converged
+        ]
         summary[side + "_censored_horizons_s"] = [
             r["observed_horizon_s"]
             for r in group
@@ -238,7 +247,9 @@ def aggregate(scenario, runs, invalid):
         delta = None if a is None or b is None else a - b
         summary[k + "_difference"] = delta
         summary[k + "_difference_gt_0.05"] = (
-            None if delta is None else abs(delta) > 0.05
+            None
+            if delta is None
+            else abs(Decimal(str(a)) - Decimal(str(b))) > Decimal("0.05")
         )
     for i in range(len(sides["test"][0]["flows"])):
         f = sides["test"][0]["flows"][i]
