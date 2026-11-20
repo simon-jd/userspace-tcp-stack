@@ -1,0 +1,160 @@
+{
+  "arms": 20,
+  "counts": {
+    "dut-to-peer/kernel": 5,
+    "dut-to-peer/stack": 5,
+    "peer-to-dut/kernel": 5,
+    "peer-to-dut/stack": 5
+  },
+  "groups": {
+    "dut-to-peer/kernel": {
+      "receiver_gbps": {
+        "max": 9.095978589,
+        "median": 8.159575204,
+        "min": 7.642580792
+      },
+      "recv_sys_s_per_gb": {
+        "max": 0.308434,
+        "median": 0.290408,
+        "min": 0.168933
+      },
+      "recv_total_s_per_gb": {
+        "max": 0.7181259999999999,
+        "median": 0.68226,
+        "min": 0.567965
+      },
+      "recv_user_s_per_gb": {
+        "max": 0.41063099999999997,
+        "median": 0.391852,
+        "min": 0.3772
+      },
+      "send_sys_s_per_gb": {
+        "max": 0.521937,
+        "median": 0.336704,
+        "min": 0.277728
+      },
+      "send_total_s_per_gb": {
+        "max": 0.978882,
+        "median": 0.834788,
+        "min": 0.7546949999999999
+      },
+      "send_user_s_per_gb": {
+        "max": 0.49808399999999997,
+        "median": 0.478734,
+        "min": 0.456945
+      }
+    },
+    "dut-to-peer/stack": {
+      "receiver_gbps": {
+        "max": 4.11982781,
+        "median": 3.963146826,
+        "min": 3.86239334
+      },
+      "recv_sys_s_per_gb": {
+        "max": 0.818869,
+        "median": 0.763201,
+        "min": 0.721738
+      },
+      "recv_total_s_per_gb": {
+        "max": 1.21614,
+        "median": 1.164581,
+        "min": 1.122814
+      },
+      "recv_user_s_per_gb": {
+        "max": 0.404398,
+        "median": 0.401076,
+        "min": 0.380411
+      },
+      "send_sys_s_per_gb": {
+        "max": 1.249282,
+        "median": 1.206291,
+        "min": 1.129226
+      },
+      "send_total_s_per_gb": {
+        "max": 2.077501,
+        "median": 2.0247200000000003,
+        "min": 1.947389
+      },
+      "send_user_s_per_gb": {
+        "max": 0.8712099999999999,
+        "median": 0.798319,
+        "min": 0.790281
+      }
+    },
+    "peer-to-dut/kernel": {
+      "receiver_gbps": {
+        "max": 9.631661718,
+        "median": 8.633395398,
+        "min": 8.254567127
+      },
+      "recv_sys_s_per_gb": {
+        "max": 0.338005,
+        "median": 0.252203,
+        "min": 0.166315
+      },
+      "recv_total_s_per_gb": {
+        "max": 0.726563,
+        "median": 0.6330199999999999,
+        "min": 0.554384
+      },
+      "recv_user_s_per_gb": {
+        "max": 0.401563,
+        "median": 0.388069,
+        "min": 0.371091
+      },
+      "send_sys_s_per_gb": {
+        "max": 0.52599,
+        "median": 0.36779799999999996,
+        "min": 0.201011
+      },
+      "send_total_s_per_gb": {
+        "max": 0.969826,
+        "median": 0.8388209999999999,
+        "min": 0.662445
+      },
+      "send_user_s_per_gb": {
+        "max": 0.474782,
+        "median": 0.467916,
+        "min": 0.41399199999999997
+      }
+    },
+    "peer-to-dut/stack": {
+      "receiver_gbps": {
+        "max": 4.878412567,
+        "median": 4.786877703,
+        "min": 3.868287918
+      },
+      "recv_sys_s_per_gb": {
+        "max": 1.269884,
+        "median": 0.8719279999999999,
+        "min": 0.848235
+      },
+      "recv_total_s_per_gb": {
+        "max": 2.071811,
+        "median": 1.67509,
+        "min": 1.6434549999999999
+      },
+      "recv_user_s_per_gb": {
+        "max": 0.8065249999999999,
+        "median": 0.7952199999999999,
+        "min": 0.778936
+      },
+      "send_sys_s_per_gb": {
+        "max": 0.520843,
+        "median": 0.453825,
+        "min": 0.093816
+      },
+      "send_total_s_per_gb": {
+        "max": 0.9916049999999998,
+        "median": 0.922879,
+        "min": 0.568952
+      },
+      "send_user_s_per_gb": {
+        "max": 0.47520199999999996,
+        "median": 0.47076199999999996,
+        "min": 0.46905399999999997
+      }
+    }
+  },
+  "sha256_manifest": "2175e0c0392aa3ae86f61aaf3d9a9cc4ae2d5e8696518c8c91ae5c958371afa1"
+}
