@@ -199,6 +199,24 @@ def validate_forward_times(ingress, downstream, downstream_resolution_ns):
                 )
 
 
+def validate_capture_accounting(text, physical_packets, face):
+    counts = {}
+    for label in ("captured", "received by filter", "dropped by kernel"):
+        values = re.findall(r"^(\d+) packets? " + label + r"$", text, re.M)
+        if len(values) != 1:
+            raise ValueError(
+                f"{face}: missing or duplicate tcpdump accounting for {label}"
+            )
+        counts[label] = int(values[0])
+    if not (
+        counts["captured"] == counts["received by filter"] == physical_packets
+        and counts["dropped by kernel"] == 0
+    ):
+        raise ValueError(
+            f"{face}: incomplete packet capture cannot locate missing transmissions"
+        )
+
+
 def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
     meta = json.loads((p / "meta.json").read_text())
     summ = json.loads((p / "summary.json").read_text())
@@ -230,8 +248,11 @@ def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
         assert ah[k] == bh[k]
     for face, head in [("r1-in", ah), ("r2-out", bh)]:
         txt = (p / (face + ".tcpdump.txt")).read_text()
-        assert int(re.search(r"(\d+) packets captured", txt)[1]) == head["records"]
-        assert re.search(r"^0 packets dropped by kernel$", txt, re.M)
+        validate_capture_accounting(txt, head["records"], face)
+        if "capture_incomplete:" + face in summ["flags"]:
+            raise ValueError(
+                f"{face}: incomplete native capture flag prevents packet-loss attribution"
+            )
     before = C(k for t, k in a)
     after = C(k for t, k in b)
     assert not (after - before), (len(after - before), ah, bh)

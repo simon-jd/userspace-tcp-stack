@@ -203,6 +203,23 @@ class PairedCaptureBoundaries(unittest.TestCase):
                 bbr_queue.report(root, root / "out")
             self.assertFalse((root / "out").exists())
 
+    def test_capture_attribution_requires_filter_physical_and_kernel_accounting(self):
+        template = "{} packets captured\n{} packets received by filter\n{} packets dropped by kernel\n"
+        bbr_queue.validate_capture_accounting(template.format(3, 3, 0), 3, "r2-out")
+        for captured, received, drops, physical in (
+            (3, 4, 0, 3),
+            (3, 3, 1, 3),
+            (3, 3, 0, 2),
+        ):
+            with self.assertRaisesRegex(ValueError, "incomplete packet capture"):
+                bbr_queue.validate_capture_accounting(
+                    template.format(captured, received, drops), physical, "r2-out"
+                )
+        with self.assertRaisesRegex(ValueError, "missing or duplicate"):
+            bbr_queue.validate_capture_accounting(
+                "3 packets captured\n0 packets dropped by kernel\n", 3, "r2-out"
+            )
+
     def test_causal_matching_each_occurrence_and_pcap_quantization(self):
         inputs = [(100, "a"), (123, "a"), (150, "b")]
         bbr_queue.validate_forward_times(
