@@ -54,8 +54,14 @@ def snapshot(directory, phase, role, ip, port, check_sockets):
     smaps = read(proc / "smaps_rollup")
     status = read(proc / "status")
     memory_stat = read(CGROUP / "memory.stat")
+    cpu_sample_ns = time.monotonic_ns()
+    # The comm field is parenthesized and can contain spaces or ')'.
+    fields = read(proc / "stat").rsplit(")", 1)[1].split()
+    process_cpu = {"sample_ns": cpu_sample_ns, "user_ticks": int(fields[11]),
+                   "system_ticks": int(fields[12]), "ticks_per_second": os.sysconf("SC_CLK_TCK")}
     info = {"started_ns": started_ns, "pid": pid, "phase": phase, "role": role,
             "smaps_rollup": smaps,
+            "process_cpu": process_cpu,
             "rss_bytes": int(re.search(r"^Rss:\s+(\d+) kB", smaps, re.M)[1]) * 1024,
             "rss_hwm_bytes": int(re.search(r"^VmHWM:\s+(\d+) kB", status, re.M)[1]) * 1024,
             "pss_bytes": int(re.search(r"^Pss:\s+(\d+) kB", smaps, re.M)[1]) * 1024,

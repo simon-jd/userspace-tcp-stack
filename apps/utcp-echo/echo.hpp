@@ -46,6 +46,10 @@ struct ServerOptions {
 struct ServerStats {
   std::uint64_t accepted = 0, closed = 0, errors = 0;
   std::uint64_t bytes = 0;      // TCP bytes echoed (accepted by send)
+  std::uint64_t staged_bytes = 0;     // read scratch to pending vector
+  std::uint64_t stage_appends = 0;    // nonempty scratch-to-pending copies
+  std::uint64_t compacted_bytes = 0;  // pending tail moved when dropping a sent prefix
+  std::uint64_t relocated_bytes = 0;  // existing pending contents moved on vector growth
   std::uint64_t datagrams = 0;  // UDP datagrams echoed
   std::uint64_t udp_dropped = 0;  // UDP replies refused by the transport
 };

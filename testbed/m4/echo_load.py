@@ -42,8 +42,10 @@ def require(condition, why):
 class Trial:
     def __init__(self, args):
         self.args = args
-        self.binary_path = (ROOT / args.binary).resolve()
-        self.binary = "/utcp/" + self.binary_path.relative_to(ROOT).as_posix()
+        self.binary_paths = {"server": (ROOT / args.binary).resolve(),
+                             "client": (ROOT / (args.client_binary or args.binary)).resolve()}
+        self.binaries = {role: "/utcp/" + path.relative_to(ROOT).as_posix()
+                         for role, path in self.binary_paths.items()}
         self.tag = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
         self.name = "utcp-m4-echo-" + self.tag.lower()
         self.net = self.name + "-net"
@@ -73,11 +75,15 @@ class Trial:
         self.source = run("git", "-C", str(ROOT), "rev-parse", "HEAD")
         self.dirty = run("git", "-C", str(ROOT), "status", "--porcelain")
         require(a.purpose != "timing" or not self.dirty, "timing requires a clean source tree")
-        self.binary_sha = hashlib.file_digest(self.binary_path.open("rb"), "sha256").hexdigest()
+        self.binary_shas = {}
+        for role, path in self.binary_paths.items():
+            with path.open("rb") as binary:
+                self.binary_shas[role] = hashlib.file_digest(binary, "sha256").hexdigest()
         self.image = run("docker", "image", "inspect", a.image, "--format", "{{.Id}}")
         run("docker", "volume", "inspect", "utcp-data", "--format", "{{.Name}}")
         self.manifest = {"run_id": self.tag, "source": self.source, "git_status": self.dirty,
-                         "binary_sha256": self.binary_sha, "arguments": vars(a),
+                         "binary_sha256": self.binary_shas["server"], "arguments": vars(a),
+                         "binary_sha256_by_role": self.binary_shas,
                          "docker_image_id": self.image, "net": self.subnet, "ips": self.ips,
                          "transport_address": STACK_IP, "port": PORT, "mtu": MTU,
                          "nofile_requested": NOFILE, "uname": run("uname", "-a"),
@@ -135,7 +141,7 @@ class Trial:
 
     def launch(self, role, *args):
         prefix = self.out + "/" + role
-        cmd = (self.binary, *args)
+        cmd = (self.binaries[role], *args)
         self.capture_json(role, role + "/argv.json", cmd)
         pinned = ("taskset", "-c", str(self.affinity[role]), "nice", "-n", str(self.nice))
         self.processes[role] = subprocess.Popen(
@@ -199,7 +205,7 @@ class Trial:
                                                    "net.ipv4.tcp_congestion_control")}
             observed_sha = self.docker(role, "sh", "-c", 'sha256sum "/proc/$(cat "$1")/exe"',
                                        "sh", f"{self.out}/{role}/pid").split()[0]
-            require(observed_sha == self.binary_sha, f"{role} running binary hash differs")
+            require(observed_sha == self.binary_shas[role], f"{role} running binary hash differs")
             summary[role]["running_sha256"] = observed_sha
             if role == "server" and self.args.backend == "utcp":
                 require(links["utcp0"]["mtu"] == MTU, "TUN MTU differs")
@@ -265,7 +271,7 @@ class Trial:
         a = self.args
         server_extra = []
         if a.backend == "utcp":
-            help_text = self.docker("server", self.binary, "--help")
+            help_text = self.docker("server", self.binaries["server"], "--help")
             server_extra = ["--tun", "utcp0", "--addr", STACK_IP, "--mtu", str(MTU),
                             "--profile", "linux", "--seed", "1",
                             "--stats", f"{self.out}/server/stack-stats.jsonl"]
@@ -362,6 +368,7 @@ class Trial:
                 "held_ns": held_ns, "connections": a.connections, "offload": a.offload,
                 "client_summary": client, "server_summary": server,
                 "stack_stats": stack_stats, "steady": {"client_app": idle_client, "server_app": idle_server},
+                "active_process_cpu": active_process_cpu(active_samples),
                 "active_app": [{k: v for k, v in sample.items() if k != "memory"}
                                for sample in active_samples],
                 "memory": memory_results(a, base, idle, active_samples, drained, runtime, idle_server),
@@ -382,6 +389,25 @@ class Trial:
             if proc.poll() is None:
                 proc.terminate()
                 proc.wait(timeout=5)
+
+
+def active_process_cpu(active):
+    """CPU between the first and last in-workload /proc samples, in scheduler ticks."""
+    result = {}
+    for role in ROLES:
+        first = active[0]["memory"][role]["process_cpu"]
+        last = active[-1]["memory"][role]["process_cpu"]
+        hz = first["ticks_per_second"]
+        ns = last["sample_ns"] - first["sample_ns"]
+        user = last["user_ticks"] - first["user_ticks"]
+        system = last["system_ticks"] - first["system_ticks"]
+        require(ns > 0 and hz == last["ticks_per_second"] and min(user, system) >= 0,
+                f"{role} process CPU counters changed unexpectedly")
+        result[role] = {"start_ns": first["sample_ns"], "end_ns": last["sample_ns"],
+                        "user_ticks": user, "system_ticks": system, "ticks_per_second": hz,
+                        "cpu_seconds": (user + system) / hz,
+                        "cpu_fraction_of_one_core": (user + system) * 1e9 / (hz * ns)}
+    return result
 
 
 def memory_results(args, base, idle, active, drained, runtime, idle_server):
@@ -424,6 +450,7 @@ def arguments():
     parser.add_argument("--offload", choices=("legacy", "checksum", "tcpv4"), default="legacy")
     parser.add_argument("--image", default=os.environ.get("UTCP_IMAGE", "utcp-testbed:dev"))
     parser.add_argument("--binary", default="build/gcc-release/apps/utcp-echo/utcp-echo")
+    parser.add_argument("--client-binary", help="optional separate kernel client, under this checkout")
     parser.add_argument("--connections", type=int, default=10000)
     parser.add_argument("--open-batch", type=int, default=32)
     parser.add_argument("--backlog", type=int, default=4096)

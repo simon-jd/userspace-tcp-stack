@@ -102,6 +102,7 @@ void EchoServer::service(ConnId id) {
       c.pending.clear();
       c.pending_off = 0;
     } else if (c.pending_off > c.pending.size() / 2) {
+      stats_.compacted_bytes += c.pending.size() - c.pending_off;
       c.pending.erase(c.pending.begin(), c.pending.begin() + static_cast<std::ptrdiff_t>(c.pending_off));
       c.pending_off = 0;
     }
@@ -126,7 +127,12 @@ void EchoServer::service(ConnId id) {
       c.eof = true;
       continue;
     }
+    if (*r > c.pending.capacity() - c.pending.size()) {
+      stats_.relocated_bytes += c.pending.size();
+    }
     c.pending.insert(c.pending.end(), buf_.begin(), buf_.begin() + static_cast<std::ptrdiff_t>(*r));
+    stats_.staged_bytes += *r;
+    ++stats_.stage_appends;
   }
 }
 
@@ -674,6 +680,8 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
       line.add("role", "server").add("open", server.open_connections())
           .add("accepted", stats.accepted).add("closed", stats.closed)
           .add("errors", stats.errors).add("bytes", stats.bytes)
+          .add("staged_bytes", stats.staged_bytes).add("stage_appends", stats.stage_appends)
+          .add("compacted_bytes", stats.compacted_bytes).add("relocated_bytes", stats.relocated_bytes)
           .add("requested_backlog", so.backlog);
       if (!(report_ok = report_load(t, std::move(line)))) {
         t.stop();
@@ -691,6 +699,10 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     line.add("ev", "summary").add("role", "server").add("udp", so.udp)
         .add("accepted", st.accepted).add("closed", st.closed).add("errors", st.errors)
         .add("bytes", st.bytes).add("datagrams", st.datagrams).add("udp_dropped", st.udp_dropped);
+    if (load_report) {
+      line.add("staged_bytes", st.staged_bytes).add("stage_appends", st.stage_appends)
+          .add("compacted_bytes", st.compacted_bytes).add("relocated_bytes", st.relocated_bytes);
+    }
     server.close_all();
     std::printf("%s\n", line.str().c_str());
     return report_ok ? 0 : 1;
