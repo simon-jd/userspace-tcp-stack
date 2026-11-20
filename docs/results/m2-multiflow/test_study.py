@@ -240,6 +240,85 @@ class RoleReports(unittest.TestCase):
                 r["jain_nominal"] += 1e-10
         self.assertTrue(T.aggregate(1, rows, 0)[0]["jain_nominal_difference_gt_0.05"])
 
+    def test_written_report_names_real_selection_and_conditional_count(self):
+        import tempfile
+        from study_report import report
+        import study_tables as T
+
+        rows = self.build()
+        scenario, roles, choices = T.aggregate(1, rows, 0)
+        with tempfile.TemporaryDirectory() as dest:
+            report(Path(dest), [scenario], roles, choices, [])
+            text = (Path(dest) / "tables.md").read_text()
+        self.assertIn("test-4", text)
+        self.assertIn("baseline-4", text)
+        self.assertIn("1/5", text)
+        self.assertIn("203", str(roles[0]["test_goodput_bps_median"]))
+
+
+class PairInventory(unittest.TestCase):
+    def test_complete_retry_does_not_inherit_interrupted_partner(self):
+        import json
+        import tempfile
+        from unittest import mock
+        import study_tables as T
+
+        sched = {1: dict(side_first="baseline", rep="2", scenario="1")}
+        with tempfile.TemporaryDirectory() as dest:
+            root = Path(dest)
+            for i, (name, sealed) in enumerate(
+                [
+                    ("p001-a01-baseline", True),
+                    ("p001-a02-baseline", True),
+                    ("p001-a02-test", True),
+                ]
+            ):
+                rd = root / name
+                rd.mkdir()
+                (rd / "meta.json").write_text(
+                    json.dumps(
+                        dict(
+                            start_utc=f"2026-01-01T00:{i:02}:00+00:00",
+                            end_utc=f"2026-01-01T00:{i:02}:20+00:00",
+                        )
+                    )
+                )
+                (rd / "summary.json").write_text('{"valid":true}')
+                (rd / "qualification.json").write_text(
+                    json.dumps(
+                        dict(
+                            name=name,
+                            summary_sha256=S.sha(rd / "summary.json"),
+                            valid=sealed,
+                            reuse_key="K",
+                        )
+                    )
+                )
+
+            def observed(rd, *args):
+                return dict(
+                    run=rd.name,
+                    valid=True,
+                    reuse_key="K",
+                    pair_seed=44,
+                    boot_id="B",
+                    slot=0,
+                )
+
+            with mock.patch.object(S, "verdict", side_effect=observed):
+                rows, errors = T.chronology(root, sched, None)
+                self.assertEqual(
+                    [r["run"] for r in rows if r["counted"]],
+                    ["p001-a02-baseline", "p001-a02-test"],
+                )
+                self.assertEqual(errors[1], 1)
+                p = root / "p001-a02-test" / "meta.json"
+                x = json.loads(p.read_text())
+                x["start_utc"] = "2025-12-31T23:59:00+00:00"
+                p.write_text(json.dumps(x))
+                with self.assertRaisesRegex(ValueError, "order"):
+                    T.chronology(root, sched, None)
+
 
 class CalibratedCapacity(unittest.TestCase):
     def test_identical_but_subcapacity_rates_never_converge(self):

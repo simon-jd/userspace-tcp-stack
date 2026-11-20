@@ -354,6 +354,63 @@ def plot_pair(stage, scenario, choices, outdir):
     plt.close(fig)
 
 
+def gap_evidence(stage, counted, role_rows):
+    """Decompose each observed gap's primary rate into additive phase contributions."""
+    selected = {
+        (row["scenario"], row["id"]) for row in role_rows if row["goodput_gap"] == "gap"
+    }
+    output = []
+    for r in counted:
+        for f in r["flows"]:
+            if (r["scenario"], f["id"]) not in selected:
+                continue
+            rd = stage / r["run"] / "flows" / f["id"]
+            receiver = S.A.series(S.A.read_jsonl(rd / "rcv.jsonl"), "bytes_received")
+            sender = [
+                row for row in S.A.read_jsonl(rd / "snd.jsonl") if row["ev"] == "sample"
+            ]
+            warm, end = f["warm_start_ns"], r["active_end_ns"]
+            bounds = (
+                ("incumbents_only", warm, min(end, r["join_ns"])),
+                ("after_join", max(warm, r["join_ns"]), min(end, r["fair_start_ns"])),
+                ("common_fairness", max(warm, r["fair_start_ns"]), end),
+            )
+            for label, lo, hi in bounds:
+                row = dict(
+                    scenario=r["scenario"],
+                    id=f["id"],
+                    run=r["run"],
+                    side=r["side"],
+                    rep=r["rep"],
+                    phase=label,
+                    observed_s=max(hi - lo, 0) / S.N,
+                    contribution_to_primary_bps=None,
+                    rate_bps=None,
+                    median_cwnd=None,
+                    median_srtt_us=None,
+                    sender_retrans_segments=None,
+                )
+                if hi > lo:
+                    relevant = [x for x in sender if lo <= x["t"] <= hi]
+                    if relevant:
+                        row["median_cwnd"] = S.A.median([x["cwnd"] for x in relevant])
+                        row["median_srtt_us"] = S.A.median(
+                            [x["srtt_us"] for x in relevant]
+                        )
+                    if all(S.bound_observed(receiver, t) for t in (lo, hi)):
+                        row["rate_bps"] = S.rate(receiver, lo, hi)
+                        row["contribution_to_primary_bps"] = (
+                            row["rate_bps"] * (hi - lo) / (end - warm)
+                        )
+                    ser = S.A.series(sender, "total_retrans")
+                    if all(S.bound_observed(ser, t) for t in (lo, hi)):
+                        row["sender_retrans_segments"] = S.A.delta(ser, lo, hi)
+                else:
+                    row["contribution_to_primary_bps"] = 0.0
+                output.append(row)
+    return output
+
+
 def tables(stage, sched, gate, controls, out):
     physical, retries = chronology(stage, sched, gate)
     out.mkdir(parents=True, exist_ok=True)
@@ -424,6 +481,29 @@ def tables(stage, sched, gate, controls, out):
     write(out, "roles.csv", role_rows, ("scenario", "id"))
     write(out, "overlay-runs.csv", selections, ("scenario", "side", "rep", "run"))
     write(out, "eight-vs-one-lateness.csv", comparisons, ("id", "metric"))
+    gaps = gap_evidence(stage, counted, role_rows)
+    write(
+        out,
+        "gap-phases.csv",
+        gaps,
+        (
+            "scenario",
+            "id",
+            "run",
+            "side",
+            "rep",
+            "phase",
+            "observed_s",
+            "contribution_to_primary_bps",
+            "rate_bps",
+            "median_cwnd",
+            "median_srtt_us",
+            "sender_retrans_segments",
+        ),
+    )
+    from study_report import report
+
+    report(out, summaries, role_rows, selections, comparisons)
     print(
         json.dumps(
             dict(
