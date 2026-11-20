@@ -48,6 +48,10 @@ EPISODE = (
     "last_loss_ns",
     "prior_sample_ns",
     "next_sample_ns",
+    "prior_state",
+    "next_state",
+    "first_loss_after_window_end_ms",
+    "last_loss_after_window_end_ms",
     "first_phase",
     "last_phase",
     "loss_samples",
@@ -55,6 +59,8 @@ EPISODE = (
     "phase",
     "position",
     "data_segments",
+    "payload_bytes",
+    "exact_repeat_segments",
     "advance_segments",
     "new_sequence_bytes",
     "first_advance_ns",
@@ -178,6 +184,8 @@ def sample_spans(samples):
                 last_loss_ns=ts[-1],
                 prior_sample_ns=samples[i - 1]["t"] if i else None,
                 next_sample_ns=samples[j]["t"] if j < len(samples) else None,
+                prior_state=samples[i - 1]["ca_state"] if i else None,
+                next_state=samples[j]["ca_state"] if j < len(samples) else None,
                 loss_samples=len(ts),
                 max_inner_sampling_ms=max(
                     ((b - a) / 1e6 for a, b in zip(ts, ts[1:])), default=None
@@ -191,7 +199,7 @@ def sample_spans(samples):
 def phase(t, lo, hi):
     if t < lo:
         return "warmup"
-    return "measurement" if t <= hi else "drain"
+    return "measurement" if t < hi else "drain"
 
 
 def advance(high, start, length):
@@ -264,16 +272,21 @@ def report(campaign, inputs, out):
         starts = [x["first_loss_ns"] for x in spans]
         groups = defaultdict(Counter)
         high = 1
+        seen_segments = set()
         with gzip.open(inputs / entry["input"], "rt") as fh:
             for line in fh:
                 raw, seq, size = map(int, line.split(","))
                 t = clock.to_mono(raw)
                 high, new = advance(high, seq, size)
+                exact_repeat = (seq, size) in seen_segments
+                seen_segments.add((seq, size))
                 i, position = locate(spans, starts, t)
                 if i is None:
                     continue
                 stats = groups[i, phase(t, lo, hi), position]
                 stats["data_segments"] += 1
+                stats["payload_bytes"] += size
+                stats["exact_repeat_segments"] += int(exact_repeat)
                 if new:
                     stats["advance_segments"] += 1
                     stats["new_sequence_bytes"] += new
@@ -284,8 +297,27 @@ def report(campaign, inputs, out):
                 run=name,
                 first_phase=phase(span["first_loss_ns"], lo, hi),
                 last_phase=phase(span["last_loss_ns"], lo, hi),
+                first_loss_after_window_end_ms=(span["first_loss_ns"] - hi) / 1e6,
+                last_loss_after_window_end_ms=(span["last_loss_ns"] - hi) / 1e6,
             )
-            groups[i, span["first_phase"], "interior"]
+            # An empty row records actual zero packets in a sampled interval.
+            periods = (
+                (span["prior_sample_ns"], span["first_loss_ns"], "leading boundary"),
+                (
+                    span["first_loss_ns"],
+                    span["last_loss_ns"],
+                    "interior" if span["loss_samples"] > 1 else "isolated sample",
+                ),
+                (span["last_loss_ns"], span["next_sample_ns"], "trailing boundary"),
+            )
+            for beginning, end, position in periods:
+                if beginning is None or end is None:
+                    continue
+                phases = {phase(beginning, lo, hi), phase(end, lo, hi)}
+                if beginning < lo and end >= hi:
+                    phases.add("measurement")
+                for band in phases:
+                    groups[i, band, position]
         for (i, band, pos), stats in sorted(groups.items()):
             episodes.append(
                 dict(
@@ -293,6 +325,8 @@ def report(campaign, inputs, out):
                     phase=band,
                     position=pos,
                     data_segments=stats["data_segments"],
+                    payload_bytes=stats["payload_bytes"],
+                    exact_repeat_segments=stats["exact_repeat_segments"],
                     advance_segments=stats["advance_segments"],
                     new_sequence_bytes=stats["new_sequence_bytes"],
                     first_advance_ns=stats.get("first_advance_ns"),

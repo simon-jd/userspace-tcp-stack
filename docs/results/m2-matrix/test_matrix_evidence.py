@@ -235,6 +235,12 @@ class PairedCaptureBoundaries(unittest.TestCase):
 
 
 class LossWire(unittest.TestCase):
+    def test_half_open_measurement_mask(self):
+        self.assertEqual(
+            [loss.phase(t, 10, 20) for t in (9, 10, 19, 20)],
+            ["warmup", "measurement", "measurement", "drain"],
+        )
+
     def test_sequence_high_wrap_overlap_and_repeat(self):
         self.assertEqual(loss.advance(0xFFFFFFF0, 0xFFFFFFF0, 32), (16, 32))
         self.assertEqual(loss.advance(16, 0xFFFFFFF0, 32), (16, 0))
