@@ -41,11 +41,16 @@ struct ServerOptions {
   TcpSocketOptions sock{};
   std::uint32_t backlog = 4096;
   std::size_t max_pending = 1024 * 1024;  // unsent bytes per connection
+  bool direct_echo = false;
 };
 
 struct ServerStats {
   std::uint64_t accepted = 0, closed = 0, errors = 0;
   std::uint64_t bytes = 0;      // TCP bytes echoed (accepted by send)
+  std::uint64_t staged_bytes = 0;     // read scratch to pending vector
+  std::uint64_t stage_appends = 0;    // nonempty scratch-to-pending copies
+  std::uint64_t compacted_bytes = 0;  // pending tail moved when dropping a sent prefix
+  std::uint64_t relocated_bytes = 0;  // existing pending contents moved on vector growth
   std::uint64_t datagrams = 0;  // UDP datagrams echoed
   std::uint64_t udp_dropped = 0;  // UDP replies refused by the transport
 };
@@ -95,6 +100,7 @@ struct ClientOptions {
   std::uint64_t rate = 0;         // request starts per second, 0 = unlimited
   TcpSocketOptions sock{};
   std::uint64_t seed = 1;
+  std::uint64_t open_batch = 0;   // nonzero: gated load, this many outstanding handshakes
 };
 
 struct ClientResult {
@@ -113,6 +119,8 @@ struct ClientResult {
 [[nodiscard]] std::byte request_byte(std::uint64_t seed, std::uint64_t conn, std::uint64_t req,
                                      std::size_t off) noexcept;
 
+enum class LoadPhase { baseline, opening, idle, active, drained };
+
 class EchoClient final : public Handler {
 public:
   EchoClient(Transport& t, const ClientOptions& o);
@@ -124,6 +132,12 @@ public:
   [[nodiscard]] const ClientResult& result() const { return result_; }
   [[nodiscard]] JsonLine summary() const;
   void abort(const std::string& why);
+
+  // Gated load keeps every connection open through idle, active and drain.
+  // The controller advances baseline, idle and drained after taking snapshots.
+  void advance_load();
+  [[nodiscard]] LoadPhase load_phase() const { return load_phase_; }
+  [[nodiscard]] JsonLine load_report() const;
 
   void on_connected(ConnId id) override;
   void on_readable(ConnId id) override;
@@ -142,6 +156,7 @@ private:
     Time started{};
   };
   void open_more();
+  void start_rate();
   void begin_request(ConnId id);
   void send_some(ConnId id);
   void read_some(ConnId id);
@@ -153,6 +168,10 @@ private:
   ClientOptions o_;
   std::map<ConnId, Conn> conns_;
   std::uint64_t opened_ = 0;
+  std::uint64_t established_ = 0;
+  std::uint64_t requests_started_ = 0;
+  LoadPhase load_phase_ = LoadPhase::baseline;
+  TimerToken open_timer_ = 0;
   std::deque<ConnId> waiting_;  // connections waiting for a rate token
   std::uint64_t tokens_milli_ = 0;  // rate tokens, in thousandths
   Time last_refill_{};

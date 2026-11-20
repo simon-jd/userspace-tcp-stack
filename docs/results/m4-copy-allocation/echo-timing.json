@@ -1,0 +1,710 @@
+[
+  {
+    "order": 1,
+    "pair": 1,
+    "arm": "legacy",
+    "volume": "utcp-data:/m4-echo-load/20261120T221356Z-c2371568",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "95a2d39c006099eaf965dd7bb4def1b44d1e259c",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "4811d84434cb204dce877043e8265212b8387ea4c3c19aab020f97539779662d",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5168109081,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001623,
+    "client_rate_rps": 4999,
+    "p50_ns": 73727,
+    "p99_ns": 1310719,
+    "staged_bytes": 3200000,
+    "stage_appends": 50000,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090321295108096,
+        "end_ns": 1090324282599400,
+        "user_ticks": 16,
+        "system_ticks": 21,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.37,
+        "cpu_fraction_of_one_core": 0.12384973288611788
+      },
+      "client": {
+        "start_ns": 1090321272040412,
+        "end_ns": 1090324278824908,
+        "user_ticks": 6,
+        "system_ticks": 21,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.27,
+        "cpu_fraction_of_one_core": 0.08979692437525459
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 54566912,
+    "peak_active_rss_delta_bytes": 41127936,
+    "hwm_rss_bytes": 54566912,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 2,
+    "pair": 1,
+    "arm": "direct",
+    "volume": "utcp-data:/m4-echo-load/20261120T221416Z-84f2a162",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "5dcbc7657a00522602fad7d7e0684170adb2712b",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "2561bdef95f9d7430c6c3ebcbdd23531eb60fb370880509a37e0c46e4051eec7",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5182760242,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001803,
+    "client_rate_rps": 4999,
+    "p50_ns": 115199,
+    "p99_ns": 1089535,
+    "staged_bytes": 0,
+    "stage_appends": 0,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090341767807185,
+        "end_ns": 1090344771462454,
+        "user_ticks": 14,
+        "system_ticks": 37,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.51,
+        "cpu_fraction_of_one_core": 0.16979312015715875
+      },
+      "client": {
+        "start_ns": 1090341770151592,
+        "end_ns": 1090344762883858,
+        "user_ticks": 8,
+        "system_ticks": 29,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.37,
+        "cpu_fraction_of_one_core": 0.12363284354017119
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 53837824,
+    "peak_active_rss_delta_bytes": 40308736,
+    "hwm_rss_bytes": 53858304,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 3,
+    "pair": 2,
+    "arm": "direct",
+    "volume": "utcp-data:/m4-echo-load/20261120T221437Z-7313f978",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "5dcbc7657a00522602fad7d7e0684170adb2712b",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "2561bdef95f9d7430c6c3ebcbdd23531eb60fb370880509a37e0c46e4051eec7",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5176942510,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001723,
+    "client_rate_rps": 4999,
+    "p50_ns": 61183,
+    "p99_ns": 700415,
+    "staged_bytes": 0,
+    "stage_appends": 0,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090362189938913,
+        "end_ns": 1090365186379386,
+        "user_ticks": 14,
+        "system_ticks": 20,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.34,
+        "cpu_fraction_of_one_core": 0.11346796409394247
+      },
+      "client": {
+        "start_ns": 1090362188377259,
+        "end_ns": 1090365211892619,
+        "user_ticks": 2,
+        "system_ticks": 23,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.25,
+        "cpu_fraction_of_one_core": 0.0826852091798204
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 53862400,
+    "peak_active_rss_delta_bytes": 40308736,
+    "hwm_rss_bytes": 53862400,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 4,
+    "pair": 2,
+    "arm": "legacy",
+    "volume": "utcp-data:/m4-echo-load/20261120T221457Z-a0fdb02b",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "95a2d39c006099eaf965dd7bb4def1b44d1e259c",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "4811d84434cb204dce877043e8265212b8387ea4c3c19aab020f97539779662d",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5173158597,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001644,
+    "client_rate_rps": 4999,
+    "p50_ns": 66047,
+    "p99_ns": 864255,
+    "staged_bytes": 3200000,
+    "stage_appends": 50000,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090382429490155,
+        "end_ns": 1090385436823897,
+        "user_ticks": 11,
+        "system_ticks": 15,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.26,
+        "cpu_fraction_of_one_core": 0.08645531966368633
+      },
+      "client": {
+        "start_ns": 1090382431070326,
+        "end_ns": 1090385415440615,
+        "user_ticks": 17,
+        "system_ticks": 4,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.21,
+        "cpu_fraction_of_one_core": 0.07036660322414837
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 54468608,
+    "peak_active_rss_delta_bytes": 41111552,
+    "hwm_rss_bytes": 54493184,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 5,
+    "pair": 3,
+    "arm": "legacy",
+    "volume": "utcp-data:/m4-echo-load/20261120T221517Z-435eafb3",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "95a2d39c006099eaf965dd7bb4def1b44d1e259c",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "4811d84434cb204dce877043e8265212b8387ea4c3c19aab020f97539779662d",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5176497637,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001315,
+    "client_rate_rps": 4999,
+    "p50_ns": 64255,
+    "p99_ns": 770047,
+    "staged_bytes": 3200000,
+    "stage_appends": 50000,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090402628477758,
+        "end_ns": 1090405636878528,
+        "user_ticks": 11,
+        "system_ticks": 14,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.25,
+        "cpu_fraction_of_one_core": 0.08310063023950097
+      },
+      "client": {
+        "start_ns": 1090402632537434,
+        "end_ns": 1090405635159019,
+        "user_ticks": 6,
+        "system_ticks": 15,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.21,
+        "cpu_fraction_of_one_core": 0.06993888309105724
+      }
+    },
+    "idle_rss_delta_bytes": 33345536,
+    "peak_sampled_active_rss_bytes": 54566912,
+    "peak_active_rss_delta_bytes": 41136128,
+    "hwm_rss_bytes": 54566912,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 6,
+    "pair": 3,
+    "arm": "direct",
+    "volume": "utcp-data:/m4-echo-load/20261120T221538Z-fea2ccee",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "5dcbc7657a00522602fad7d7e0684170adb2712b",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "2561bdef95f9d7430c6c3ebcbdd23531eb60fb370880509a37e0c46e4051eec7",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5181534295,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001269,
+    "client_rate_rps": 4999,
+    "p50_ns": 53503,
+    "p99_ns": 942079,
+    "staged_bytes": 0,
+    "stage_appends": 0,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090422846039335,
+        "end_ns": 1090425831141373,
+        "user_ticks": 9,
+        "system_ticks": 16,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.25,
+        "cpu_fraction_of_one_core": 0.08374923095342444
+      },
+      "client": {
+        "start_ns": 1090422845787680,
+        "end_ns": 1090425835076659,
+        "user_ticks": 5,
+        "system_ticks": 13,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.18,
+        "cpu_fraction_of_one_core": 0.060214988000328755
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 53846016,
+    "peak_active_rss_delta_bytes": 40316928,
+    "hwm_rss_bytes": 53846016,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 7,
+    "pair": 4,
+    "arm": "direct",
+    "volume": "utcp-data:/m4-echo-load/20261120T221558Z-ccb44205",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "5dcbc7657a00522602fad7d7e0684170adb2712b",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "2561bdef95f9d7430c6c3ebcbdd23531eb60fb370880509a37e0c46e4051eec7",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5172164485,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001579,
+    "client_rate_rps": 4999,
+    "p50_ns": 38911,
+    "p99_ns": 671743,
+    "staged_bytes": 0,
+    "stage_appends": 0,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090443189650507,
+        "end_ns": 1090446177825977,
+        "user_ticks": 19,
+        "system_ticks": 4,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.23,
+        "cpu_fraction_of_one_core": 0.07697004486821518
+      },
+      "client": {
+        "start_ns": 1090443180907934,
+        "end_ns": 1090446174847054,
+        "user_ticks": 13,
+        "system_ticks": 6,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.19,
+        "cpu_fraction_of_one_core": 0.0634615442681413
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 53559296,
+    "peak_active_rss_delta_bytes": 40333312,
+    "hwm_rss_bytes": 53559296,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 8,
+    "pair": 4,
+    "arm": "legacy",
+    "volume": "utcp-data:/m4-echo-load/20261120T221618Z-3ec70c82",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "95a2d39c006099eaf965dd7bb4def1b44d1e259c",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "4811d84434cb204dce877043e8265212b8387ea4c3c19aab020f97539779662d",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5193945088,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001604,
+    "client_rate_rps": 4999,
+    "p50_ns": 40959,
+    "p99_ns": 790527,
+    "staged_bytes": 3200000,
+    "stage_appends": 50000,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090463671045081,
+        "end_ns": 1090466675027433,
+        "user_ticks": 10,
+        "system_ticks": 15,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.25,
+        "cpu_fraction_of_one_core": 0.0832228590935477
+      },
+      "client": {
+        "start_ns": 1090463672838044,
+        "end_ns": 1090466670719039,
+        "user_ticks": 3,
+        "system_ticks": 18,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.21,
+        "cpu_fraction_of_one_core": 0.07004947839832448
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 54657024,
+    "peak_active_rss_delta_bytes": 41168896,
+    "hwm_rss_bytes": 54657024,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 9,
+    "pair": 5,
+    "arm": "legacy",
+    "volume": "utcp-data:/m4-echo-load/20261120T221639Z-e5da0d6a",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "95a2d39c006099eaf965dd7bb4def1b44d1e259c",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "4811d84434cb204dce877043e8265212b8387ea4c3c19aab020f97539779662d",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5185719389,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001623,
+    "client_rate_rps": 4999,
+    "p50_ns": 43007,
+    "p99_ns": 270335,
+    "staged_bytes": 3200000,
+    "stage_appends": 50000,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090483842078092,
+        "end_ns": 1090486854079040,
+        "user_ticks": 11,
+        "system_ticks": 12,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.23,
+        "cpu_fraction_of_one_core": 0.07636119774554599
+      },
+      "client": {
+        "start_ns": 1090483841964268,
+        "end_ns": 1090486833912203,
+        "user_ticks": 3,
+        "system_ticks": 15,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.18,
+        "cpu_fraction_of_one_core": 0.06016147470159771
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 54562816,
+    "peak_active_rss_delta_bytes": 41086976,
+    "hwm_rss_bytes": 54562816,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  {
+    "order": 10,
+    "pair": 5,
+    "arm": "direct",
+    "volume": "utcp-data:/m4-echo-load/20261120T221659Z-c22e579e",
+    "runner_source": "773737be59b4c170a5bf6d72ce6adb65d24dcf99",
+    "docker_image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+    "source_by_role": {
+      "server": "5dcbc7657a00522602fad7d7e0684170adb2712b",
+      "client": "efef6073b9f2d478f73e0abbd50d06f293f5ce15"
+    },
+    "binary_sha256_by_role": {
+      "server": "2561bdef95f9d7430c6c3ebcbdd23531eb60fb370880509a37e0c46e4051eec7",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "affinity": [
+      8,
+      10,
+      11
+    ],
+    "held_ns": 5171471425,
+    "connections": 10000,
+    "tcb_bytes": 2208,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "client_duration_us": 10001177,
+    "client_rate_rps": 4999,
+    "p50_ns": 70143,
+    "p99_ns": 983039,
+    "staged_bytes": 0,
+    "stage_appends": 0,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "active_process_cpu": {
+      "server": {
+        "start_ns": 1090504017706591,
+        "end_ns": 1090507027724318,
+        "user_ticks": 23,
+        "system_ticks": 12,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.35,
+        "cpu_fraction_of_one_core": 0.11627838496115275
+      },
+      "client": {
+        "start_ns": 1090504014673616,
+        "end_ns": 1090507023568204,
+        "user_ticks": 17,
+        "system_ticks": 10,
+        "ticks_per_second": 100,
+        "cpu_seconds": 0.27,
+        "cpu_fraction_of_one_core": 0.08973395115827833
+      }
+    },
+    "idle_rss_delta_bytes": 33341440,
+    "peak_sampled_active_rss_bytes": 53739520,
+    "peak_active_rss_delta_bytes": 40325120,
+    "hwm_rss_bytes": 53739520,
+    "dev_rx_datagrams": 140000,
+    "dev_tx_datagrams": 130000,
+    "dev_tx_eagain": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "host_placement_cpus": [
+      8,
+      9,
+      10,
+      11
+    ]
+  }
+]

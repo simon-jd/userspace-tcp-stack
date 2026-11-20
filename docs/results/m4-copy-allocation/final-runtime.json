@@ -1,0 +1,122 @@
+[
+  {
+    "workload": "functional",
+    "selected_mode": "staged",
+    "explicit_direct_echo": false,
+    "volume": "utcp-data:/m4-echo-load/20261120T222110Z-7674632b",
+    "runner_source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "running_sha256_by_role": {
+      "server": "0bc4079ba3eef7c6fc27be0300f928bbbfbd3ed737a18449a732020eee1a6f21",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "cpu_ids": [
+      24,
+      25,
+      26
+    ],
+    "connection_hold_ns": 2253923056,
+    "verified_connections": 64,
+    "verified_requests": 640,
+    "verified_bytes": 40960,
+    "staged_bytes": 40960,
+    "stage_appends": 640,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "active_cpp_new": null
+  },
+  {
+    "workload": "functional",
+    "selected_mode": "direct",
+    "explicit_direct_echo": true,
+    "volume": "utcp-data:/m4-echo-load/20261120T222122Z-6ec8c008",
+    "runner_source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "running_sha256_by_role": {
+      "server": "0bc4079ba3eef7c6fc27be0300f928bbbfbd3ed737a18449a732020eee1a6f21",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "cpu_ids": [
+      24,
+      25,
+      26
+    ],
+    "connection_hold_ns": 2234869165,
+    "verified_connections": 64,
+    "verified_requests": 640,
+    "verified_bytes": 40960,
+    "staged_bytes": 0,
+    "stage_appends": 0,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "active_cpp_new": null
+  },
+  {
+    "workload": "10k",
+    "selected_mode": "staged",
+    "explicit_direct_echo": false,
+    "volume": "utcp-data:/m4-echo-load/20261120T222229Z-465c38d6",
+    "runner_source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "running_sha256_by_role": {
+      "server": "0bc4079ba3eef7c6fc27be0300f928bbbfbd3ed737a18449a732020eee1a6f21",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "cpu_ids": [
+      8,
+      10,
+      11
+    ],
+    "connection_hold_ns": 5189323346,
+    "verified_connections": 10000,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "staged_bytes": 3200000,
+    "stage_appends": 50000,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "active_cpp_new": null
+  },
+  {
+    "workload": "10k",
+    "selected_mode": "direct",
+    "explicit_direct_echo": true,
+    "volume": "utcp-data:/m4-echo-load/20261120T222249Z-8ed9e4ca",
+    "runner_source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "source": "0b2887251b2e42054cc7b88f6fc84ace382205e7",
+    "running_sha256_by_role": {
+      "server": "0bc4079ba3eef7c6fc27be0300f928bbbfbd3ed737a18449a732020eee1a6f21",
+      "client": "16027d0dc0d7df8db03606992d34995adf61877298a84d3a0c938c5cf45694e1"
+    },
+    "cpu_ids": [
+      8,
+      10,
+      11
+    ],
+    "connection_hold_ns": 5172795352,
+    "verified_connections": 10000,
+    "verified_requests": 50000,
+    "verified_bytes": 3200000,
+    "staged_bytes": 0,
+    "stage_appends": 0,
+    "compacted_bytes": 0,
+    "relocated_bytes": 0,
+    "tun_queues": [
+      "rx-0",
+      "tx-0"
+    ],
+    "active_cpp_new": null
+  }
+]

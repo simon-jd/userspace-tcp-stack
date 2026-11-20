@@ -1,0 +1,155 @@
+{
+  "allocation_counter_sha256": "db881455dc0d72be404dfc20bce724bf946a84615be79711bc168886d39bc58c",
+  "positive_control": {
+    "explicit_calls": 8,
+    "observed_delta": 8
+  },
+  "failed_bulk_observations": [
+    "utcp-data:/m4-bulk-allocation/20261120T221221Z-e82e2fdc",
+    "utcp-data:/m4-bulk-allocation/20261120T221441Z-0bb6a602"
+  ],
+  "runs": [
+    {
+      "workload": "legacy_echo",
+      "volume": "utcp-data:/m4-echo-load/20261120T220944Z-babbec56",
+      "runner_source": "920931ae7be182c6989b4c8d72df06ec713cd47a",
+      "server_source": "95a2d39c006099eaf965dd7bb4def1b44d1e259c",
+      "server_sha256": "4811d84434cb204dce877043e8265212b8387ea4c3c19aab020f97539779662d",
+      "affinity": [
+        24,
+        25,
+        26
+      ],
+      "end_to_end_verified_bytes": 40960,
+      "end_to_end_verified_requests": 640,
+      "staged_bytes": 40960,
+      "idle_window": {
+        "start": {
+          "sample_ns": 1090059883665033,
+          "calls": 597
+        },
+        "end": {
+          "sample_ns": 1090062214740883,
+          "calls": 667
+        },
+        "calls": 70
+      },
+      "active_window": {
+        "scope": "server_process_replaced_cpp_new",
+        "start": {
+          "sample_ns": 1090064621279046,
+          "calls": 1054
+        },
+        "end": {
+          "sample_ns": 1090066100052978,
+          "calls": 1096
+        },
+        "calls": 42
+      }
+    },
+    {
+      "workload": "direct_echo",
+      "volume": "utcp-data:/m4-echo-load/20261120T220956Z-6a70abaa",
+      "runner_source": "920931ae7be182c6989b4c8d72df06ec713cd47a",
+      "server_source": "5dcbc7657a00522602fad7d7e0684170adb2712b",
+      "server_sha256": "2561bdef95f9d7430c6c3ebcbdd23531eb60fb370880509a37e0c46e4051eec7",
+      "affinity": [
+        24,
+        25,
+        26
+      ],
+      "end_to_end_verified_bytes": 40960,
+      "end_to_end_verified_requests": 640,
+      "staged_bytes": 0,
+      "idle_window": {
+        "start": {
+          "sample_ns": 1090072145398442,
+          "calls": 597
+        },
+        "end": {
+          "sample_ns": 1090074456209654,
+          "calls": 667
+        },
+        "calls": 70
+      },
+      "active_window": {
+        "scope": "server_process_replaced_cpp_new",
+        "start": {
+          "sample_ns": 1090076848054746,
+          "calls": 990
+        },
+        "end": {
+          "sample_ns": 1090078351470816,
+          "calls": 1032
+        },
+        "calls": 42
+      }
+    },
+    {
+      "workload": "bulk_receive",
+      "volume": "utcp-data:/m4-bulk-allocation/20261120T221821Z-c9d2299a",
+      "runner_source": "f8c36c11b5bb5bc30916ef8eab8e68918c143c00",
+      "binary_sha256": "4bcdc3ddb1ba89b3d98908dfd80b2a90b7002449a4b0ce31bf041576effb0f03",
+      "affinity": [
+        24,
+        25,
+        26
+      ],
+      "whole_stream_sha256": "0dd67bcaeccab95bdc093509c54c2a6887a49020d91c2fc6f4c90a86c28e0cce",
+      "end_to_end_verified_bytes": 2339193728,
+      "active_window": {
+        "scope": "server_process_replaced_cpp_new",
+        "start": {
+          "sample_ns": 1090575928011658,
+          "calls": 449
+        },
+        "end": {
+          "sample_ns": 1090578188123694,
+          "calls": 865
+        },
+        "calls": 416,
+        "lower": {
+          "bytes_received": 655692416,
+          "data_segs_in": 452834
+        },
+        "upper": {
+          "bytes_received": 712036992,
+          "data_segs_in": 491746
+        }
+      }
+    },
+    {
+      "workload": "bulk_send",
+      "volume": "utcp-data:/m4-bulk-allocation/20261120T221831Z-b1863099",
+      "runner_source": "f8c36c11b5bb5bc30916ef8eab8e68918c143c00",
+      "binary_sha256": "4bcdc3ddb1ba89b3d98908dfd80b2a90b7002449a4b0ce31bf041576effb0f03",
+      "affinity": [
+        24,
+        25,
+        26
+      ],
+      "whole_stream_sha256": "09cd6738819f3dc2d9332cf35d9aa901547961581c0dfc42d010adde7a16185d",
+      "end_to_end_verified_bytes": 2185986728,
+      "active_window": {
+        "scope": "server_process_replaced_cpp_new",
+        "start": {
+          "sample_ns": 1090586363158658,
+          "calls": 16086
+        },
+        "end": {
+          "sample_ns": 1090588599982235,
+          "calls": 42419
+        },
+        "calls": 26333,
+        "lower": {
+          "bytes_sent": 560725960,
+          "data_segs_out": 387313
+        },
+        "upper": {
+          "bytes_sent": 613147520,
+          "data_segs_out": 423537
+        }
+      }
+    }
+  ]
+}
