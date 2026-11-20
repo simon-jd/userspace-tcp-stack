@@ -78,6 +78,7 @@ void EchoServer::drop(ConnId id) {
 // Sends what is pending, reads while the pending bytes stay below the limit,
 // and closes once the peer's stream ended and everything was echoed.
 void EchoServer::service(ConnId id) {
+  bool write_blocked = false;
   while (true) {
     const auto it = conns_.find(id);
     if (it == conns_.end()) {
@@ -85,7 +86,7 @@ void EchoServer::service(ConnId id) {
     }
     Conn& c = it->second;
     // Flush.
-    while (c.pending_off < c.pending.size()) {
+    while (!write_blocked && c.pending_off < c.pending.size()) {
       auto r = t_.send(id, std::span(c.pending).subspan(c.pending_off));
       if (!r) {
         if (r.error() == Error::would_block) {
@@ -95,9 +96,13 @@ void EchoServer::service(ConnId id) {
         drop(id);
         return;
       }
+      if (*r == 0) {
+        break;
+      }
       c.pending_off += *r;
       stats_.bytes += *r;
     }
+    write_blocked = false;
     if (c.pending_off == c.pending.size()) {
       c.pending.clear();
       c.pending_off = 0;
@@ -127,11 +132,31 @@ void EchoServer::service(ConnId id) {
       c.eof = true;
       continue;
     }
-    if (*r > c.pending.capacity() - c.pending.size()) {
+    auto received = std::span<const std::byte>(buf_).first(*r);
+    if (c.pending.empty()) {
+      // send() consumes the accepted prefix synchronously. Only an unsent
+      // tail needs to survive reuse of the shared receive scratch buffer.
+      auto sent = t_.send(id, received);
+      if (sent) {
+        stats_.bytes += *sent;
+        received = received.subspan(*sent);
+        write_blocked = *sent == 0;
+      } else if (sent.error() == Error::would_block) {
+        write_blocked = true;
+      } else {
+        ++stats_.errors;
+        drop(id);
+        return;
+      }
+    }
+    if (received.empty()) {
+      continue;
+    }
+    if (received.size() > c.pending.capacity() - c.pending.size()) {
       stats_.relocated_bytes += c.pending.size();
     }
-    c.pending.insert(c.pending.end(), buf_.begin(), buf_.begin() + static_cast<std::ptrdiff_t>(*r));
-    stats_.staged_bytes += *r;
+    c.pending.insert(c.pending.end(), received.begin(), received.end());
+    stats_.staged_bytes += received.size();
     ++stats_.stage_appends;
   }
 }

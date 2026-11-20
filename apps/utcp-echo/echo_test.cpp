@@ -69,6 +69,55 @@ TEST(EchoTcp, ManyConnectionsAllRequestsVerified) {
   }
 }
 
+TEST(EchoTcp, WritablePeerReceivesEchoWithoutStaging) {
+  FakeTransport t;
+  EchoServer server(t, {.local = server_ep});
+  ASSERT_TRUE(server.start());
+  EchoClient client(t, {.remote = client_target, .size = 64, .count = 3});
+  ASSERT_TRUE(client.start());
+  Mux mux(server, client, [&](ConnId id) { return server.owns(id); });
+  t.run(mux);
+  ASSERT_TRUE(client.result().ok) << client.result().first_error;
+  EXPECT_EQ(client.result().bytes, 192u);
+  EXPECT_EQ(server.stats().bytes, 192u);
+  EXPECT_EQ(server.stats().staged_bytes, 0u);
+  EXPECT_EQ(server.stats().stage_appends, 0u);
+}
+
+TEST(EchoTcp, ShortWriteStagesOnlyTheTailAndFinFollowsIt) {
+  FakeTransport t({.rcv_buf = 128});
+  EchoServer server(t, {.local = server_ep});
+  ASSERT_TRUE(server.start());
+  auto peer = t.connect(client_target, {});
+  ASSERT_TRUE(peer);
+  Handler handler;
+  Mux mux(server, handler, [&](ConnId id) { return server.owns(id); });
+  t.run(mux);
+
+  const std::string first(96, 'a');
+  const std::string second = std::string(32, 'b') + std::string(48, 'c');
+  ASSERT_EQ(t.send(*peer, std::as_bytes(std::span(first))), first.size());
+  t.run(mux);  // Leave 96 echoed bytes in the peer's 128-byte receive buffer.
+  ASSERT_EQ(t.send(*peer, std::as_bytes(std::span(second))), second.size());
+  t.shutdown_write(*peer);
+  t.run(mux);
+
+  EXPECT_EQ(server.stats().bytes, 128u);
+  EXPECT_EQ(server.stats().staged_bytes, 48u);
+  EXPECT_EQ(server.stats().stage_appends, 1u);
+  EXPECT_EQ(server.open_connections(), 1u);
+  std::string received(176, '\0');
+  auto out = std::as_writable_bytes(std::span(received));
+  ASSERT_EQ(t.recv(*peer, out.first(128)), 128u);
+  t.run(mux);  // on_writable sends the saved tail, and only then closes.
+  ASSERT_EQ(t.recv(*peer, out.subspan(128)), 48u);
+  EXPECT_EQ(received, first + second);
+  EXPECT_EQ(t.recv(*peer, out), 0u);
+  EXPECT_EQ(server.stats().bytes, 176u);
+  EXPECT_EQ(server.stats().errors, 0u);
+  EXPECT_EQ(server.open_connections(), 0u);
+}
+
 TEST(EchoTcp, RequestBytesDifferPerConnectionAndRequest) {
   int same = 0;
   for (std::size_t off = 0; off < 64; ++off) {
