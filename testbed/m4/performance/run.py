@@ -66,6 +66,10 @@ def load_cgroup(state):
     return {key: int(value) for key, value in (line.split() for line in rows.splitlines())}
 
 
+def tun_features(flags):
+    return [name for bit, name in ((0x4000, "vnet_hdr"), (0x0100, "multi_queue")) if flags & bit]
+
+
 def expected_hash(nbytes):
     with tempfile.TemporaryDirectory(prefix="utcp-m4-oracle-") as temp:
         binary = str(Path(temp) / "oracle")
@@ -210,16 +214,21 @@ class Campaign:
                              "lladdr", mac, "dev", "eth0", "nud", "permanent")
 
     def tun(self, mode):
-        if self.docker_exec("dut", "test", "-d", "/sys/class/net/utcp0", check=False).returncode == 0:
-            self.docker_exec("dut", "ip", "tuntap", "del", "dev", "utcp0", "mode", "tun")
-        features = (["vnet_hdr"] if mode.vnet else []) + (["multi_queue"] if mode.multi_queue else [])
+        flag_path = "/sys/class/net/utcp0/tun_flags"
+        previous = self.docker_exec("dut", "cat", flag_path, check=False)
+        if previous.returncode == 0:
+            # Deleting a persistent TUN attaches a temporary fd and must use
+            # the same IFF_VNET_HDR and IFF_MULTI_QUEUE as the existing device.
+            self.docker_exec("dut", "ip", "tuntap", "del", "dev", "utcp0", "mode", "tun",
+                             *tun_features(int(previous.stdout, 16)))
+        features = tun_features((0x4000 if mode.vnet else 0) | (0x0100 if mode.multi_queue else 0))
         self.docker_exec("dut", "ip", "tuntap", "add", "dev", "utcp0", "mode", "tun", *features)
         self.docker_exec("dut", "ip", "addr", "add", f"{TUN_GATEWAY}/24", "dev", "utcp0")
         self.docker_exec("dut", "ip", "link", "set", "dev", "utcp0", "mtu", str(MTU),
                          "txqueuelen", "10000", "up")
         self.docker_exec("dut", "tc", "qdisc", "replace", "dev", "utcp0", "root",
                          "pfifo", "limit", "10000")
-        flags = int(self.docker_exec("dut", "cat", "/sys/class/net/utcp0/tun_flags").stdout, 16)
+        flags = int(self.docker_exec("dut", "cat", flag_path).stdout, 16)
         if (bool(flags & 0x4000) != mode.vnet or bool(flags & 0x0100) != mode.multi_queue):
             raise RuntimeError(f"TUN VNET_HDR or MULTI_QUEUE did not match {mode.name}: 0x{flags:x}")
         return f"0x{flags:x}"

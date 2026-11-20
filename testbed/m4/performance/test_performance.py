@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from model import measure, schedule
+from run import tun_features
 
 
 def endpoint(role, backend, cpu):
@@ -59,6 +60,14 @@ class ModelTest(unittest.TestCase):
                 sender[target][key] = value
                 with self.assertRaises(ValueError):
                     measure(sender, receiver, 2_000_000_000, "a" * 64, ("utcp", "kernel"), (8, 10))
+
+
+class TopologyTest(unittest.TestCase):
+    def test_tun_flags_keep_matching_ioctl_mode(self):
+        self.assertEqual(tun_features(0x1801), [])
+        self.assertEqual(tun_features(0x5801), ["vnet_hdr"])
+        self.assertEqual(tun_features(0x1901), ["multi_queue"])
+        self.assertEqual(tun_features(0x5901), ["vnet_hdr", "multi_queue"])
 
 
 class EndpointTest(unittest.TestCase):
