@@ -1,0 +1,674 @@
+[
+  {
+    "arms": 6,
+    "bytes_per_arm": 4000055,
+    "groups": {
+      "dut-to-peer/checksum": {
+        "counter_sums": {
+          "rx_csum_partial": 1523,
+          "tx_csum_partial": 2769
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 5.53092394979569,
+          "median": 5.53092394979569,
+          "min": 5.53092394979569
+        },
+        "dut_system_s_per_gb": {
+          "max": 3.771198146025492,
+          "median": 3.771198146025492,
+          "min": 3.771198146025492
+        },
+        "dut_user_s_per_gb": {
+          "max": 1.7597258037701982,
+          "median": 1.7597258037701982,
+          "min": 1.7597258037701982
+        },
+        "receiver_gbps": {
+          "max": 2.004259117,
+          "median": 2.004259117,
+          "min": 2.004259117
+        },
+        "rx_read_calls_per_gb": {
+          "max": 382244.74413476815,
+          "median": 382244.74413476815,
+          "min": 382244.74413476815
+        },
+        "tx_write_calls_per_gb": {
+          "max": 692240.4816933768,
+          "median": 692240.4816933768,
+          "min": 692240.4816933768
+        }
+      },
+      "dut-to-peer/kernel": {
+        "dut_cpu_s_per_gb": {
+          "max": 1.1962335517886629,
+          "median": 1.1962335517886629,
+          "min": 1.1962335517886629
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.4784934207154652,
+          "median": 0.4784934207154652,
+          "min": 0.4784934207154652
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.7177401310731978,
+          "median": 0.7177401310731978,
+          "min": 0.7177401310731978
+        },
+        "receiver_gbps": {
+          "max": 10.206783398,
+          "median": 10.206783398,
+          "min": 10.206783398
+        }
+      },
+      "dut-to-peer/tcpv4": {
+        "counter_sums": {
+          "rx_csum_partial": 71,
+          "tx_csum_partial": 108,
+          "tx_gso_datagrams": 73,
+          "tx_gso_segments": 2746
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 2.540965061730401,
+          "median": 2.540965061730401,
+          "min": 2.540965061730401
+        },
+        "dut_system_s_per_gb": {
+          "max": 1.1549841189683643,
+          "median": 1.1549841189683643,
+          "min": 1.1549841189683643
+        },
+        "dut_user_s_per_gb": {
+          "max": 1.3859809427620369,
+          "median": 1.3859809427620369,
+          "min": 1.3859809427620369
+        },
+        "receiver_gbps": {
+          "max": 7.793005046,
+          "median": 7.793005046,
+          "min": 7.793005046
+        },
+        "rx_read_calls_per_gb": {
+          "max": 23249.680316895643,
+          "median": 23249.680316895643,
+          "min": 23249.680316895643
+        },
+        "tx_gso_logical_per_aggregate": 37.61643835616438,
+        "tx_write_calls_per_gb": {
+          "max": 26999.62875510462,
+          "median": 26999.62875510462,
+          "min": 26999.62875510462
+        }
+      },
+      "peer-to-dut/checksum": {
+        "counter_sums": {
+          "rx_csum_partial": 2766,
+          "tx_csum_partial": 1462
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 4.535187641169935,
+          "median": 4.535187641169935,
+          "min": 4.535187641169935
+        },
+        "dut_system_s_per_gb": {
+          "max": 2.6677133189418645,
+          "median": 2.6677133189418645,
+          "min": 2.6677133189418645
+        },
+        "dut_user_s_per_gb": {
+          "max": 1.8674743222280694,
+          "median": 1.8674743222280694,
+          "min": 1.8674743222280694
+        },
+        "receiver_gbps": {
+          "max": 2.650384913,
+          "median": 2.650384913,
+          "min": 2.650384913
+        },
+        "rx_read_calls_per_gb": {
+          "max": 693740.4610686604,
+          "median": 693740.4610686604,
+          "min": 693740.4610686604
+        },
+        "tx_write_calls_per_gb": {
+          "max": 365494.9744441014,
+          "median": 365494.9744441014,
+          "min": 365494.9744441014
+        }
+      },
+      "peer-to-dut/kernel": {
+        "dut_cpu_s_per_gb": {
+          "max": 0.8829878589169399,
+          "median": 0.8829878589169399,
+          "min": 0.8829878589169399
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.29424595411813087,
+          "median": 0.29424595411813087,
+          "min": 0.29424595411813087
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.5887419047988091,
+          "median": 0.5887419047988091,
+          "min": 0.5887419047988091
+        },
+        "receiver_gbps": {
+          "max": 10.363974542,
+          "median": 10.363974542,
+          "min": 10.363974542
+        }
+      },
+      "peer-to-dut/tcpv4": {
+        "counter_sums": {
+          "rx_csum_partial": 98,
+          "rx_gro_datagrams": 93,
+          "rx_gro_segments": 2763,
+          "tx_csum_partial": 92
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 2.284468588556907,
+          "median": 2.284468588556907,
+          "min": 2.284468588556907
+        },
+        "dut_system_s_per_gb": {
+          "max": 1.5229790590379382,
+          "median": 1.5229790590379382,
+          "min": 1.5229790590379382
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.7614895295189691,
+          "median": 0.7614895295189691,
+          "min": 0.7614895295189691
+        },
+        "receiver_gbps": {
+          "max": 10.417267685,
+          "median": 10.417267685,
+          "min": 10.417267685
+        },
+        "rx_gro_logical_per_aggregate": 29.70967741935484,
+        "rx_read_calls_per_gb": {
+          "max": 33249.54281878624,
+          "median": 33249.54281878624,
+          "min": 33249.54281878624
+        },
+        "tx_write_calls_per_gb": {
+          "max": 22999.683754348378,
+          "median": 22999.683754348378,
+          "min": 22999.683754348378
+        }
+      }
+    },
+    "id": "tun-vnet-tcpv4-smoke-1",
+    "manifest_sha256": "109ac5513761df51cd5825006514d637c4fa240c83869a3cfe66970bc3e533fa",
+    "ordinary_perf": null,
+    "payload_sha256": "77465f5ba9eb55dfa849fb59cdcc431c59922ccd05b289365cc92e5c9e608698",
+    "snapshot_interference_cpus": {},
+    "tun_flags": {
+      "checksum": [
+        "0x5801"
+      ],
+      "kernel": [
+        "0x1801"
+      ],
+      "tcpv4": [
+        "0x5801"
+      ]
+    },
+    "verified_files": 132
+  },
+  {
+    "arms": 30,
+    "bytes_per_arm": 1000000000,
+    "groups": {
+      "dut-to-peer/checksum": {
+        "counter_sums": {
+          "rx_csum_partial": 1139484,
+          "tx_csum_partial": 3462330
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 2.176201,
+          "median": 2.083299,
+          "min": 2.016051
+        },
+        "dut_system_s_per_gb": {
+          "max": 1.343124,
+          "median": 1.247383,
+          "min": 1.192439
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.839672,
+          "median": 0.833077,
+          "min": 0.823612
+        },
+        "receiver_gbps": {
+          "max": 3.950046766,
+          "median": 3.819570474,
+          "min": 3.656727648
+        },
+        "rx_read_calls_per_gb": {
+          "max": 255229.0,
+          "median": 227216.0,
+          "min": 187348.0
+        },
+        "tx_write_calls_per_gb": {
+          "max": 694210.0,
+          "median": 692484.0,
+          "min": 691256.0
+        }
+      },
+      "dut-to-peer/kernel": {
+        "dut_cpu_s_per_gb": {
+          "max": 0.704576,
+          "median": 0.565808,
+          "min": 0.5498529999999999
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.10693499999999999,
+          "median": 0.076974,
+          "min": 0.064099
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.597641,
+          "median": 0.488834,
+          "min": 0.484462
+        },
+        "receiver_gbps": {
+          "max": 14.338395136,
+          "median": 13.912232818,
+          "min": 11.377170331
+        }
+      },
+      "dut-to-peer/legacy": {
+        "dut_cpu_s_per_gb": {
+          "max": 2.11177,
+          "median": 2.08181,
+          "min": 1.9806279999999998
+        },
+        "dut_system_s_per_gb": {
+          "max": 1.2848600000000001,
+          "median": 1.2731379999999999,
+          "min": 1.171905
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.8269099999999999,
+          "median": 0.824089,
+          "min": 0.795252
+        },
+        "receiver_gbps": {
+          "max": 4.04418614,
+          "median": 3.844729944,
+          "min": 3.795203757
+        },
+        "rx_read_calls_per_gb": {
+          "max": 262647.0,
+          "median": 215975.0,
+          "min": 191855.0
+        },
+        "tx_write_calls_per_gb": {
+          "max": 694278.0,
+          "median": 693092.0,
+          "min": 692212.0
+        }
+      },
+      "peer-to-dut/checksum": {
+        "counter_sums": {
+          "rx_csum_partial": 3453552,
+          "tx_csum_partial": 1729144
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 2.459943,
+          "median": 1.681749,
+          "min": 1.656399
+        },
+        "dut_system_s_per_gb": {
+          "max": 1.433967,
+          "median": 0.9120769999999999,
+          "min": 0.900401
+        },
+        "dut_user_s_per_gb": {
+          "max": 1.025976,
+          "median": 0.7581279999999999,
+          "min": 0.7460629999999999
+        },
+        "receiver_gbps": {
+          "max": 4.840424957,
+          "median": 4.76713608,
+          "min": 3.2579466
+        },
+        "rx_read_calls_per_gb": {
+          "max": 690891.0,
+          "median": 690705.0,
+          "min": 690621.0
+        },
+        "tx_write_calls_per_gb": {
+          "max": 346202.0,
+          "median": 345998.0,
+          "min": 345384.0
+        }
+      },
+      "peer-to-dut/kernel": {
+        "dut_cpu_s_per_gb": {
+          "max": 0.48372499999999996,
+          "median": 0.44019499999999995,
+          "min": 0.43557999999999997
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.06173,
+          "median": 0.058143,
+          "min": 0.049132999999999996
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.42199499999999995,
+          "median": 0.390993,
+          "min": 0.37743699999999997
+        },
+        "receiver_gbps": {
+          "max": 14.451450095,
+          "median": 14.096980735,
+          "min": 13.442058617
+        }
+      },
+      "peer-to-dut/legacy": {
+        "dut_cpu_s_per_gb": {
+          "max": 2.491759,
+          "median": 2.145412,
+          "min": 1.6847309999999998
+        },
+        "dut_system_s_per_gb": {
+          "max": 1.427289,
+          "median": 1.232662,
+          "min": 0.8471069999999999
+        },
+        "dut_user_s_per_gb": {
+          "max": 1.06447,
+          "median": 0.91275,
+          "min": 0.8268679999999999
+        },
+        "receiver_gbps": {
+          "max": 4.758035247,
+          "median": 3.734831694,
+          "min": 3.216177634
+        },
+        "rx_read_calls_per_gb": {
+          "max": 690782.0,
+          "median": 690621.0,
+          "min": 690618.0
+        },
+        "tx_write_calls_per_gb": {
+          "max": 346349.0,
+          "median": 345638.0,
+          "min": 345381.0
+        }
+      }
+    },
+    "id": "tun-checksum-1gb-r5-01",
+    "manifest_sha256": "a8f7b573a45cea06778abd171db8f26fbd7ec4f2a0f3961d47cb4223ff576f63",
+    "ordinary_perf": {
+      "argv": [
+        "perf",
+        "stat",
+        "-e",
+        "task-clock,cycles,instructions",
+        "--",
+        "/usr/bin/true"
+      ],
+      "exit": 1,
+      "paranoid": "4",
+      "version": "perf version 7.0.14"
+    },
+    "payload_sha256": "57c114707df855575bf7f97161237ef9ece1c41ebd58c104b1a344115d707969",
+    "snapshot_interference_cpus": {
+      "15-r3-dut-to-peer-checksum": [
+        10
+      ],
+      "20-r4-peer-to-dut-legacy": [
+        8
+      ],
+      "21-r4-peer-to-dut-kernel": [
+        8
+      ],
+      "22-r4-dut-to-peer-checksum": [
+        8
+      ]
+    },
+    "tun_flags": {
+      "checksum": [
+        "0x5801"
+      ],
+      "kernel": [
+        "0x1801"
+      ],
+      "legacy": [
+        "0x1801"
+      ]
+    },
+    "verified_files": 587
+  },
+  {
+    "arms": 30,
+    "bytes_per_arm": 1000000000,
+    "groups": {
+      "dut-to-peer/checksum": {
+        "counter_sums": {
+          "rx_csum_partial": 1249894,
+          "tx_csum_partial": 3457745
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 2.180822,
+          "median": 2.0986979999999997,
+          "min": 1.9784929999999998
+        },
+        "dut_system_s_per_gb": {
+          "max": 1.333891,
+          "median": 1.2753839999999999,
+          "min": 1.250081
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.846931,
+          "median": 0.806762,
+          "min": 0.703109
+        },
+        "receiver_gbps": {
+          "max": 4.02045903,
+          "median": 3.793474579,
+          "min": 3.648355978
+        },
+        "rx_read_calls_per_gb": {
+          "max": 269259.0,
+          "median": 265161.0,
+          "min": 191609.0
+        },
+        "tx_write_calls_per_gb": {
+          "max": 693970.0,
+          "median": 691001.0,
+          "min": 690748.0
+        }
+      },
+      "dut-to-peer/kernel": {
+        "dut_cpu_s_per_gb": {
+          "max": 0.604249,
+          "median": 0.567298,
+          "min": 0.561793
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.10486899999999999,
+          "median": 0.088046,
+          "min": 0.07594
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.49938,
+          "median": 0.482606,
+          "min": 0.469827
+        },
+        "receiver_gbps": {
+          "max": 14.257839801,
+          "median": 14.062711943,
+          "min": 13.249754873
+        }
+      },
+      "dut-to-peer/tcpv4": {
+        "counter_sums": {
+          "rx_csum_partial": 69248,
+          "tx_csum_partial": 114432,
+          "tx_gso_datagrams": 76409,
+          "tx_gso_segments": 3433276
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 0.713248,
+          "median": 0.693101,
+          "min": 0.686844
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.11361199999999999,
+          "median": 0.111454,
+          "min": 0.09394699999999999
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.601152,
+          "median": 0.5827519999999999,
+          "min": 0.57539
+        },
+        "receiver_gbps": {
+          "max": 11.460682197,
+          "median": 11.332250424,
+          "min": 11.015706342
+        },
+        "rx_read_calls_per_gb": {
+          "max": 19008.0,
+          "median": 18151.0,
+          "min": 15265.0
+        },
+        "tx_gso_logical_per_aggregate": 44.93287439961261,
+        "tx_write_calls_per_gb": {
+          "max": 22907.0,
+          "median": 22889.0,
+          "min": 22855.0
+        }
+      },
+      "peer-to-dut/checksum": {
+        "counter_sums": {
+          "rx_csum_partial": 3453455,
+          "tx_csum_partial": 1727370
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 1.747395,
+          "median": 1.6605279999999998,
+          "min": 1.608766
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.941674,
+          "median": 0.8797499999999999,
+          "min": 0.815753
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.8057209999999999,
+          "median": 0.780778,
+          "min": 0.750683
+        },
+        "receiver_gbps": {
+          "max": 4.984220149,
+          "median": 4.828159476,
+          "min": 4.588213617
+        },
+        "rx_read_calls_per_gb": {
+          "max": 690882.0,
+          "median": 690624.0,
+          "min": 690619.0
+        },
+        "tx_write_calls_per_gb": {
+          "max": 345908.0,
+          "median": 345382.0,
+          "min": 345316.0
+        }
+      },
+      "peer-to-dut/kernel": {
+        "dut_cpu_s_per_gb": {
+          "max": 0.451804,
+          "median": 0.433161,
+          "min": 0.428855
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.071126,
+          "median": 0.045756,
+          "min": 0.04136
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.39285899999999996,
+          "median": 0.387405,
+          "min": 0.38067799999999996
+        },
+        "receiver_gbps": {
+          "max": 14.349309914,
+          "median": 14.209680467,
+          "min": 14.058806183
+        }
+      },
+      "peer-to-dut/tcpv4": {
+        "counter_sums": {
+          "rx_csum_partial": 94788,
+          "rx_gro_datagrams": 93032,
+          "rx_gro_segments": 3467867,
+          "tx_csum_partial": 73050
+        },
+        "dut_cpu_s_per_gb": {
+          "max": 0.586024,
+          "median": 0.536779,
+          "min": 0.5216139999999999
+        },
+        "dut_system_s_per_gb": {
+          "max": 0.102604,
+          "median": 0.090123,
+          "min": 0.073226
+        },
+        "dut_user_s_per_gb": {
+          "max": 0.493863,
+          "median": 0.44838799999999995,
+          "min": 0.43233299999999997
+        },
+        "receiver_gbps": {
+          "max": 14.522408486,
+          "median": 14.226222964,
+          "min": 13.608964838
+        },
+        "rx_gro_logical_per_aggregate": 37.27606629976782,
+        "rx_read_calls_per_gb": {
+          "max": 23340.0,
+          "median": 23055.0,
+          "min": 20891.0
+        },
+        "tx_write_calls_per_gb": {
+          "max": 19038.0,
+          "median": 19018.0,
+          "min": 4634.0
+        }
+      }
+    },
+    "id": "tun-tcpv4-1gb-r5-01",
+    "manifest_sha256": "3eb45928249f48915d3755b58e7368bef923a7d72177a185755d6c7ac46c6982",
+    "ordinary_perf": null,
+    "payload_sha256": "57c114707df855575bf7f97161237ef9ece1c41ebd58c104b1a344115d707969",
+    "snapshot_interference_cpus": {
+      "03-r1-dut-to-peer-tcpv4": [
+        10
+      ],
+      "19-r4-peer-to-dut-tcpv4": [
+        10
+      ],
+      "23-r4-dut-to-peer-checksum": [
+        10
+      ]
+    },
+    "tun_flags": {
+      "checksum": [
+        "0x5801"
+      ],
+      "kernel": [
+        "0x1801"
+      ],
+      "tcpv4": [
+        "0x5801"
+      ]
+    },
+    "verified_files": 596
+  }
+]

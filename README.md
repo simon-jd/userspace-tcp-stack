@@ -13,7 +13,8 @@ comparison. [Protocol design](docs/DESIGN.md) · [Linux interoperability](docs/I
 | M2a and M2b | Loss recovery, delivery-rate sampling, pacing, NewReno and CUBIC complete |
 | M2c and M2d | [BBRv1 paired smoke](docs/RESULTS.md#bbrv1-paired-smoke), [24-cell NewReno/CUBIC/BBRv1 matrix](docs/RESULTS.md#core-matrix), and [multi-flow study](docs/RESULTS.md#multi-flow) complete |
 | M3 | [Valid-wire and receive-stream tests, Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) recorded. The simulator campaign and sustained parser validation remain pending. |
-| M4 and M5 | Pending |
+| M4 | Legacy bulk and 10,000-connection echo measurements, opt-in TUN and direct echo modes, and allocation diagnostics are recorded. [M4 results](docs/RESULTS.md#m4-bulk-tun-and-echo) |
+| M5 | Pending |
 
 The implementation covers the TCP state machine (RFC 9293), timestamps and window scaling
 (RFC 7323), SACK and D-SACK (RFCs 2018 and 2883), RST handling (RFC 5961), retransmission
@@ -109,6 +110,33 @@ bulk=build/gcc-release/apps/utcp-bulk/utcp-bulk
 bulk=build/gcc-release/apps/utcp-bulk/utcp-bulk
 "$bulk" --backend kernel --connect 127.0.0.1:5201 --send --bytes 1Mi --cc cubic
 ```
+
+## Run the M4 functional checks
+
+The userspace backend defaults to legacy framing and one TUN FD.
+With an existing TUN configured with `vnet_hdr`, pass
+`--tun-offload=checksum` for TCP checksum offload or
+`--tun-offload=tcpv4` for TCPv4 checksum and segmentation offload.
+For an existing `multi_queue` TUN, pass `--tun-queues N` (1–64) to
+attach N active FDs to the same device. The live queue comparison
+covers one and two FDs on one event loop. A TCP echo listener uses
+staging by default. Pass `--direct-echo` to enable sending from its
+receive scratch buffer when the connection has no older pending bytes.
+
+From the repository root, build both programs and run the bounded Docker
+checks. The wire check uses an isolated test subnet and saves a capture.
+
+```sh
+cmake --preset gcc-release
+cmake --build --preset gcc-release --target utcp-bulk utcp-echo
+tests/interop/m4_tun_offload.sh
+tests/interop/m4_tun_offload_wire.sh build/m4-tun-wire
+tests/interop/m4_tun_multiqueue.sh
+```
+
+[Read-only VNET replay](docs/results/m4-tun-vnet/README.md#sealed-evidence-and-replay) ·
+[10,000-connection echo and kernel comparison](docs/results/m4-echo-load/README.md) ·
+[Echo copy, C++ allocation and final-mode confirmation](docs/results/m4-copy-allocation/README.md)
 
 ## Run the comparison testbed
 

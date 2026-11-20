@@ -1613,6 +1613,16 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
 
 ## 12. Performance notes for M4
 
+The targets below guided the measurement. See the
+[legacy bulk baseline](results/m4-baseline/README.md),
+[TUN offloads](results/m4-tun-vnet/README.md),
+[multiqueue results](results/m4-tun-multiqueue/README.md),
+[legacy echo load](results/m4-echo-load/pre-copy.md), and
+[echo copy, C++ allocation and final-mode results](results/m4-copy-allocation/README.md).
+The measured TCB size and idle process RSS delta missed their targets.
+C++ allocation counts cover bounded warm process windows. They do not
+establish zero allocations per packet.
+
 1. **Buffer pools**: a 64 KiB packet class for GSO next to the 2 KiB class (`alloc` already takes a size); data
    rings are chunked from M1 (§3.3), M4 tunes the chunk size.
 2. **Batching**: read up to 64 datagrams per wake-up, one `advance` per batch, write all queued packets before

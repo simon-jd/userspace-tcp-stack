@@ -1360,3 +1360,42 @@ The planned fresh Gen6 simulator campaign recorded 0 of 1,000,000 seeds.
 Both launches ended before a counted shard was written. The 2,000 sampled
 serialized replays and independent capture checks remain unexecuted. The
 planned sustained arbitrary-input parser validation also remains unexecuted.
+
+
+## M4 bulk, TUN and echo
+
+- The [legacy bulk baseline](results/m4-baseline/README.md) retained 20
+  paired-comparison 1 GB arms. The stack's median receiver goodput was
+  3.963 Gbit/s as sender and 4.787 Gbit/s as receiver. The corresponding
+  Linux controls reached 8.160 and 8.633 Gbit/s. Process CPU is reported
+  separately from cgroup and host measurements. The ordinary PMU probe
+  was denied.
+- The [VNET study](results/m4-tun-vnet/README.md) retained two 30-arm
+  1 GB comparisons with matched Ethernet features across modes.
+  Checksum-only results varied by direction. In the second comparison,
+  TCPv4 versus checksum reached 11.332 versus 3.793 Gbit/s with the
+  DUT sending and 14.226 versus 4.828 Gbit/s with it receiving. DUT
+  process CPU per GB fell in both directions and remained above Linux.
+- The [multiqueue study](results/m4-tun-multiqueue/README.md) observed
+  traffic on both real FDs of the same device. One Stack and EventLoop
+  served the FDs on one DUT CPU. The paired bulk ranges overlap and
+  the rate-limited echo shows no consistent CPU or goodput benefit.
+- The [legacy 10,000-connection echo](results/m4-echo-load/pre-copy.md)
+  retained five pairs against Linux. Each arm verified 50,000 replies.
+  The 2,208 B TCB and about 3,334 B of idle RSS growth per connection
+  missed the 1 KiB and 2 KiB targets. Active process RSS and its
+  per-connection growth met the measured targets.
+- The [paired echo copy study and allocation diagnostics](results/m4-copy-allocation/README.md)
+  measured zero staging bytes with direct echo versus 3,200,000 B in
+  the staged path. Median active server process CPU rose from 0.25 s
+  to 0.34 s and client p99 from 790.527 µs to 942.079 µs. Both ranges
+  overlapped. The instrumented server counted replaceable C++ allocation
+  calls in bounded warm windows, without establishing zero allocations
+  per packet. The [final selectable-runtime confirmations](results/m4-copy-allocation/final-runtime.json)
+  used one binary for both modes and verified their copy counters and
+  replies. Those confirmations are outside the historical timing rollup.
+
+These are shared-host synthetic workloads. The bulk goodput belongs
+to each receiving endpoint. Echo timings come from the bounded
+uninstrumented comparison windows, and the separate allocation
+windows include application and event-loop work.
