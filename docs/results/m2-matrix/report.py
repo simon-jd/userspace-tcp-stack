@@ -47,7 +47,7 @@ def verdict(metric, left, right, loss):
     )
 
 
-def per_run(summary, diagnostic, controls, impl):
+def per_run(summary, diagnostic, controls, impl, stack_stats):
     metrics = {
         k: summary.get(k)
         for k in (
@@ -63,6 +63,10 @@ def per_run(summary, diagnostic, controls, impl):
             "window_s",
             "data_segs_out",
             "retrans_segs",
+            "time_squeeze",
+            "stack_lateness_max_ns",
+            "stack_blocked_resumes",
+            "stack_tx_batch_max",
         )
     }
     for k in (
@@ -92,6 +96,17 @@ def per_run(summary, diagnostic, controls, impl):
     for cpu, values in summary["cpu"].items():
         for key, v in values.items():
             metrics[f"cpu{cpu}_{key}_jiffies"] = v
+    # The frozen parser records only nonzero local drop deltas in these maps.
+    metrics["local_drop_events"] = sum(summary["local_drops"].values())
+    if stack_stats is not None:
+        metrics["stack_local_drop_events"] = sum(summary["stack_local_drops"].values())
+        for key, value in stack_stats.items():
+            if isinstance(value, (int, float)) and not key.startswith("loop_lateness_bucket_"):
+                metrics["stack_stats_" + key] = int(value) if isinstance(value, bool) else value
+        histogram = audit.matrix.hist_merge([summary["stack_lateness_hist"]])
+        metrics["stack_lateness_p99_bucket_upper_ns"] = audit.matrix.hist_percentile(
+            histogram, 0.99, summary["stack_lateness_max_ns"]
+        )
     return metrics
 
 
@@ -146,7 +161,8 @@ def render(campaign, native, evidence, plot_log, out):
         s = read(campaign / name / "summary.json")
         assert bool(s["valid"]) and s["run"] == name
         bucket = samples[row["algo"], row["cell"], row["impl"]]
-        for key, value in per_run(s, diag[name], network[name], row["impl"]).items():
+        stack_stats = read(campaign / name / "stats.json") if row["impl"] == "utcp" else None
+        for key, value in per_run(s, diag[name], network[name], row["impl"], stack_stats).items():
             xs = bucket[key]
             if isinstance(value, (int, float)):
                 xs.append(value)
@@ -154,9 +170,12 @@ def render(campaign, native, evidence, plot_log, out):
     all_metrics = sorted({metric for group in samples.values() for metric in group})
     wide, gaps, tables = [], [], []
     for algo, title in TITLES.items():
+        paired = []
         tables.extend(
             [
                 f"### {title}",
+                "",
+                f"[All measured metrics for {title}, paired by condition](results/m2-matrix/comparison-{algo}.csv)",
                 "",
                 "| Mbit/s · RTT ms · loss % · queue BDP | Goodput, Mbit/s | Retransmissions, % | Queue delay p50, ms | Queue delay p99, ms | Registered gaps |",
                 "|---|---:|---:|---:|---:|---|",
@@ -220,6 +239,17 @@ def render(campaign, native, evidence, plot_log, out):
                             )
                         row[col] = v
                 wide.append(row)
+            comparison = {"cell": cell}
+            for metric in all_metrics:
+                for side, values in (("utcp", left), ("linux", right)):
+                    observations = values.get(metric, [])
+                    if observations:
+                        comparison[f"{metric}_{side}"] = (
+                            f"{statistics.median(observations)} [{min(observations)}, {max(observations)}]"
+                        )
+                    else:
+                        comparison[f"{metric}_{side}"] = ""
+            paired.append(comparison)
             transient = native_cells[algo, cell, "utcp"]["transient"] == "1"
             label = " · ".join(cell.split("-"))
             name = f"[{label}](results/m2-matrix/plots/{cell}-{algo}.png)" + (
@@ -235,6 +265,7 @@ def render(campaign, native, evidence, plot_log, out):
                 "| " + " | ".join([name, *measures, ", ".join(names) or "None"]) + " |"
             )
         tables.append("")
+        audit.write_csv(out / f"comparison-{algo}.csv", paired[0].keys(), paired)
     audit.write_csv(out / "all-metrics.csv", wide[0].keys(), wide)
     audit.write_csv(
         out / "gap-verdicts.csv",
