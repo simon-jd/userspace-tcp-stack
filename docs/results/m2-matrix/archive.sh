@@ -29,9 +29,9 @@ python3 -IB "$docs/replay_captures.py" "$full" "$stage/full-physical/capture-rep
 diff -qr "$stage/physical" "$stage/full-physical"
 python3 -IB "$docs/loss_replay.py" extract "$full" "$stage/observed/evidence.csv" "$stage/full-loss-inputs"
 diff -qr "$stage/wire-loss-inputs" "$stage/full-loss-inputs"
-python3 -IB "$docs/bbr_queue.py" report "$camp" "$stage/shallow-queue"
-python3 -IB "$docs/bbr_queue.py" project "$camp" "$stage/wire-queue-inputs"
-python3 -IB "$docs/bbr_queue.py" project "$full" "$stage/full-wire-queue-inputs"
+python3 -IB "$docs/bbr_queue.py" report "$camp" "$stage/shallow-queue" --all-cells
+python3 -IB "$docs/bbr_queue.py" project "$camp" "$stage/wire-queue-inputs" --all-cells
+python3 -IB "$docs/bbr_queue.py" project "$full" "$stage/full-wire-queue-inputs" --all-cells
 diff -qr "$stage/wire-queue-inputs" "$stage/full-wire-queue-inputs"
 python3 -IB "$docs/compact.py" "$camp" "$stage/compact.tar.gz" --physical "$stage/physical" --source-manifest "$stage/full-restore/manifest/raw.sha256" --loss-inputs "$stage/wire-loss-inputs" --queue-inputs "$stage/wire-queue-inputs"
 csum=$(sha256sum "$stage/compact.tar.gz" | cut -d' ' -f1)
@@ -49,7 +49,7 @@ python3 -IB "$docs/audit.py" "$small" "$stage/replayed"
 diff -qr "$stage/observed" "$stage/replayed"
 python3 -IB "$docs/loss_replay.py" report "$small" "$small/wire-loss-inputs" "$stage/small-wire-report"
 diff -qr "$stage/wire-report" "$stage/small-wire-report"
-python3 -IB "$docs/bbr_queue.py" report "$small" "$stage/small-shallow-queue" --projected "$small/wire-queue-inputs"
+python3 -IB "$docs/bbr_queue.py" report "$small" "$stage/small-shallow-queue" --projected "$small/wire-queue-inputs" --all-cells
 diff -qr "$stage/shallow-queue" "$stage/small-shallow-queue"
 python3 -IB "$tools/plot.py" "$small" "$stage/compact-plots" >"$stage/compact-plots.log"
 diff -qr "$stage/plots" "$stage/compact-plots"

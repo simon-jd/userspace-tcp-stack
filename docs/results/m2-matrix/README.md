@@ -63,7 +63,7 @@ camp="$work/m2-matrix"
 (cd "$camp" && sha256sum --quiet -c MANIFEST.sha256)
 python3 -IB "$res/audit.py" "$camp" "$work/observed"
 python3 -IB "$res/loss_replay.py" report "$camp" "$camp/wire-loss-inputs" "$work/wire-report"
-python3 -IB "$res/bbr_queue.py" report "$camp" "$work/shallow-queue" --projected "$camp/wire-queue-inputs"
+python3 -IB "$res/bbr_queue.py" report "$camp" "$work/shallow-queue" --projected "$camp/wire-queue-inputs" --all-cells
 python3 -IB /utcp/tools/m2/plot.py "$camp" "$work/plots" > "$work/plot-selection.log"
 python3 -IB "$res/report.py" "$camp" "$work/native" "$work/observed" \
   "$work/plot-selection.log" "$work/report"
@@ -85,8 +85,8 @@ python3 -IB "$res/replay_captures.py" "$full" "$work/fresh-physical/capture-repl
 diff -qr "$work/fresh-physical" "$camp/physical-replay"
 python3 -IB "$res/loss_replay.py" extract "$full" "$res/evidence.csv" "$work/fresh-wire-inputs"
 diff -qr "$work/fresh-wire-inputs" "$camp/wire-loss-inputs"
-python3 -IB "$res/bbr_queue.py" project "$full" "$work/fresh-wire-queue"
+python3 -IB "$res/bbr_queue.py" project "$full" "$work/fresh-wire-queue" --all-cells
 diff -qr "$work/fresh-wire-queue" "$camp/wire-queue-inputs"
-python3 -IB "$res/bbr_queue.py" report "$full" "$work/fresh-shallow-queue"
+python3 -IB "$res/bbr_queue.py" report "$full" "$work/fresh-shallow-queue" --all-cells
 diff -qr "$work/fresh-shallow-queue" "$work/shallow-queue"
 ```

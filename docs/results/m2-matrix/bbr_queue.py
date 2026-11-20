@@ -18,9 +18,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from audit import preregistered
 
 FACES = ("r1-in", "r2-out")
-NAMES = tuple(
-    f"10-20-0-0.5-bbr-r{rep}-{impl}" for rep in range(5) for impl in ("linux", "utcp")
-)
+ZERO_LOSS = "10-20-0-0.5"
+PREFIXES = {ZERO_LOSS: "bbr-shallow", "10-20-0.1-0.5": "bbr-shallow-loss"}
+
+
+def registered_names(cell):
+    return tuple(
+        f"{cell}-bbr-r{rep}-{impl}" for rep in range(5) for impl in ("linux", "utcp")
+    )
+
+
 C = collections.Counter
 
 
@@ -29,7 +36,7 @@ def digest(path):
         return hashlib.file_digest(src, "sha256").hexdigest()
 
 
-def packets(path, dest):
+def packets(path, dest, controls=None):
     items, addresses, ports = [], set(), set()
     syn = set()
     with path.open("rb") as f:
@@ -50,9 +57,17 @@ def packets(path, dest):
             sec, sub, cap, wire = struct.unpack(endian + "IIII", h)
             b = f.read(cap)
             records += 1
-            if b[12:14] != b"\x08\x00" or b[23] != 6 or b[30:34] != dest:
+            if b[12:14] != b"\x08\x00" or b[30:34] != dest:
                 continue
             tcp = 14 + (b[14] & 15) * 4
+            timestamp = sec * 10**9 + sub * scale
+            if b[23] != 6:
+                if controls is not None and b[23] == 1 and b[tcp] == 8:
+                    assert tcp + 8 <= len(b)
+                    controls.append(
+                        (timestamp, ("echo_request", b[18:20], b[tcp : tcp + 8]))
+                    )
+                continue
             sport, dport, seq, ack = struct.unpack_from("!HHII", b, tcp)
             if dport != 5201:
                 continue
@@ -62,9 +77,21 @@ def packets(path, dest):
                 syn.add(seq)
             hdr = (b[tcp + 12] >> 4) * 4
             length = int.from_bytes(b[16:18], "big") - (tcp - 14) - hdr
-            if length <= 0:
+            assert length >= 0 and hdr + tcp <= len(b)
+            if not length:
+                if controls is not None:
+                    controls.append(
+                        (
+                            timestamp,
+                            (
+                                "tcp_control",
+                                b[18:20],
+                                b[tcp : tcp + 16],
+                                b[tcp + 18 : tcp + hdr],
+                            ),
+                        )
+                    )
                 continue
-            assert hdr + tcp <= len(b)
             # Transport checksum, L2 and router-dependent IPv4 fields excluded.
             key = (
                 seq,
@@ -112,9 +139,9 @@ def lerp(x, y, t):
     return y[i - 1] + (y[i] - y[i - 1]) * (t - x[i - 1]) / (x[i] - x[i - 1])
 
 
-def check_schedule(campaign):
+def check_schedule(campaign, names):
     planned = preregistered(campaign)
-    for name in NAMES:
+    for name in names:
         meta = json.loads((campaign / name / "meta.json").read_text())
         spec = planned[name]
         for key in (
@@ -133,11 +160,12 @@ def check_schedule(campaign):
                 raise ValueError(f"{name} differs from the registered {key}")
 
 
-def project(campaign, destination):
+def project(campaign, destination, cells=(ZERO_LOSS,)):
     """Store packet times and exact fingerprint equivalence classes without headers or payload."""
-    check_schedule(campaign)
+    names = [n for cell in cells for n in registered_names(cell)]
+    check_schedule(campaign, names)
     destination.mkdir(exist_ok=False)
-    for name in NAMES:
+    for name in names:
         directory = campaign / name
         target = ipaddress.IPv4Address(
             json.loads((directory / "meta.json").read_text())["rcv_ip"]
@@ -146,13 +174,19 @@ def project(campaign, destination):
         projection = {}
         for face in FACES:
             path = directory / (face + ".pcap")
-            packets_seen, header = packets(path, target)
+            control_rows = [] if not name.startswith(ZERO_LOSS + "-") else None
+            packets_seen, header = packets(path, target, control_rows)
             rows = []
             for timestamp, fingerprint in packets_seen:
                 key = classes.setdefault(fingerprint, len(classes))
                 seq, length = fingerprint[:2]
                 rows.append((timestamp, seq, length, key))
             projection[face] = dict(header=header, rows=rows, sha256=digest(path))
+            if control_rows is not None:
+                projection[face]["controls"] = [
+                    (t, k[0], classes.setdefault(k, len(classes)))
+                    for t, k in control_rows
+                ]
         with (destination / (name + ".json.gz")).open("xb") as raw:
             with gzip.GzipFile(
                 filename="", fileobj=raw, mode="wb", mtime=0, compresslevel=1
@@ -217,6 +251,26 @@ def validate_capture_accounting(text, physical_packets, face):
         )
 
 
+def control_accounting(upstream, downstream, precision, lo, hi):
+    result = {}
+    for kind in ("echo_request", "tcp_control"):
+        a = [(t, k) for t, k in upstream if k[0] == kind]
+        b = [(t, k) for t, k in downstream if k[0] == kind]
+        before = C(k for t, k in a)
+        after = C(k for t, k in b)
+        if after - before or any(0 < after[k] < n for k, n in before.items()):
+            raise ValueError(f"ambiguous or unmatched downstream {kind}")
+        validate_forward_times(a, b, precision)
+        missing = [t for t, k in a if k not in after]
+        result[kind] = dict(
+            ingress=len(a),
+            downstream=len(b),
+            missing=len(missing),
+            primary_missing=sum(lo <= t < hi for t in missing),
+        )
+    return result
+
+
 def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
     meta = json.loads((p / "meta.json").read_text())
     summ = json.loads((p / "summary.json").read_text())
@@ -227,6 +281,8 @@ def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
     lo = summ["t0_ns"] + 5_000_000_000 + off
     hi = summ["window_end_ns"] + off
     dest = ipaddress.IPv4Address(meta["rcv_ip"]).packed
+    check_controls = meta.get("cell") == "10-20-0.1-0.5"
+    controls = [[], []] if check_controls else [None, None]
     if projected:
         with gzip.open(projected / (p.name + ".json.gz"), "rt") as stream:
             compact = json.load(stream)
@@ -241,9 +297,14 @@ def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
                 )
             )
         (a, ah), (b, bh) = views
+        if check_controls:
+            controls = [
+                [(t, (kind, key)) for t, kind, key in compact[f]["controls"]]
+                for f in FACES
+            ]
     else:
-        a, ah = packets(p / "r1-in.pcap", dest)
-        b, bh = packets(p / "r2-out.pcap", dest)
+        a, ah = packets(p / "r1-in.pcap", dest, controls[0])
+        b, bh = packets(p / "r2-out.pcap", dest, controls[1])
     for k in ("sport", "isn"):
         assert ah[k] == bh[k]
     for face, head in [("r1-in", ah), ("r2-out", bh)]:
@@ -368,7 +429,7 @@ def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
         inputs.append("trace.jsonl")
     for head in (ah, bh):
         del head["isn"]
-    return dict(
+    result = dict(
         data_segments_socket=ds,
         retrans_segments_socket=rs,
         primary_payload_bytes=payload_hist,
@@ -404,22 +465,39 @@ def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
         },
     )
 
+    if check_controls:
+        result["forward_controls"] = control_accounting(
+            *controls, bh["resolution_ns"], lo, hi
+        )
+        result["qdisc_unaccounted"] = (
+            sum(delta.values())
+            - sum(absent)
+            - sum(v["missing"] for v in result["forward_controls"].values())
+        )
+    return result
 
-def report(campaign, out, projected=None):
-    check_schedule(campaign)
+
+def report(campaign, out, projected=None, cells=(ZERO_LOSS,)):
+    check_schedule(campaign, [n for cell in cells for n in registered_names(cell)])
     source_hashes = {}
     if projected:
         for line in (campaign / "source-manifest.sha256").read_text().splitlines():
             sha, name = line.split("  ", 1)
             source_hashes[name] = sha
+    out.mkdir(exist_ok=False)
+    for cell in cells:
+        cell_report(campaign, out, cell, projected, source_hashes)
+
+
+def cell_report(campaign, out, cell, projected, source_hashes):
+    prefix = PREFIXES[cell]
     doublet_counts = {}
     result = [
         analyze(campaign / name, projected, source_hashes, doublet_counts)
-        for name in NAMES
+        for name in registered_names(cell)
     ]
     assert all(a["seed"] == b["seed"] for a, b in zip(result[::2], result[1::2]))
-    out.mkdir(exist_ok=False)
-    (out / "bbr-shallow-packet-replay.json").write_text(
+    (out / (prefix + "-packet-replay.json")).write_text(
         json.dumps(result, sort_keys=True, indent=1) + "\n"
     )
     rows = []
@@ -451,7 +529,32 @@ def report(campaign, out, projected=None):
                 lifetime_netem_drops=d["lifetime_counter_delta"]["netem"],
             )
         )
-    with (out / "bbr-shallow-pairs.csv").open("x", newline="") as stream:
+    if cell != ZERO_LOSS:
+        for linux, stack in zip(rows[::2], rows[1::2]):
+            lr, sr = result[2 * linux["rep"] : 2 * linux["rep"] + 2]
+            excess = (stack["first_missing"] + stack["repeat_missing"]) - (
+                linux["first_missing"] + linux["repeat_missing"]
+            )
+            complete = not lr["qdisc_unaccounted"] and not sr["qdisc_unaccounted"]
+            for row, record in ((linux, lr), (stack, sr)):
+                row.update(
+                    qdisc_unaccounted=record["qdisc_unaccounted"],
+                    lifetime_missing_echo=record["forward_controls"]["echo_request"][
+                        "missing"
+                    ],
+                    primary_missing_echo=record["forward_controls"]["echo_request"][
+                        "primary_missing"
+                    ],
+                    lifetime_missing_tcp_control=record["forward_controls"][
+                        "tcp_control"
+                    ]["missing"],
+                    pair_primary_data_missing_excess=excess,
+                    pair_primary_tbf_excess_lower_bound=excess
+                    - stack["lifetime_netem_drops"]
+                    if complete
+                    else None,
+                )
+    with (out / (prefix + "-pairs.csv")).open("x", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
@@ -464,10 +567,12 @@ if __name__ == "__main__":
         action = sub.add_parser(cmd)
         action.add_argument("campaign", type=Path)
         action.add_argument("output", type=Path)
+        action.add_argument("--all-cells", action="store_true")
         if cmd == "report":
             action.add_argument("--projected", type=Path)
     args = parser.parse_args()
+    cells = tuple(PREFIXES) if args.all_cells else (ZERO_LOSS,)
     if args.command == "project":
-        project(args.campaign, args.output)
+        project(args.campaign, args.output, cells)
     else:
-        report(args.campaign, args.output, args.projected)
+        report(args.campaign, args.output, args.projected, cells)

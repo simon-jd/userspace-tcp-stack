@@ -203,6 +203,27 @@ class PairedCaptureBoundaries(unittest.TestCase):
                 bbr_queue.report(root, root / "out")
             self.assertFalse((root / "out").exists())
 
+    def test_control_accounting_respects_kind_causality_and_exact_ingress_boundary(
+        self,
+    ):
+        a = [
+            (5, ("echo_request", 1)),
+            (10, ("echo_request", 2)),
+            (20, ("echo_request", 3)),
+            (11, ("tcp_control", 4)),
+        ]
+        b = [(6, ("echo_request", 1)), (14, ("tcp_control", 4))]
+        found = bbr_queue.control_accounting(a, b, 1, 10, 20)
+        self.assertEqual(
+            found["echo_request"],
+            dict(ingress=3, downstream=1, missing=2, primary_missing=1),
+        )
+        self.assertEqual(found["tcp_control"]["missing"], 0)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            bbr_queue.control_accounting(a + [(6, ("echo_request", 1))], b, 1, 10, 20)
+        with self.assertRaisesRegex(ValueError, "precedes"):
+            bbr_queue.control_accounting(a, [(4, ("echo_request", 1))], 1, 10, 20)
+
     def test_capture_attribution_requires_filter_physical_and_kernel_accounting(self):
         template = "{} packets captured\n{} packets received by filter\n{} packets dropped by kernel\n"
         bbr_queue.validate_capture_accounting(template.format(3, 3, 0), 3, "r2-out")
