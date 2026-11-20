@@ -80,6 +80,21 @@ class TopologyTest(unittest.TestCase):
         self.assertEqual(tun_features(0x5901), ["vnet_hdr", "multi_queue"])
 
 
+class ControllerTest(unittest.TestCase):
+    def test_invoke_does_not_consume_parent_standard_input(self):
+        code = (
+            "import sys; sys.path.insert(0, sys.argv[1]); from run import invoke; "
+            "n = invoke(sys.executable, '-c', "
+            "'import sys; print(len(sys.stdin.buffer.read()))'); print(n.stdout.decode().strip()); "
+            "print(sys.stdin.read().strip())"
+        )
+        run = subprocess.run(
+            [sys.executable, "-c", code, str(Path(__file__).parent)],
+            input="parent command input\n", capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(run.stdout, "0\nparent command input\n")
+
+
 class EndpointTest(unittest.TestCase):
     def run_endpoint(self, *arguments):
         with tempfile.TemporaryDirectory() as path:

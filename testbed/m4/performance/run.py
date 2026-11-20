@@ -30,7 +30,8 @@ FIXED_OPTIONS = {"--backend", "--listen", "--connect", "--send", "--recv", "--by
 
 
 def invoke(*argv, check=True, stdin=None, timeout=30):
-    result = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    result = subprocess.run(argv, input=b"" if stdin is None else stdin,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=timeout, check=False)
     if check and result.returncode:
         diagnostic = result.stderr.decode(errors="replace").strip()
@@ -137,7 +138,8 @@ class Campaign:
 
     def docker_exec(self, role, *argv, **kwargs):
         name = self.store if role == "data" else self.containers[role]
-        return invoke("docker", "exec", "-i", name, *argv, **kwargs)
+        options = ("-i",) if kwargs.get("stdin") is not None else ()
+        return invoke("docker", "exec", *options, name, *argv, **kwargs)
 
     def put(self, path, data):
         self.docker_exec("data", "tee", f"{self.directory}/{path}", stdin=data)
@@ -302,11 +304,13 @@ class Campaign:
         children = {}
         diagnostics = {}
         try:
-            children["recv"] = subprocess.Popen(recv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            children["recv"] = subprocess.Popen(recv, stdin=subprocess.DEVNULL,
+                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.wait_listener(children["recv"], arm)
             if capture_tun and dut_role == "recv":
                 self.record_active_tun(arm)
-            children["send"] = subprocess.Popen(send, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            children["send"] = subprocess.Popen(send, stdin=subprocess.DEVNULL,
+                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if capture_tun and dut_role == "send":
                 time.sleep(0.1)
                 self.record_active_tun(arm)
