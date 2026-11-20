@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -34,7 +35,10 @@ def exercise(client, control, listener, corrupt):
         selector.register(client.stdout, selectors.EVENT_READ)
 
         def wait_for(phase):
-            while selector.select(timeout=5):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if not selector.select(timeout=max(0, deadline - time.monotonic())):
+                    break
                 raw = client.stdout.readline()
                 assert raw, f"client ended before phase {phase}"
                 event = json.loads(raw)

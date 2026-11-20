@@ -210,9 +210,13 @@ void EchoClient::advance_load() {
       load_phase_ = LoadPhase::active;
       start_ = t_.now();
       start_rate();
-      for (const auto& [id, c] : conns_) {
-        begin_request(id);
+      // Populate the queue before the first send. A send failure can abort
+      // the load and clear the connection map.
+      for (auto& [id, c] : conns_) {
+        c.waiting = true;
+        waiting_.push_back(id);
       }
+      refill(start_);
       break;
     case LoadPhase::drained:
       for (const auto& [id, c] : conns_) {
@@ -296,7 +300,7 @@ void EchoClient::refill(Time now) {
   const std::uint64_t add = o_.rate * static_cast<std::uint64_t>(elapsed) / 1'000'000;
   const std::uint64_t cap = std::max<std::uint64_t>(o_.concurrency, 1) * 1000;
   tokens_milli_ = std::min(cap, tokens_milli_ + add);
-  while (tokens_milli_ >= 1000 && !waiting_.empty()) {
+  while (!done_ && tokens_milli_ >= 1000 && !waiting_.empty()) {
     const ConnId id = waiting_.front();
     waiting_.pop_front();
     if (conns_.contains(id) && conns_.at(id).waiting) {

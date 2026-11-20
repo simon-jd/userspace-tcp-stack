@@ -134,6 +134,32 @@ TEST(EchoTcp, RateLimitSpacesRequestStarts) {
   EXPECT_LE(t.now() - t0, std::chrono::milliseconds(420));
 }
 
+TEST(EchoTcp, FailedFirstSendDuringLoadActivationAbortsAllConnections) {
+  FakeTransport t;
+  EchoServer server(t, {.local = server_ep});
+  ASSERT_TRUE(server.start());
+  EchoClient client(t, {.remote = client_target, .connections = 2, .concurrency = 2,
+                        .rate = 100, .open_batch = 2});
+  ASSERT_TRUE(client.start());
+  client.advance_load();
+  Mux mux(server, client, [&](ConnId id) { return server.owns(id); });
+  t.add_oneshot(std::chrono::milliseconds(3), [&] { t.stop(); });
+  t.run(mux);
+  ASSERT_EQ(client.load_phase(), LoadPhase::idle);
+  ASSERT_EQ(server.open_connections(), 2u);
+
+  // The first client is id 2, following the listener. Record its failure
+  // before the callback is delivered, so the first send sees it synchronously.
+  t.inject_error(2, Error::connection_reset);
+  client.advance_load();
+  EXPECT_TRUE(client.done());
+  EXPECT_FALSE(client.result().ok);
+  EXPECT_EQ(client.result().requests_ok, 0u);
+  EXPECT_EQ(client.result().errors, 2u);
+  EXPECT_FALSE(client.owns(2));
+  EXPECT_EQ(t.open_count(), 3u);  // listener and the two server-side handles
+}
+
 TEST(EchoTcp, RefusedConnectionsAreErrors) {
   FakeTransport t;
   EchoClient client(t, {.remote = client_target, .connections = 3});
