@@ -7,6 +7,22 @@ dest=/store/m2/archive
 docs=/utcp/docs/results/m2-matrix
 verify=/utcp/docs/results/m2-checkpoint/verify
 tools=/utcp/tools/m2
+# An archive must carry the exact acquisition and calibration provenance used by the run.
+evidence="$camp/acquisition"
+for receipt in freeze.json gate-slot0.json gate-slot1.json cubic-proof.json; do
+    cmp "$evidence/$receipt" "/utcp/docs/results/m2-bbr/$receipt"
+done
+cmp "$evidence/plan.toml" "$docs/plan.toml"
+for receipt in session.log host-during-measurement.txt launch.sh run.log up-s0.log up-s1.log; do
+    test -s "$evidence/$receipt"
+done
+for slot in 0 1; do test -f "$evidence/down-s$slot.log"; done
+test "$(cat "$evidence/session.status" "$evidence/run.status")" = $'0\n0'
+(cd "$evidence" && sha256sum -c - <<'SUMS'
+18be22c23775f69ad508fcaf26cd21fd87d3f19f36488842c21e2d8972a95d23  expansion.jsonl
+9a418b50e2d15530ceb9fe429467498bf5c177e6b93609d81b24258af02661ba  plan.toml
+SUMS
+)
 stage=$(mktemp -d "$dest/m2d-matrix-verification.XXXXXXXX")
 export TMPDIR="$stage" MPLCONFIGDIR="$stage/matplotlib" PYTHONDONTWRITEBYTECODE=1 LC_ALL=C
 echo "working in $stage"
