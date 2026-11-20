@@ -133,7 +133,7 @@ void EchoServer::service(ConnId id) {
       continue;
     }
     auto received = std::span<const std::byte>(buf_).first(*r);
-    if (c.pending.empty()) {
+    if (o_.direct_echo && c.pending.empty()) {
       // send() consumes the accepted prefix synchronously. Only an unsent
       // tail needs to survive reuse of the shared receive scratch buffer.
       auto sent = t_.send(id, received);
@@ -574,6 +574,7 @@ void add_options(CliParser& p) {
       .flag("udp", "server: UDP echo instead of TCP")
       .option("backlog", "N", "server: requested TCP listen backlog", "4096")
       .flag("load-report", "emit periodic TCP connection and buffer counts as JSON lines")
+      .flag("direct-echo", "TCP server: send directly from receive scratch when possible")
       .option("load-control", "DIR", "client: hold all connections, advancing on open/active/close files")
       .option("open-batch", "N", "gated client: maximum outstanding handshakes", "32")
       .option("connect", "IP:PORT", "client: connect to IP:PORT")
@@ -667,6 +668,10 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     return die("give exactly one of --listen and --connect");
   }
   const bool load_report = args->flag("load-report");
+  const bool direct_echo = args->flag("direct-echo");
+  if (direct_echo && (!listen || args->flag("udp"))) {
+    return die("--direct-echo requires a TCP listener");
+  }
   const auto control_dir = args->get("load-control");
   if ((control_dir && !connect) || (connect && load_report != control_dir.has_value()) ||
       (load_report && args->flag("udp"))) {
@@ -685,6 +690,7 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     if (!ep) return die("--listen: " + ep.error());
     so.local = *ep;
     so.udp = args->flag("udp");
+    so.direct_echo = direct_echo;
     so.sock = sock;
     auto backlog = get_u64(*args, "backlog");
     if (!backlog || *backlog == 0 || *backlog > std::numeric_limits<int>::max()) {

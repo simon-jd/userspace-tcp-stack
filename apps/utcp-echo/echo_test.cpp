@@ -69,9 +69,24 @@ TEST(EchoTcp, ManyConnectionsAllRequestsVerified) {
   }
 }
 
-TEST(EchoTcp, WritablePeerReceivesEchoWithoutStaging) {
+TEST(EchoTcp, WritablePeerStagesByDefault) {
   FakeTransport t;
   EchoServer server(t, {.local = server_ep});
+  ASSERT_TRUE(server.start());
+  EchoClient client(t, {.remote = client_target, .size = 64, .count = 3});
+  ASSERT_TRUE(client.start());
+  Mux mux(server, client, [&](ConnId id) { return server.owns(id); });
+  t.run(mux);
+  ASSERT_TRUE(client.result().ok) << client.result().first_error;
+  EXPECT_EQ(client.result().bytes, 192u);
+  EXPECT_EQ(server.stats().bytes, 192u);
+  EXPECT_EQ(server.stats().staged_bytes, 192u);
+  EXPECT_EQ(server.stats().stage_appends, 3u);
+}
+
+TEST(EchoTcp, WritablePeerReceivesEchoWithoutStaging) {
+  FakeTransport t;
+  EchoServer server(t, {.local = server_ep, .direct_echo = true});
   ASSERT_TRUE(server.start());
   EchoClient client(t, {.remote = client_target, .size = 64, .count = 3});
   ASSERT_TRUE(client.start());
@@ -86,7 +101,7 @@ TEST(EchoTcp, WritablePeerReceivesEchoWithoutStaging) {
 
 TEST(EchoTcp, ShortWriteStagesOnlyTheTailAndFinFollowsIt) {
   FakeTransport t({.rcv_buf = 128});
-  EchoServer server(t, {.local = server_ep});
+  EchoServer server(t, {.local = server_ep, .direct_echo = true});
   ASSERT_TRUE(server.start());
   auto peer = t.connect(client_target, {});
   ASSERT_TRUE(peer);
@@ -114,6 +129,38 @@ TEST(EchoTcp, ShortWriteStagesOnlyTheTailAndFinFollowsIt) {
   EXPECT_EQ(received, first + second);
   EXPECT_EQ(t.recv(*peer, out), 0u);
   EXPECT_EQ(server.stats().bytes, 176u);
+  EXPECT_EQ(server.stats().errors, 0u);
+  EXPECT_EQ(server.open_connections(), 0u);
+}
+
+TEST(EchoTcp, BlockedSendResumesReadingOnWritable) {
+  FakeTransport t({.rcv_buf = 128});
+  EchoServer server(t, {.local = server_ep, .max_pending = 48, .direct_echo = true});
+  ASSERT_TRUE(server.start());
+  auto peer = t.connect(client_target, {});
+  ASSERT_TRUE(peer);
+  Handler handler;
+  Mux mux(server, handler, [&](ConnId id) { return server.owns(id); });
+  t.run(mux);
+
+  const std::string first(128, 'a'), second(48, 'b'), third(32, 'c');
+  for (const auto* payload : {&first, &second, &third}) {
+    ASSERT_EQ(t.send(*peer, std::as_bytes(std::span(*payload))), payload->size());
+    t.run(mux);
+  }
+  t.shutdown_write(*peer);
+  t.run(mux);
+  EXPECT_EQ(server.stats().bytes, 128u);
+  EXPECT_EQ(server.stats().staged_bytes, 48u);
+
+  std::string received(208, '\0');
+  auto out = std::as_writable_bytes(std::span(received));
+  ASSERT_EQ(t.recv(*peer, out.first(128)), 128u);
+  t.run(mux);
+  ASSERT_EQ(t.recv(*peer, out.subspan(128)), 80u);
+  EXPECT_EQ(received, first + second + third);
+  EXPECT_EQ(t.recv(*peer, out), 0u);
+  EXPECT_EQ(server.stats().staged_bytes, 48u);
   EXPECT_EQ(server.stats().errors, 0u);
   EXPECT_EQ(server.open_connections(), 0u);
 }

@@ -298,6 +298,8 @@ class Trial:
                 server_extra += ["--tun-offload", a.offload]
             else:
                 require(a.offload == "legacy", "binary has no --tun-offload option")
+        if a.direct_echo:
+            server_extra.append("--direct-echo")
         common = ["--load-report", "--cc", "cubic", "--nodelay"]
         self.launch("server", "--backend", a.backend, "--listen", f"{STACK_IP}:{PORT}",
                     "--backlog", str(a.backlog), *common, *server_extra)
@@ -477,6 +479,7 @@ def arguments():
     parser.add_argument("--image", default=os.environ.get("UTCP_IMAGE", "utcp-testbed:dev"))
     parser.add_argument("--binary", default="build/gcc-release/apps/utcp-echo/utcp-echo")
     parser.add_argument("--binary-source", help="full source SHA for a separately built server")
+    parser.add_argument("--direct-echo", action="store_true", help="select the server's direct echo path")
     parser.add_argument("--client-binary", help="optional separate kernel client, under this checkout")
     parser.add_argument("--client-source", help="full source SHA for the separate kernel client")
     parser.add_argument("--allocation-counter", help="functional server only, path to the preload library")

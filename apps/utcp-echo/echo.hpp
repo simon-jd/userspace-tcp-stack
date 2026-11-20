@@ -41,6 +41,7 @@ struct ServerOptions {
   TcpSocketOptions sock{};
   std::uint32_t backlog = 4096;
   std::size_t max_pending = 1024 * 1024;  // unsent bytes per connection
+  bool direct_echo = false;
 };
 
 struct ServerStats {
