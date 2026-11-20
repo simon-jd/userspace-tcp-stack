@@ -358,7 +358,9 @@ struct StackConfig {
   TcpConfig tcp = tcp_config(ProfileId::linux_compat); UdpConfig udp; IcmpConfig icmp;
   std::uint32_t pool_buffers = 4096, tx_queue_packets = 1024, max_connections = 65536, chunk_limit = 1u << 20;
   std::uint32_t trace_mask = 0;                     // §10.2
-  std::uint16_t tx_headroom = 0;                    // M4: the backend reserves room for virtio_net_hdr
+  std::uint16_t tx_headroom = 0;                     // room for the backend's prefix
+  bool tcp_checksum_offload = false;                // emit partial TCP checksums
+  std::uint32_t tcp_gso_buffers = 0;                 // 64 KiB TX buffers, requires TCP checksum offload
   bool assert_time_monotonic = false;               // §3.4 item 4; on in the simulator
   RecoveryScript* test_recovery_script = nullptr;   // tests only: LossRecovery's hooks ask it first (§5.1)
 };
