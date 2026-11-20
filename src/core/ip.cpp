@@ -78,6 +78,17 @@ void ip_input(StackImpl& s, std::span<const std::byte> datagram, RxMeta meta) {
         ++st.TcpInErrs;
         return;
       }
+      if (meta.gso_size != 0) {
+        // Control flags other than a final PSH/FIN have no valid TCPv4
+        // segmentation here. Aggregate checksums require verified metadata.
+        constexpr std::uint16_t allowed = wire::tcp_ack | wire::tcp_psh | wire::tcp_fin;
+        if (verify || seg->payload.size() <= meta.gso_size ||
+            (seg->h.flags & ~allowed) != 0 || (seg->h.flags & wire::tcp_ack) == 0) {
+          ++st.TcpInErrs;
+          return;
+        }
+        st.TcpInSegs += meta.segments(seg->payload.size()) - 1;
+      }
       s.tcp.on_segment(core.now(), ip.h, *seg, meta);
       return;
     }
@@ -89,7 +100,8 @@ void ip_input(StackImpl& s, std::span<const std::byte> datagram, RxMeta meta) {
 }
 
 bool StackCore::send_ipv4(Ipv4Addr dst, std::uint8_t proto, std::uint16_t ip_id, PacketBuf&& l4,
-                          std::optional<std::uint32_t> owner_slot) {
+                          std::optional<std::uint32_t> owner_slot, std::uint16_t gso_size,
+                          bool csum_partial) {
   PacketBuf buf = std::move(l4);
   UTCP_CHECK(buf.valid());
   if (txq_.full()) {
@@ -99,7 +111,17 @@ bool StackCore::send_ipv4(Ipv4Addr dst, std::uint8_t proto, std::uint16_t ip_id,
   const std::size_t total = buf.size() + wire::ipv4_header_len;
   // §1.2: DF on every datagram, never larger than the path MTU (the
   // producers check; the interface MTU bounds every path).
-  UTCP_DCHECK(total <= cfg_.mtu);
+  std::uint32_t segments = 1;
+  if (gso_size == 0) {
+    UTCP_DCHECK(total <= cfg_.mtu);
+  } else {
+    UTCP_CHECK(csum_partial && proto == ip_proto_tcp && buf.size() >= wire::tcp_header_min_len);
+    const std::size_t transport_header = (wire::load_u8(buf.bytes(), 12) >> 4) * 4u;
+    UTCP_CHECK(buf.size() > transport_header + gso_size);
+    UTCP_DCHECK(gso_size + transport_header + wire::ipv4_header_len <= cfg_.mtu);
+    const auto payload = static_cast<std::uint32_t>(buf.size() - transport_header);
+    segments = 1 + (payload - 1) / gso_size;
+  }
   UTCP_CHECK(total <= 0xffff);
   wire::Ipv4Header h;
   h.tos = 0;
@@ -112,8 +134,8 @@ bool StackCore::send_ipv4(Ipv4Addr dst, std::uint8_t proto, std::uint16_t ip_id,
   h.dst = dst;
   wire::write_ipv4(std::span<std::byte>(buf.prepend(wire::ipv4_header_len), wire::ipv4_header_len),
                    h);
-  txq_.push(TxPacket{std::move(buf), 0, false}, owner_slot);
-  ++stats_.IpOutRequests;
+  txq_.push(TxPacket{std::move(buf), gso_size, csum_partial}, owner_slot);
+  stats_.IpOutRequests += segments;
   return true;
 }
 

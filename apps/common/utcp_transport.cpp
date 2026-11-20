@@ -190,10 +190,11 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::open(
     }
     return std::unexpected(errno_text("cannot check " + sys, errno));
   }
-  auto tun = TunDevice::open(opts.tun, /*nonblocking=*/true);
+  auto tun = TunDevice::open(opts.tun, /*nonblocking=*/true, opts.tun_offload);
   if (!tun) {
     return std::unexpected(
-        std::format("cannot open TUN interface {}: {}", opts.tun, tun.error().message()));
+        std::format("cannot open TUN interface {} in {} mode: {}", opts.tun,
+                    to_string(opts.tun_offload), tun.error().message()));
   }
   const auto mtu = interface_mtu(tun->name());
   if (!mtu) {
@@ -211,11 +212,20 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::open(
                                        "is it up?",
                                        tun->name(), tun->operstate()));
   }
-  return attach(tun->release(), opts);
+  return attach_configured(tun->release(), opts, tun->vnet_header_size());
 }
 
 std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach(
     int fd, const UtcpTransportOptions& opts) {
+  if (opts.tun_offload != TunOffload::legacy && fd >= 0) {
+    ::close(fd);
+    return std::unexpected("offload modes require a TUN device opened by UtcpTransport");
+  }
+  return attach_configured(fd, opts, 0);
+}
+
+std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach_configured(
+    int fd, const UtcpTransportOptions& opts, std::size_t vnet_header_size) {
   if (fd < 0) {
     return std::unexpected(std::string("attach: invalid file descriptor"));
   }
@@ -231,6 +241,16 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach
     return fail("the stack address (StackConfig::local_addr) is not set");
   }
   UtcpTransportOptions o = opts;
+  o.stack.tcp_checksum_offload = vnet_header_size != 0;
+  o.stack.tcp_gso_buffers = o.tun_offload == TunOffload::tcpv4 ? 16 : 0;
+  if (vnet_header_size != 0) {
+    // LINKTYPE_RAW cannot describe partial checksums or TCP super-segments.
+    if (!o.pcap_file.empty()) {
+      return fail("--pcap requires legacy TUN mode; capture on the peer for offload modes");
+    }
+    o.stack.tx_headroom = std::max(o.stack.tx_headroom,
+                                   static_cast<std::uint16_t>(vnet_header_size));
+  }
   if (o.seed_from_getrandom) {
     // §3.8: the backend seeds the stack from getrandom(2).
     std::array<std::byte, sizeof o.stack.seed.w> bytes{};
@@ -247,7 +267,7 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach
     }
     std::memcpy(o.stack.seed.w.data(), bytes.data(), bytes.size());
   }
-  std::unique_ptr<UtcpTransport> t(new UtcpTransport(fd, o));  // owns fd from here
+  std::unique_ptr<UtcpTransport> t(new UtcpTransport(fd, o, vnet_header_size));  // owns fd from here
   if (!o.pcap_file.empty()) {
     t->pcap_ = std::make_unique<PcapWriter>();
     if (auto r = t->pcap_->open(o.pcap_file); !r) {
@@ -257,8 +277,10 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach
   return t;
 }
 
-UtcpTransport::UtcpTransport(int fd, const UtcpTransportOptions& opts)
-    : opt_(opts), fd_(fd), loop_(loop_options(opts)), stack_(opts.stack), rxbuf_(max_datagram) {
+UtcpTransport::UtcpTransport(int fd, const UtcpTransportOptions& opts,
+                             std::size_t vnet_header_size)
+    : opt_(opts), fd_(fd), vnet_header_size_(vnet_header_size), loop_(loop_options(opts)),
+      stack_(opts.stack), rxbuf_(max_datagram + vnet_header_size + (vnet_header_size != 0)) {
   loop_.watch(fd_, EPOLLIN, [this](std::uint32_t ev) { on_device(ev); });
   watched_ = true;
   // §3.4: next_deadline() == now() means that blocked connections can
@@ -324,7 +346,19 @@ std::string UtcpTransport::stats_json() const {
   if (trace_) {
     line.add("trace_events", trace_->events()).add("trace_blocks", trace_->blocks());
   }
-  line.add("dev_rx_datagrams", dev_.rx_datagrams)
+  line.add("dev_tun_offload", to_string(opt_.tun_offload))
+      .add("dev_vnet_hdr_size", vnet_header_size_)
+      .add("dev_rx_read_calls", dev_.rx_read_calls)
+      .add("dev_tx_write_calls", dev_.tx_write_calls)
+      .add("dev_rx_csum_valid", dev_.rx_csum_valid)
+      .add("dev_rx_csum_partial", dev_.rx_csum_partial)
+      .add("dev_rx_gro_datagrams", dev_.rx_gro_datagrams)
+      .add("dev_rx_gro_segments", dev_.rx_gro_segments)
+      .add("dev_rx_vnet_drops", dev_.rx_vnet_drops)
+      .add("dev_tx_csum_partial", dev_.tx_csum_partial)
+      .add("dev_tx_gso_datagrams", dev_.tx_gso_datagrams)
+      .add("dev_tx_gso_segments", dev_.tx_gso_segments)
+      .add("dev_rx_datagrams", dev_.rx_datagrams)
       .add("dev_rx_bytes", dev_.rx_bytes)
       .add("dev_rx_errors", dev_.rx_errors)
       .add("dev_tx_datagrams", dev_.tx_datagrams)
@@ -381,6 +415,7 @@ void UtcpTransport::read_batch() {
   stack_.advance(mono_now());
   int n_read = 0;
   while (n_read < rx_batch) {
+    ++dev_.rx_read_calls;
     const ssize_t n = ::read(fd_, rxbuf_.data(), rxbuf_.size());
     if (n < 0) {
       if (errno == EINTR) {
@@ -401,11 +436,27 @@ void UtcpTransport::read_batch() {
       return;
     }
     ++n_read;
-    const std::span<const std::byte> d(rxbuf_.data(), static_cast<std::size_t>(n));
+    std::span<const std::byte> d(rxbuf_.data(), static_cast<std::size_t>(n));
+    RxMeta meta;
+    if (vnet_header_size_ != 0) {
+      const auto packet = decode_tun_vnet(d, opt_.tun_offload);
+      if (!packet) {
+        ++dev_.rx_vnet_drops;
+        continue;
+      }
+      d = packet->ip;
+      meta = packet->meta;
+      dev_.rx_csum_valid += meta.csum_verified;
+      dev_.rx_csum_partial += meta.csum_partial;
+      if (meta.gso_size != 0) {
+        ++dev_.rx_gro_datagrams;
+        dev_.rx_gro_segments += packet->segments;
+      }
+    }
     record_pcap(d);
     ++dev_.rx_datagrams;
     dev_.rx_bytes += d.size();
-    stack_.receive(mono_now(), d);  // per packet, for RTT precision (§8.2)
+    stack_.receive(mono_now(), d, meta);  // per packet, for RTT precision (§8.2)
   }
   ++dev_.rx_batch_limit;  // more may be waiting: epoll is level-triggered
 }
@@ -419,8 +470,12 @@ void UtcpTransport::drain_tx() {
         break;
       }
       dev_.tx_batch_max = std::max(dev_.tx_batch_max, ++popped);
+      if (vnet_header_size_ != 0) {
+        pending_tx_segments_ = prepend_tun_vnet(*pending_tx_);
+      }
     }
     const std::span<const std::byte> b = std::as_const(pending_tx_->buf).bytes();
+    ++dev_.tx_write_calls;
     const ssize_t n = ::write(fd_, b.data(), b.size());
     if (n < 0) {
       if (errno == EINTR) {
@@ -437,10 +492,18 @@ void UtcpTransport::drain_tx() {
       }
       ++dev_.tx_errors;  // EIO (interface down), EINVAL, ...: dropped, as a full link would
       dev_.last_tx_errno = errno;
+    } else if (static_cast<std::size_t>(n) != b.size()) {
+      ++dev_.tx_errors;  // one TUN write must consume one full frame
+      dev_.last_tx_errno = EIO;
     } else {
-      record_pcap(b);
+      record_pcap(b.subspan(vnet_header_size_));
       ++dev_.tx_datagrams;
-      dev_.tx_bytes += b.size();
+      dev_.tx_bytes += b.size() - vnet_header_size_;
+      dev_.tx_csum_partial += pending_tx_->csum_partial;
+      if (pending_tx_->gso_size != 0) {
+        ++dev_.tx_gso_datagrams;
+        dev_.tx_gso_segments += pending_tx_segments_;
+      }
     }
     pending_tx_.reset();
   }

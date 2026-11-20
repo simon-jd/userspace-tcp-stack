@@ -336,6 +336,10 @@ struct StackConfig {
   std::uint32_t chunk_limit = 1u << 20;  // ChunkPool limit, in 4 KiB chunks
   std::uint32_t trace_mask = 0;          // bit i enables TraceKind i (§10.2)
   std::uint16_t tx_headroom = 0;         // M4: room for virtio_net_hdr
+  // Host capabilities. Enable only if the host can complete TCP checksums
+  // and segment oversized TCPv4 packets before exposing them to the wire.
+  bool tcp_checksum_offload = false;
+  std::uint32_t tcp_gso_buffers = 0;  // bounded pool of large TX buffers
   bool assert_time_monotonic = false;    // §3.4 item 4; on in the simulator
   // Tests only (M2-TASKS m2-found test seam): every connection of the stack
   // asks this script first in its LossRecovery hooks. nullptr in production;

@@ -91,6 +91,10 @@ public:
   // data, read or not, lies beyond it) or below a held out-of-order byte: the
   // peer's data contradicts it.
   void set_fin(std::uint64_t off);
+
+  // Can a run starting at the contiguous end be inserted without dropping
+  // bytes or pruning the receive queue?
+  [[nodiscard]] bool can_insert_in_order(std::size_t len) const;
   [[nodiscard]] std::optional<std::uint64_t> fin_offset() const;
   // contiguous_end() reached the FIN offset.
   [[nodiscard]] bool fin_reached() const;

@@ -35,6 +35,36 @@ bool TcpEngine::alive(std::uint32_t slot, std::uint32_t gen) const {
 
 void TcpEngine::on_segment(Time now, const wire::Ipv4Header& ip, const wire::TcpView& seg,
                            RxMeta meta) {
+  const FourTuple tuple{Endpoint{ip.dst, seg.h.dport}, Endpoint{ip.src, seg.h.sport}};
+  const auto slot = conns_.find(tuple);
+  if (meta.gso_size != 0) {
+    const Tcb* t = slot ? &at(*slot) : nullptr;
+    // A normal in-order run can be inserted once. Preserve logical segment
+    // boundaries where they affect acceptability, DSACK, FIN, or admission to
+    // a chunk-limited queue. Keep the existing RFC 9293 processing in that case.
+    if (t == nullptr || t->state != TcpState::established || t->app_read_shut ||
+        seg.h.seq != t->rcv_nxt() || seg.payload.size() > t->rcv_window() ||
+        (seg.h.flags & tcp_fin) != 0 || !t->rcvq.ooo_ranges().empty() ||
+        !t->rcvq.can_insert_in_order(seg.payload.size())) {
+      const std::uint16_t stride = meta.gso_size;
+      meta.gso_size = 0;
+      wire::TcpView slice = seg;
+      std::size_t offset = 0;
+      while (offset < seg.payload.size()) {
+        const std::size_t len = std::min<std::size_t>(stride, seg.payload.size() - offset);
+        slice.h.seq = seg.h.seq + static_cast<std::uint32_t>(offset);
+        slice.h.flags = seg.h.flags;
+        slice.payload = seg.payload.subspan(offset, len);
+        offset += len;
+        if (offset < seg.payload.size()) {
+          slice.h.flags = static_cast<std::uint16_t>(slice.h.flags & ~(tcp_fin | tcp_psh));
+        }
+        on_segment(now, ip, slice, meta);
+      }
+      return;
+    }
+  }
+
   InSeg s;
   s.now = now;
   s.v = &seg;
@@ -44,13 +74,13 @@ void TcpEngine::on_segment(Time now, const wire::Ipv4Header& ip, const wire::Tcp
   s.flags = seg.h.flags;
   s.plen = static_cast<std::uint32_t>(seg.payload.size());
   s.len = s.plen + (s.has(tcp_syn) ? 1u : 0u) + (s.has(tcp_fin) ? 1u : 0u);
-  const FourTuple tuple{Endpoint{ip.dst, seg.h.dport}, Endpoint{ip.src, seg.h.sport}};
 
-  if (const auto slot = conns_.find(tuple)) {
+  if (slot) {
     Tcb& t = at(*slot);
-    ++t.ctr.segs_in;
+    const auto segments = meta.segments(s.plen);
+    t.ctr.segs_in += segments;
     if (s.plen > 0) {
-      ++t.ctr.data_segs_in;
+      t.ctr.data_segs_in += segments;
     }
     if (core_.tracing(TraceKind::rx)) {
       TraceEvent e = trace_base(t, TraceKind::rx);

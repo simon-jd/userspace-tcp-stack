@@ -72,6 +72,12 @@ bool RecvBuffer::chunks_fit(std::uint64_t lo, std::uint64_t hi) const {
   return chunks_needed(lo, hi) <= pool_->limit() - pool_->in_use();
 }
 
+bool RecvBuffer::can_insert_in_order(std::size_t len) const {
+  const std::uint64_t end = rcv_end_ + len;
+  return len == 0 || (end <= right_edge() && (!fin_ || end <= *fin_) &&
+                      chunks_fit(rcv_end_, end));
+}
+
 std::uint64_t RecvBuffer::prune_last_range() {
   const Range g = ooo_.back();
   ooo_.pop_back();

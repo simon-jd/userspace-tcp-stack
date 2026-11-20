@@ -1397,10 +1397,21 @@ M0's `utcp::TunDevice::open(name, nonblocking)` opens `/dev/net/tun` with `IFF_T
 return `std::expected<std::size_t, std::error_code>`. Addresses, MTU and routes are set by testbed scripts with
 `ip` (no netlink code). `StackConfig::mtu` must equal the TUN MTU. One datagram per read or write.
 
-M4: `IFF_VNET_HDR` with `TUNSETOFFLOAD(TUN_F_CSUM|TUN_F_TSO4)`; each read/write is prefixed by `struct
-virtio_net_hdr`. Received datagrams carry `DATA_VALID` or, for CHECKSUM_PARTIAL skbs (local or forwarded from a
-TSO veth), `NEEDS_CSUM`, mapped to `RxMeta::csum_verified`/`csum_partial`, plus GRO `gso_size`; `TxPacket` fields
-map to `VIRTIO_NET_HDR_GSO_TCPV4` and `NEEDS_CSUM`. The core API carries these fields now; M1 leaves them zero.
+`--tun-offload=legacy` is the default. `checksum` and `tcpv4` attach with `IFF_VNET_HDR` and
+use `TUNSETOFFLOAD` to request `TUN_F_CSUM` or `TUN_F_CSUM|TUN_F_TSO4`, respectively.
+The backend verifies the active framing and header size with `TUNGETIFF` and `TUNGETVNETHDRSZ`.
+Each device frame has a 10-byte little-endian `virtio_net_hdr`. An ioctl failure fails the
+explicit mode during startup. The run manifest records live device features using `ethtool -k`.
+
+The backend checks frame boundaries and the IPv4 transport offset before mapping
+`DATA_VALID` and `NEEDS_CSUM` to trusted receive metadata. The core still validates the IPv4
+checksum. Zero flags leave software transport checksum verification in place. A checksum-only write
+sets `NEEDS_CSUM` and carries the folded TCP pseudo-header sum. TCPv4 aggregates also specify the
+header length and the payload stride. The pending framed buffer survives `EAGAIN`.
+The `dev_rx_gro_*` counters record TCPv4 aggregates received from Linux, including any Linux GSO
+packet forwarded intact. The `dev_tx_gso_*` counters record accepted TUN writes and their logical
+segment counts. `--pcap` uses LINKTYPE_RAW in legacy mode. For offload modes, capture on the
+egress path after segmentation and checksum completion.
 
 ### 8.2 Event loop
 
@@ -1597,9 +1608,13 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
    rings are chunked from M1 (§3.3), M4 tunes the chunk size.
 2. **Batching**: read up to 64 datagrams per wake-up, one `advance` per batch, write all queued packets before
    sleeping. Delayed-ACK decisions stay per segment, as in §3.4.
-3. **GSO**: the output path packs k consecutive new-data TxSegs sent at the same instant into one super-segment
-   (`gso_size = mss_cache`, partial checksum); retransmissions stay single packets, so scoreboard code is unchanged;
-   `min_tso_segs` and the quantum bound k. A GRO super-segment is one insert with ACK accounting by `gso_segs`.
+3. **GSO**: the output path packs consecutive fresh full-MSS segments from the same allowed burst.
+   The cwnd, peer window, remaining pacing quota and 64 KiB packet budget bound each group.
+   Retransmissions and segments needing PSH, FIN or SACK headers use the regular output path.
+   Each logical segment keeps its own recovery, delivery and trace state. The 16-buffer aggregate
+   pool falls back to regular packets when exhausted. Eligible in-order GRO data is inserted once,
+   with logical receive counters and the usual byte-based delayed-ACK decision. Out-of-order,
+   overlapping, FIN-bearing, window-crossing or buffer-limited aggregates use logical payload slices.
 4. **Memory target for 10k connections**: TCB ≤ 1 KiB (a `static_assert` once M4 starts), TIME_WAIT entry ≤ 64
    bytes, buffers allocated on first use. Target: an idle established connection ≤ 2 KiB, an echo connection with
    small messages ≤ 12 KiB, so 10k echo connections ≤ 128 MiB RSS. Measured against Linux for the same load

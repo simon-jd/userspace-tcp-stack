@@ -48,7 +48,7 @@ std::uint32_t TcpEngine::mss_now(const Tcb& t) const {
   return t.mss_cache > opt + 8 ? t.mss_cache - opt : 8u;
 }
 
-bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
+bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o, std::uint32_t segments) {
   const bool syn = (o.flags & tcp_syn) != 0;
   const bool rst = (o.flags & tcp_rst) != 0;
   const bool ack = (o.flags & tcp_ack) != 0;
@@ -101,25 +101,62 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
   h.window = field;
   h.flags = o.flags;
   const std::size_t hl = tcp_header_len(opt, syn);
-  auto buf = core_.alloc_packet(static_cast<std::uint32_t>(hl), o.data_len);
+  const std::uint32_t payload = o.data_len * segments;
+  const bool aggregate = segments > 1;
+  auto buf = core_.alloc_packet(static_cast<std::uint32_t>(hl), payload, aggregate);
   if (!buf) {
     return false;
   }
-  if (o.data_len > 0) {
-    t.sndq.copy_out(o.data_off, std::span<std::byte>(buf->append(o.data_len), o.data_len));
+  if (payload > 0) {
+    t.sndq.copy_out(o.data_off, std::span<std::byte>(buf->append(payload), payload));
   }
   buf->prepend(hl);
   const std::span<std::byte> l4 = buf->bytes();
   write_tcp_header(l4, h, opt, syn);
-  set_l4_checksum(l4, t.tuple.local.addr, t.tuple.remote.addr, ip_proto_tcp);
+  const bool partial = core_.config().tcp_checksum_offload;
+  if (partial) {
+    ChecksumAccumulator sum;
+    add_ipv4_pseudo_header(sum, t.tuple.local.addr.v, t.tuple.remote.addr.v, ip_proto_tcp,
+                           static_cast<std::uint16_t>(l4.size()));
+    store_be16(l4, 16, sum.sum());
+  } else {
+    set_l4_checksum(l4, t.tuple.local.addr, t.tuple.remote.addr, ip_proto_tcp);
+  }
 
+  SegOut logical = o;
+  for (std::uint32_t i = 0; i < segments; ++i) {
+    record_segment(t, now, logical, h.ack, field);
+    if (i + 1 < segments) {
+      if (t.tx_gate_rate != 0) {
+        t.tx_gate_rate = t.txp.gate_rate(t.cc_conn);
+      }
+      t.tx_burst_start = false;
+      logical.seq += o.data_len;
+      logical.data_off += o.data_len;
+    }
+  }
+  t.tx_gate_rate = 0;
+  t.tx_burst_start = false;
+  const std::uint16_t id = t.ip_id;
+  t.ip_id = static_cast<std::uint16_t>(t.ip_id + segments);
+  const auto stride = static_cast<std::uint16_t>(aggregate ? o.data_len : 0);
+  core_.send_ipv4(t.tuple.remote.addr, ip_proto_tcp, id, std::move(*buf), t.self.slot,
+                  stride, partial);
+  return true;
+}
+
+void TcpEngine::record_segment(Tcb& t, Time now, const SegOut& o, Seq32 ack_seq,
+                                std::uint16_t field) {
+  const bool syn = (o.flags & tcp_syn) != 0;
+  const bool rst = (o.flags & tcp_rst) != 0;
+  const bool ack = (o.flags & tcp_ack) != 0;
   // Bookkeeping (§4.9, §4.11), before the trace so it shows the state after
   // the send.
   StackStats& st = core_.stats();
   if (ack && t.have_irs) {
     t.ackp.on_ack_sent(now);
     t.sackgen.on_ack_sent();
-    t.last_ack_sent = h.ack;
+    t.last_ack_sent = ack_seq;
   }
   const bool carries = !syn && !rst && (o.data_len > 0 || (o.flags & tcp_fin) != 0) &&
                        o.kind != TxKind::zwp;
@@ -180,11 +217,7 @@ bool TcpEngine::send_segment(Tcb& t, Time now, const SegOut& o) {
   if (rst) {
     ++st.TcpOutRsts;
   }
-  trace_tx(t, o.kind, o.seq, h.ack, o.data_len, field, o.flags);
-  t.tx_gate_rate = 0;
-  t.tx_burst_start = false;
-  core_.send_ipv4(t.tuple.remote.addr, ip_proto_tcp, t.ip_id++, std::move(*buf), t.self.slot);
-  return true;
+  trace_tx(t, o.kind, o.seq, ack_seq, o.data_len, field, o.flags);
 }
 
 bool TcpEngine::send_ack(Tcb& t, Time now, TxKind kind) {
@@ -336,7 +369,8 @@ bool TcpEngine::retransmit_seg(Tcb& t, Time now, const TxSeg& whole, TxKind kind
   return send_segment(t, now, o);
 }
 
-bool TcpEngine::send_new_data(Tcb& t, Time now, std::uint32_t len, bool fin) {
+bool TcpEngine::send_new_data(Tcb& t, Time now, std::uint32_t len, bool fin,
+                               std::uint32_t segments) {
   SegOut o;
   const std::uint64_t off = t.sndq.nxt();
   o.seq = seq_at(t.snd_base(), off);
@@ -350,7 +384,7 @@ bool TcpEngine::send_new_data(Tcb& t, Time now, std::uint32_t len, bool fin) {
   o.data_off = off;
   o.data_len = len;
   o.kind = len > 0 ? TxKind::data : TxKind::fin;
-  return send_segment(t, now, o);
+  return send_segment(t, now, o, segments);
 }
 
 void TcpEngine::flush_ack(Tcb& t, Time now) {
@@ -490,7 +524,8 @@ void TcpEngine::transmit(Tcb& t, Time now) {
     std::uint32_t burst_left = 0;
     std::uint64_t burst_bytes = 0;
     while (!blocked && !paced_out && t.sndq.nxt() < t.sndq.end()) {
-      if (packets_in_flight(t.sndq.counters()) >= cc.cwnd) {
+      const std::uint32_t in_flight = packets_in_flight(t.sndq.counters());
+      if (in_flight >= cc.cwnd) {
         cwnd_limited = true;
         break;
       }
@@ -536,17 +571,36 @@ void TcpEngine::transmit(Tcb& t, Time now) {
         t.tx_gate_rate = t.txp.gate_rate(cc);
         t.tx_burst_start = burst_start;
       }
-      if (!core_.can_transmit() || !send_new_data(t, now, len, fin)) {
+      // Full-sized fresh segments share one header and leave at the same
+      // instant. Leave PSH/FIN and SACK options on the regular path. The
+      // RFC 5681 window and RFC 9293 sender SWS checks still apply to each
+      // logical segment; recovery never submits a retransmission here.
+      std::uint32_t segments = 1;
+      if (core_.gso_pool().available() > 0 && len == mss && unsent > mss &&
+          t.rcvq.ooo_ranges().empty() && !t.sackgen.dsack_pending()) {
+        constexpr std::uint32_t max_gso_segments = 64;
+        constexpr auto header_budget = static_cast<std::uint32_t>(ipv4_header_len + tcp_header_max_len);
+        const std::uint32_t max_bytes = std::min(
+            cfg_.gso_max_size, gso_packet_buf_size - core_.config().tx_headroom - header_budget);
+        const std::uint64_t quota = std::min({std::uint64_t{cc.cwnd - in_flight},
+                                             usable / mss, (unsent - 1) / mss,
+                                             std::uint64_t{max_bytes / mss},
+                                             std::uint64_t{pacing ? burst_left : max_gso_segments},
+                                             std::uint64_t{max_gso_segments}});
+        segments = static_cast<std::uint32_t>(std::max<std::uint64_t>(1, quota));
+      }
+      if (!core_.can_transmit() || !send_new_data(t, now, len, fin, segments)) {
         t.tx_gate_rate = 0;
         t.tx_burst_start = false;
         blocked = true;
         break;
       }
-      ++sent;
-      ++new_sent;
+      sent += segments;
+      new_sent += segments;
       if (pacing) {
-        burst_bytes += len;
-        if (--burst_left == 0) {
+        burst_bytes += len * segments;
+        burst_left -= segments;
+        if (burst_left == 0) {
           finish_burst(burst_bytes);
         }
       }

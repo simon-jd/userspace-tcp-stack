@@ -90,6 +90,12 @@ private:
 
 // Counters of the device side.
 struct DeviceStats {
+  std::uint64_t rx_read_calls = 0, tx_write_calls = 0;  // attempts, including errors and retries
+  std::uint64_t rx_csum_valid = 0, rx_csum_partial = 0;
+  std::uint64_t rx_gro_datagrams = 0, rx_gro_segments = 0;
+  std::uint64_t rx_vnet_drops = 0;
+  std::uint64_t tx_csum_partial = 0;
+  std::uint64_t tx_gso_datagrams = 0, tx_gso_segments = 0;
   std::uint64_t rx_datagrams = 0, rx_bytes = 0;  // read from the device, passed to receive()
   std::uint64_t rx_errors = 0;                   // read errors other than EAGAIN/EINTR
   std::uint64_t tx_datagrams = 0, tx_bytes = 0;  // written to the device
@@ -201,7 +207,9 @@ private:
     std::shared_ptr<std::function<void()>> cb{};  // shared: survives a cancel inside the call
   };
 
-  UtcpTransport(int fd, const UtcpTransportOptions& opts);
+  UtcpTransport(int fd, const UtcpTransportOptions& opts, std::size_t vnet_header_size);
+  static std::expected<std::unique_ptr<UtcpTransport>, std::string> attach_configured(
+      int fd, const UtcpTransportOptions& opts, std::size_t vnet_header_size);
 
   // Scope of a Transport call (utcp_transport.cpp): outside run(), advances
   // the stack to mono_now() on entry and drains its output on every return.
@@ -225,6 +233,7 @@ private:
 
   UtcpTransportOptions opt_;
   int fd_ = -1;
+  std::size_t vnet_header_size_ = 0;
   bool watched_ = false;       // fd_ is registered with loop_
   bool watching_out_ = false;  // ... for EPOLLOUT as well
   EventLoop loop_;
@@ -234,6 +243,7 @@ private:
   std::string trace_file_;
   std::vector<std::byte> rxbuf_;
   std::optional<TxPacket> pending_tx_;  // EAGAIN: written when EPOLLOUT arrives
+  std::uint32_t pending_tx_segments_ = 1;
   std::map<ConnId, Sock> socks_;
   std::map<Handle, ConnId> by_handle_;
   ConnId next_id_ = 1;
