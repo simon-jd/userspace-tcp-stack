@@ -3,7 +3,11 @@
 This C++23 project implements an IPv4 endpoint for TCP, UDP and ICMP. The TCP core takes packets,
 time and a seeded random source as inputs. The same code runs over Linux TUN and in a
 discrete-event simulator. The Linux backend runs the same applications on kernel sockets for
-comparison. [Protocol design](docs/DESIGN.md) · [Linux interoperability](docs/INTEROP.md)
+comparison.
+
+[Quick start](#quick-start) · [Linux TUN](#use-the-linux-tun-backend) ·
+[Protocol design](docs/DESIGN.md) · [Linux interoperability](docs/INTEROP.md) ·
+[Measured results](docs/RESULTS.md) · [Reproducibility index](docs/results/reproduction/README.md)
 
 ## Status
 
@@ -12,17 +16,19 @@ comparison. [Protocol design](docs/DESIGN.md) · [Linux interoperability](docs/I
 | M0 and M1 | Toolchain, deterministic core, simulator, TUN backend and TCP interoperability complete |
 | M2a and M2b | Loss recovery, delivery-rate sampling, pacing, NewReno and CUBIC complete |
 | M2c and M2d | [BBRv1 paired smoke](docs/RESULTS.md#bbrv1-paired-smoke), [24-cell NewReno/CUBIC/BBRv1 matrix](docs/RESULTS.md#core-matrix), and [multi-flow study](docs/RESULTS.md#multi-flow) complete |
-| M3 | [Valid-wire and receive-stream tests, Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) recorded. The simulator campaign and sustained parser validation remain pending. |
+| M3 | [Valid-wire and receive-stream tests, two IPv4 Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) verified. The fresh one-million-seed simulator run and the sustained arbitrary-input parser and reassembly campaign [remain open](docs/RESULTS.md#pending-validation). |
 | M4 | Legacy bulk and 10,000-connection echo measurements, opt-in TUN and direct echo modes, and allocation diagnostics are recorded. [M4 results](docs/RESULTS.md#m4-bulk-tun-and-echo) |
-| M5 | Pending |
+| M5 | Private build and evidence guides. [Reproduction commands and archive inventory](docs/results/reproduction/README.md) |
 
 The implementation covers the TCP state machine (RFC 9293), timestamps and window scaling
 (RFC 7323), SACK and D-SACK (RFCs 2018 and 2883), RST handling (RFC 5961), retransmission
-timeouts (RFC 6298), initial sequence numbers and port selection (RFCs 6528 and 6056), IPv4
+timeouts (RFC 6298), initial sequence numbers and port selection (RFC 9293 §3.4.1 and RFC 6056), IPv4
 path MTU discovery and ICMP handling (RFCs 1191 and 5927), and NewReno (RFCs 5681 and 6582).
 The recovery and congestion-control profiles include SACK loss recovery (RFC 6675), RACK-TLP
 (RFC 8985), proportional rate reduction (RFC 9937), CUBIC (RFC 9438) and HyStart++ (RFC 9406).
-The Linux-compatible profile uses Linux-style RACK, PRR and classic HyStart. [Profiles and implementation details](docs/DESIGN.md#39-configuration-and-profiles)
+The Linux-compatible profile uses Linux-style RACK, PRR and classic HyStart. It also supports
+BBRv1. [Profiles and implementation details](docs/DESIGN.md#39-configuration-and-profiles) ·
+[Protocol references](docs/DESIGN.md#protocol-references)
 
 ## Checkpoint
 
@@ -36,6 +42,35 @@ the stack and below measurement resolution.
 These results cover 160 valid serial transfers on one shared host. All retained the external CPU
 load flag. The full tables report five paired runs per condition, both ranges and all four
 verdicts. [Checkpoint results, raw-data locations and overlays](docs/RESULTS.md#checkpoint)
+
+## Later measurements
+
+On the November 2026 four-container shaped testbed, the 720-transfer single-flow
+matrix used the Linux-compatible stack profile, a Linux receiver and five
+same-seed pairs per algorithm and condition. Across its 24 conditions,
+median receiver goodput was 97.91–102.03% of Linux for NewReno, 93.21–101.80%
+for CUBIC and 99.85–100.60% for BBRv1. The two substantive gaps were higher
+BBRv1 retransmission rates in the 10 Mbit/s, 20 ms, 0.5-BDP queue conditions
+at 0% and 0.1% configured random loss. In the shared-bottleneck study, the late BBRv1
+flow joining Linux CUBIC had a median Jain index of 0.878 versus 0.996 for
+the Linux baseline, and neither arm converged in the five measured pairs.
+[Single-flow results](docs/RESULTS.md#core-matrix) ·
+[Multi-flow results](docs/RESULTS.md#multi-flow)
+
+In the November 20, 2026 same-host Docker bridge studies, five 1 GB single-flow
+CUBIC repeats per arm compared receiver goodput and process CPU. Legacy
+stack send and receive medians were 3.963 and 4.787 Gbit/s versus 8.160
+and 8.633 Gbit/s for the corresponding Linux controls with Ethernet offloads
+disabled. In a separate matched-offload comparison, TCPv4 offload raised
+the stack medians to 11.332 and 14.226 Gbit/s from 3.793 and 4.828 Gbit/s
+with checksum-only TUN. Its process CPU per GB remained above Linux in both
+directions. Two active TUN FDs showed no consistent benefit on one event loop.
+
+At 10,000 connections, direct echo eliminated measured app staging in its
+paired workload. Its median CPU and p99 rose within overlapping run ranges.
+The 2,208 B TCB and about 3,334 B idle RSS growth per established connection
+missed their targets. PMU access was denied, and bounded warm-process C++
+allocation counts were nonzero. [M4 methods, individual studies and limits](docs/RESULTS.md#m4-bulk-tun-and-echo)
 
 ## Non-goals
 
@@ -91,46 +126,80 @@ cmake --workflow --preset clang-asan   # configure, build and test in one step
 
 Presets: `gcc-debug`, `gcc-release`, `gcc-asan`, `clang-debug`,
 `clang-release`, `clang-asan` (asan = ASan + UBSan, no recovery), `gcc-sweep`
-(Release with `UTCP_DCHECK`, for simulator sweeps) and `clang-fuzz` (libFuzzer
-targets, ASan + UBSan, `UTCP_DCHECK`).
+(Release with `UTCP_DCHECKS`, for simulator sweeps) and `clang-fuzz` (libFuzzer
+targets, ASan + UBSan, `UTCP_DCHECKS`).
 
-## Run a transfer
+## Quick start
 
-Inside the Linux build environment, build the release target with
-`cmake --preset gcc-release && cmake --build --preset gcc-release --target utcp-bulk`.
-Start a receiver in one shell and then the sender in another.
-Both endpoints print the transferred byte count and a SHA-256 digest.
-
-```sh
-bulk=build/gcc-release/apps/utcp-bulk/utcp-bulk
-"$bulk" --backend kernel --listen 5201 --recv
-```
-
-```sh
-bulk=build/gcc-release/apps/utcp-bulk/utcp-bulk
-"$bulk" --backend kernel --connect 127.0.0.1:5201 --send --bytes 1Mi --cc cubic
-```
-
-## Run the M4 functional checks
-
-The userspace backend defaults to legacy framing and one TUN FD.
-With an existing TUN configured with `vnet_hdr`, pass
-`--tun-offload=checksum` for TCP checksum offload or
-`--tun-offload=tcpv4` for TCPv4 checksum and segmentation offload.
-For an existing `multi_queue` TUN, pass `--tun-queues N` (1–64) to
-attach N active FDs to the same device. The live queue comparison
-covers one and two FDs on one event loop. A TCP echo listener uses
-staging by default. Pass `--direct-echo` to enable sending from its
-receive scratch buffer when the connection has no older pending bytes.
-
-From the repository root, build both programs and run the bounded Docker
-checks. The wire check uses an isolated test subnet and saves a capture.
+From the repository root on Linux with the build toolchain installed:
 
 ```sh
 cmake --preset gcc-release
-cmake --build --preset gcc-release --target utcp-bulk utcp-echo
+cmake --build --preset gcc-release --target utcp-bulk utcp-echo utcp-httpd utcp-http-get
+```
+
+Run the listener in one shell and the corresponding client in another.
+These loopback examples use kernel sockets.
+
+### Single-flow bulk benchmark
+
+```sh
+# Listener
+build/gcc-release/apps/utcp-bulk/utcp-bulk --backend kernel --listen 127.0.0.1:5201 --recv --bytes 1Mi
+# Client
+build/gcc-release/apps/utcp-bulk/utcp-bulk --backend kernel --connect 127.0.0.1:5201 --send --bytes 1Mi --cc cubic
+```
+
+Both endpoints print the byte count and SHA-256 of the generated payload.
+
+### TCP echo
+
+```sh
+# Listener
+build/gcc-release/apps/utcp-echo/utcp-echo --backend kernel --listen 127.0.0.1:5202
+# Client
+build/gcc-release/apps/utcp-echo/utcp-echo --backend kernel --connect 127.0.0.1:5202 --connections 1 --size 64 --count 5
+```
+
+The client verifies five replies. Stop the listener with Ctrl-C.
+
+### Single-file transfer
+
+```sh
+# Listener
+build/gcc-release/apps/utcp-httpd/utcp-httpd --backend kernel --listen 127.0.0.1:8080 --root docs
+# Client
+build/gcc-release/apps/utcp-http-get/utcp-http-get --backend kernel --output build/design-download.md http://127.0.0.1:8080/DESIGN.md
+cmp docs/DESIGN.md build/design-download.md
+```
+
+Stop the listener with Ctrl-C after the comparison.
+
+## Use the Linux TUN backend
+
+The userspace backend needs IPv4, access to `/dev/net/tun`, and a Linux TUN
+interface with a kernel-side address and route to the stack's separate IPv4
+address. Pass `--backend utcp --tun IFNAME --addr STACK_IP` and match
+`--mtu` to the device MTU. The testbed provisions interfaces and routes
+in isolated Docker containers with `NET_ADMIN`.
+
+Legacy framing and a single TUN FD are the defaults. On a TUN configured
+with `vnet_hdr`, use `--tun-offload=checksum` for TCP checksum offload or
+`--tun-offload=tcpv4` for TCPv4 checksum and segmentation offload. On an
+existing `multi_queue` TUN, use `--tun-queues N` (1–64) to attach N active
+FDs to the same device. The live queue comparison covers one and two FDs on
+one event loop. Echo uses staging by default. Pass `--direct-echo` on a TCP
+listener to send from the receive scratch buffer when the connection has
+no older pending bytes. [TUN and queue behavior](docs/DESIGN.md#8-backends)
+
+After building the release targets and Docker image above, run the bounded
+TUN checks from the repository root. The first transfers 4,000,055 B in
+both directions in each of the three modes and checks SHA-256. The wire
+check uses an isolated subnet and saves a capture.
+
+```sh
 tests/interop/m4_tun_offload.sh
-tests/interop/m4_tun_offload_wire.sh build/m4-tun-wire
+tests/interop/m4_tun_offload_wire.sh "$(mktemp -d "$PWD/build/m4-tun-wire.XXXXXXXX")"
 tests/interop/m4_tun_multiqueue.sh
 ```
 
@@ -140,8 +209,13 @@ tests/interop/m4_tun_multiqueue.sh
 
 ## Run the comparison testbed
 
-The measured host uses Linux, Docker, a TUN device and the CPU layout in the
-[environment description](docs/ENVIRONMENT.md). The runner starts the stack sender with
+Use the [reproducibility index](docs/results/reproduction/README.md) to read or
+replay existing campaigns. To inspect the registered 720-transfer schedule
+without starting containers or transfers, run
+`python3 -B tools/m2/matrix.py expand docs/results/m2-matrix/plan.toml --slots 1`.
+
+A new measurement uses Linux, Docker, a TUN device and the CPU layout in
+the [environment description](docs/ENVIRONMENT.md). The runner starts the stack sender with
 `--backend utcp --profile linux` or the kernel sender with `--backend kernel`. Both send to the
 same kernel receiver across the shaped router path.
 

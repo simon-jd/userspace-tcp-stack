@@ -1,4 +1,4 @@
-# Comparison results (M2)
+# Linux comparisons and validation
 
 The stack against Linux 7.0 on the comparison testbed (DESIGN §14). Sections and owners (M2 work
 breakdown): Method, Calibration, Gap rule and thresholds, Which runs count, Timing hygiene (m2d-testbed);
@@ -7,6 +7,14 @@ Multi-flow (m2d-multiflow); Ablation (m2d-ablation).
 
 "Gap rule and thresholds" and "Which runs count" are fixed before the first matrix run and are not
 changed afterwards; the commit that fixed them is named in each.
+
+The [interop matrix](INTEROP.md) records the earlier Linux exchanges. The
+[core matrix](#core-matrix) and [multi-flow study](#multi-flow) report the
+shaped-path comparisons. [M3 validation](#m3-validation) records the bounded
+correctness evidence and the two open long runs. [M4 bulk, TUN and echo](#m4-bulk-tun-and-echo)
+covers the separate same-host datapath studies. The
+[reproducibility index](results/reproduction/README.md) identifies private
+input archives, source revisions, replay commands and evidence limits.
 
 ## Method
 
@@ -1399,3 +1407,15 @@ These are shared-host synthetic workloads. The bulk goodput belongs
 to each receiving endpoint. Echo timings come from the bounded
 uninstrumented comparison windows, and the separate allocation
 windows include application and event-loop work.
+
+### Combined M4 runtime verification
+
+On November 20, 2026 UTC, the integrated commit
+`261b91de798bd3a965852a9737cf37e60c7e718e` (tree
+`e8871b577852fa2c6a0e29bc177ce3cf48e40657`) passed 8,719 CTest
+entries across eight stock presets and matched 522 GCC/Clang digests.
+Independent Linux functional checks passed six offload transfers, five
+same-device queue cases, and a pair of 10,000-connection staged and direct
+echo runs with 50,000 verified replies per arm. These checks used the
+combined runtime. The timing figures above retain the measured source,
+binary and experimental configuration recorded for each study.

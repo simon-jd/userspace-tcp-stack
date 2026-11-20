@@ -1,8 +1,11 @@
 # userspace-tcp-stack: design
 
-This document fixes the architecture for M1 and the interfaces that M2 to M4 build on. Section numbers are
-referenced from the M1 task list. "M1" marks what the first milestone ships; "M2a/M2b/M2c/M3/M4" marks later
-work whose hooks exist from M1. RFC references are to sections (RFC 9293 is the base specification).
+This document describes the core, simulator, Linux backends, and comparison
+testbed. Milestone labels identify when each design or measurement was
+introduced. [Application commands](../README.md#quick-start) ·
+[Interoperability](INTEROP.md) · [Results](RESULTS.md) ·
+[Reproducibility index](results/reproduction/README.md) ·
+[Protocol references](#protocol-references)
 
 ## 1. Goals, non-goals and scope
 
@@ -44,11 +47,11 @@ Stated in the README as well:
 
 | Area | M1 | Later |
 |---|---|---|
-| IPv4 | validate, demux, DF on send, PMTU cache | M4 checksum offload, GSO/GRO via `IFF_VNET_HDR` |
+| IPv4 | validate, demux, DF on send, PMTU cache | M4 TCP checksum offload and TCPv4 GSO/GRO via `IFF_VNET_HDR` |
 | ICMP, UDP | echo reply and API, unreachable in/out, frag-needed lowers MSS; unconnected UDP sockets | |
 | TCP | full state machine, options, SACK/DSACK generation, RTO, delayed ACK, Nagle, SWS, ZWP, half-close, TIME_WAIT, RFC 5961, PAWS, RFC 6528/6056, NewReno | M2a RFC 6675, RACK-TLP, PRR; M2b CC interface users (CUBIC, HyStart/HyStart++), rate sampling, pacing; M2c BBRv1 |
-| Simulator, apps | full simulator (§7), 1e5-seed sweeps; bulk, echo, httpd, http-get | M3 1e6 seeds |
-| Backend | TUN (`IFF_TUN` + `IFF_NO_PI`), `epoll_pwait2` | M4 `IFF_VNET_HDR`, multi-queue; optional io_uring |
+| Simulator, apps | full simulator (§7), 100,000-seed sweeps, bulk, echo, httpd, http-get | M3 verified corpus and Packetdrill cases with the million-seed run and sustained parser/reassembly validation still open. M4 adds opt-in direct TCP echo. |
+| Backend | TUN (`IFF_TUN` + `IFF_NO_PI`), `epoll_pwait2` | M4 adds opt-in `IFF_VNET_HDR` and multi-queue on one event loop. |
 
 ## 2. Structure
 
@@ -387,7 +390,7 @@ Linux buffer of nominal size N holds less than N bytes of payload.
 | `frto`, `undo` | same: not modelled | | Linux `tcp_frto = 2` and `tcp_try_undo_*` are on; named in M2 results (§1.2) |
 | `rack_tlp` (M2a) | off (RFC 6675 loss detection) | on | RFC 8985 (§9.2: RFC 6675 recovery MUST NOT be used with RACK-TLP, so `check_tcp_config` rejects `rack_tlp` with `recovery_reduction = rfc6675`); Linux `tcp_recovery=1`, `tcp_early_retrans=3` |
 | `dupthresh` / adaptive reordering | 3 / fixed | 3 / adaptive up to 300 (M2a; M1: fixed 3) | RFC 5681; `tcp_reordering`, `tcp_max_reordering` |
-| `cc` | same: `newreno` in M1; `cubic` from M2b | | |
+| `cc` | same default: `newreno`. Applications can select `cubic` or `bbr` per socket. | | |
 | `cc_flavor` | NewReno adds at most one packet per slow-start ACK and halves FlightSize on loss (RFC 5681 §3.1). CUBIC follows RFC 9438. | NewReno credits all delivered packets in slow start and halves cwnd on loss. CUBIC follows Linux v7.0. | Both bound slow start at ssthresh and carry the remaining delivery into congestion avoidance. |
 | `hystart` (M2b) | `hystart_pp` | `hystart_classic` (ACK train + delay, low window 16, ack delta 2 ms) | RFC 9406; `tcp_cubic.c` |
 | `pacing`, `pacing_ss_ratio`/`_ca_ratio` | same: rate always computed (§5.5), applied only if the CC requests it (BBR); 200 % / 120 % | | the 2d sender has no fq qdisc, so Linux CUBIC is unpaced; `tcp_update_pacing_rate` |
@@ -1455,7 +1458,7 @@ respectively. Other tenants' processes were observed on CPUs 12-15. Per-CPU util
 11.51%, and the third run had both the highest p99 and the highest CPU utilization. Without
 the delay (min_rtt ~0.1 ms, bursts of 45 packets) one run gave 50.008 Mbit/s.
 
-### 8.4 Later backends
+### 8.4 Multi-queue TUN
 
 - Multi-queue TUN uses one EventLoop and Stack with independent queue FDs on one
   interface. Set up the device with `ip tuntap add dev utcp0 mode tun multi_queue`
@@ -1469,9 +1472,9 @@ the delay (min_rtt ~0.1 ms, bursts of 45 packets) one run gave 50.008 Mbit/s.
   traffic uses queue zero. If a write returns EAGAIN, the single pending packet
   keeps its FD and transmission resumes in queue order. `--stats` records the
   ifindex and per-FD datagram totals as counted by the application.
-- io_uring (optional, PLAN §7): multishot reads into `PacketPool`-backed buffer rings, batched writes, and
-  `IORING_OP_TIMEOUT` with `IORING_TIMEOUT_ABS` for the deadline, under the same `run_once` contract (liburing2
-  runtime is installed on the server, headers are not).
+The implemented event loop uses epoll. The optional io_uring design considered
+multishot reads into `PacketPool`-backed buffer rings, batched writes, and
+`IORING_OP_TIMEOUT` with `IORING_TIMEOUT_ABS` under the same `run_once` contract.
 
 ## 9. Applications
 
@@ -1505,7 +1508,10 @@ class Transport {
   goodput, SHA-256, retransmissions, the three limited times and loop lateness percentiles. Kernel mode sets
   `TCP_CONGESTION` and leaves buffer sizes to sysctls (setting `SO_SNDBUF` would disable autotuning).
 - **utcp-echo**: TCP server and client (`--size`, `--count`, `--concurrency`, `--rate`; latency p50/p99/p999 from
-  a log-linear histogram) and a UDP echo mode for `nc -u`. M4 uses it for 10k connections.
+  a log-linear histogram) and a UDP echo mode for `nc -u`. M4 uses it for 10k
+  connections. The optional TCP listener flag `--direct-echo` sends from the
+  receive scratch buffer when there are no older pending bytes. An unsent
+  tail is staged before the scratch buffer is reused.
 - **utcp-httpd**: HTTP/1.1 GET and HEAD for files under `--root`, `Content-Length`, persistent connections with
   `Connection: close` honoured, sequential pipelining, 400/404/405/414/505, rejects paths that escape the root,
   small MIME table. Files are read in 64 KiB chunks as the socket becomes writable.
@@ -1619,9 +1625,12 @@ The targets below guided the measurement. See the
 [multiqueue results](results/m4-tun-multiqueue/README.md),
 [legacy echo load](results/m4-echo-load/pre-copy.md), and
 [echo copy, C++ allocation and final-mode results](results/m4-copy-allocation/README.md).
-The measured TCB size and idle process RSS delta missed their targets.
-C++ allocation counts cover bounded warm process windows. They do not
-establish zero allocations per packet.
+The measured 2,208 B TCB and about 3,334 B of idle process RSS growth per
+established socket missed the 1 KiB and 2 KiB targets. The sampled active
+RSS growth and process RSS high-water mark met the 12 KiB per-connection
+and 128 MiB process targets. The ordinary PMU probe was denied. Bounded
+warm-process C++ allocation counts were nonzero and include application
+and event-loop work, so the per-packet allocation target remains unverified.
 
 1. **Buffer pools**: a 64 KiB packet class for GSO next to the 2 KiB class (`alloc` already takes a size); data
    rings are chunked from M1 (§3.3), M4 tunes the chunk size.
@@ -1634,13 +1643,16 @@ establish zero allocations per packet.
    pool falls back to regular packets when exhausted. Eligible in-order GRO data is inserted once,
    with logical receive counters and the usual byte-based delayed-ACK decision. Out-of-order,
    overlapping, FIN-bearing, window-crossing or buffer-limited aggregates use logical payload slices.
-4. **Memory target for 10k connections**: TCB ≤ 1 KiB (a `static_assert` once M4 starts), TIME_WAIT entry ≤ 64
-   bytes, buffers allocated on first use. Target: an idle established connection ≤ 2 KiB, an echo connection with
-   small messages ≤ 12 KiB, so 10k echo connections ≤ 128 MiB RSS. Measured against Linux for the same load
-   (`/proc/net/sockstat` mem, TCP slab usage).
-5. **Hot path**: no allocation per packet (§3.3); a single copy each way between rings and packet buffers; flat
-   open-addressing connection table; checksum offload via `NEEDS_CSUM`.
-6. Each optimisation is reported with before/after numbers measured on CPUs 8-15.
+4. **Memory targets for 10k connections**: TCB ≤ 1 KiB, TIME_WAIT entry ≤ 64
+   B, idle established connection growth ≤ 2 KiB, active echo connection
+   growth ≤ 12 KiB, and total process RSS ≤ 128 MiB. The echo study reports
+   stack process RSS and namespace and host memory counters with their
+   respective scopes.
+5. **Hot path goals**: avoid allocating per packet (§3.3) and limit copying
+   between rings and packet buffers. The design uses a flat open-addressing
+   connection table and optional checksum offload via `NEEDS_CSUM`.
+6. The paired studies report before/after results with their individual
+   CPU placement, workload, and accounting windows.
 
 ## 13. Rules
 
@@ -1874,3 +1886,20 @@ a copy 2 exists), copies 1 and 2, an offset inside a segment, a burst of 5, and 
 - `matrix.py plot --campaign C` runs `tools/m2/plot.py` (matplotlib, in the image) in a helper container:
   per (cell, algorithm) one PNG of the median-goodput valid run of each implementation, cwnd with the
   retransmission and RTO marks, delivery and pacing rate, and the receiver's 100 ms goodput.
+
+## Protocol references
+
+RFC 9293 is the base TCP specification and incorporates the earlier initial
+sequence number guidance in RFC 6528. RFC 9937 supersedes RFC 6937 for PRR.
+The profile table identifies where the implementation follows Linux behavior.
+[TCP and initial sequence numbers (RFC 9293)](https://www.rfc-editor.org/info/rfc9293) ·
+[PRR (RFC 9937)](https://www.rfc-editor.org/info/rfc9937) ·
+[Profile choices](#39-configuration-and-profiles)
+
+The loss-recovery and congestion-control sections cite the standards on
+SACK recovery, RACK-TLP, CUBIC and HyStart++. Linux v7.0 supplies the BBRv1
+implementation reference. [SACK recovery (RFC 6675)](https://www.rfc-editor.org/info/rfc6675) ·
+[RACK-TLP (RFC 8985)](https://www.rfc-editor.org/info/rfc8985) ·
+[CUBIC (RFC 9438)](https://www.rfc-editor.org/info/rfc9438) ·
+[HyStart++ (RFC 9406)](https://www.rfc-editor.org/info/rfc9406) ·
+[Linux v7.0 BBR](https://github.com/torvalds/linux/blob/v7.0/net/ipv4/tcp_bbr.c)
