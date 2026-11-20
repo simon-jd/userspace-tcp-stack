@@ -11,7 +11,11 @@ import json
 import math
 import re
 import struct
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from audit import preregistered
 
 FACES = ("r1-in", "r2-out")
 NAMES = tuple(
@@ -98,12 +102,40 @@ def snapshot(p, kind):
 
 
 def lerp(x, y, t):
-    i = bisect.bisect_right(x, t)
+    if not x or len(x) != len(y) or any(b <= a for a, b in zip(x, x[1:])):
+        raise ValueError("sampling timestamps must be present and strictly increasing")
+    if not x[0] <= t <= x[-1]:
+        raise ValueError("measurement boundary is not bracketed by samples")
+    i = bisect.bisect_left(x, t)
+    if x[i] == t:
+        return float(y[i])
     return y[i - 1] + (y[i] - y[i - 1]) * (t - x[i - 1]) / (x[i] - x[i - 1])
+
+
+def check_schedule(campaign):
+    planned = preregistered(campaign)
+    for name in NAMES:
+        meta = json.loads((campaign / name / "meta.json").read_text())
+        spec = planned[name]
+        for key in (
+            "run",
+            "cell",
+            "algo",
+            "impl",
+            "in_group",
+            "group",
+            "seed",
+            "order",
+            "rep",
+            "plan_seed",
+        ):
+            if meta[key] != spec[key]:
+                raise ValueError(f"{name} differs from the registered {key}")
 
 
 def project(campaign, destination):
     """Store packet times and exact fingerprint equivalence classes without headers or payload."""
+    check_schedule(campaign)
     destination.mkdir(exist_ok=False)
     for name in NAMES:
         directory = campaign / name
@@ -128,7 +160,46 @@ def project(campaign, destination):
                 gz.write(json.dumps(projection, separators=(",", ":")).encode())
 
 
-def analyze(p, projected=None, source_hashes=None):
+def eligible_doublets(times, missing, lo, hi, cutoff):
+    """Full-capture size-two groups whose second ingress timestamp is in [lo, hi)."""
+    exposures = drops = 0
+    start = 0
+    for end in range(1, len(times) + 1):
+        if end < len(times) and times[end] - times[end - 1] <= cutoff:
+            continue
+        if end - start == 2 and lo <= times[start + 1] < hi:
+            exposures += 1
+            drops += int(missing[start + 1])
+        start = end
+    return exposures, drops
+
+
+def validate_forward_times(ingress, downstream, downstream_resolution_ns):
+    """Require a feasible one-to-one causal match on the two router capture clocks."""
+    arrivals = collections.defaultdict(list)
+    departures = collections.defaultdict(list)
+    for t, key in ingress:
+        arrivals[key].append(t)
+    for t, key in downstream:
+        departures[key].append(t)
+    for key, times in departures.items():
+        before = sorted(arrivals[key])
+        after = sorted(times)
+        if len(after) > len(before):
+            raise ValueError(
+                "downstream fingerprint has no matching ingress occurrence"
+            )
+        # Pair sorted indistinguishable occurrences. If even the earliest unused
+        # ingress occurs later than the latest representable downstream instant,
+        # no causal assignment exists on the shared host realtime clock.
+        for earlier, later in zip(before, after):
+            if later + downstream_resolution_ns - 1 < earlier:
+                raise ValueError(
+                    "downstream packet precedes matching ingress beyond capture resolution"
+                )
+
+
+def analyze(p, projected=None, source_hashes=None, doublet_counts=None):
     meta = json.loads((p / "meta.json").read_text())
     summ = json.loads((p / "summary.json").read_text())
     assert summ["valid"] and not summ["invalid"] and meta["rerun"] == 0
@@ -167,9 +238,12 @@ def analyze(p, projected=None, source_hashes=None):
     # Mixed-outcome collisions cannot be allocated to an individual ingress attempt.
     collisions = [k for k, n in before.items() if 0 < after[k] < n]
     assert not collisions, ("ambiguous", len(collisions))
+    validate_forward_times(a, b, bh["resolution_ns"])
     absent = [k not in after for t, k in a]
     times = [t for t, k in a]
     assert times == sorted(times)
+    if doublet_counts is not None:
+        doublet_counts[p.name] = eligible_doublets(times, absent, lo, hi, 100_000)
     seen = set()
     maxend = 0
     repeat = []
@@ -311,12 +385,17 @@ def analyze(p, projected=None, source_hashes=None):
 
 
 def report(campaign, out, projected=None):
+    check_schedule(campaign)
     source_hashes = {}
     if projected:
         for line in (campaign / "source-manifest.sha256").read_text().splitlines():
             sha, name = line.split("  ", 1)
             source_hashes[name] = sha
-    result = [analyze(campaign / name, projected, source_hashes) for name in NAMES]
+    doublet_counts = {}
+    result = [
+        analyze(campaign / name, projected, source_hashes, doublet_counts)
+        for name in NAMES
+    ]
     assert all(a["seed"] == b["seed"] for a, b in zip(result[::2], result[1::2]))
     out.mkdir(exist_ok=False)
     (out / "bbr-shallow-packet-replay.json").write_text(
@@ -327,9 +406,7 @@ def report(campaign, out, projected=None):
         _, suffix = d["run"].rsplit("-r", 1)
         rep, impl = suffix.split("-")
         first = d["primary_r1"]
-        groups = d["groups"]["100000"]
-        doublets = groups["batches"]["2"]
-        missing = groups["rank"]["2_lost"]
+        doublets, missing = doublet_counts[d["run"]]
         rows.append(
             dict(
                 rep=int(rep),
@@ -344,7 +421,9 @@ def report(campaign, out, projected=None):
                 repeat_missing=first.get("repeat_missing", 0),
                 two_packet_groups_100us=doublets,
                 missing_second_100us=missing,
-                missing_second_pct=round(100 * missing / doublets, 5),
+                missing_second_pct=round(100 * missing / doublets, 5)
+                if doublets
+                else None,
                 interpolated_tbf_drops=round(d["drops_primary_interpolated"], 5),
                 lifetime_missing=d["lifetime_data_missing"],
                 lifetime_tbf_drops=d["lifetime_counter_delta"]["tbf"],

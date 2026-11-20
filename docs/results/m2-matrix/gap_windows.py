@@ -126,7 +126,9 @@ def windows(directory, *, include_full=False):
             ),
             tbf_backlog_p50_bytes=a.median(backlog),
             tbf_backlog_p99_bytes=a.percentile(backlog, 0.99),
-            tbf_drops=a.delta(drops, start, end),
+            tbf_drops=a.delta(drops, start, end)
+            if drops and drops[0][0] <= start <= end <= drops[-1][0]
+            else None,
             ping_replies=len(replies),
             ping_lost=len(delays) - len(replies),
             ping_queue_p50_ms=a.median(queue_delays),

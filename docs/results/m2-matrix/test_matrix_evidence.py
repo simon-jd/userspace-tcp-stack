@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit
+import bbr_queue
 import loss_replay as loss
 import report
 import replay_captures
@@ -174,6 +175,46 @@ class IngressSequenceHistory(unittest.TestCase):
         self.assertIsNone(covered.add(2**32 - 8, 16))
         self.assertEqual(covered.add(0, 8), "all_bytes_previously_seen")
         self.assertIsNone(covered.add(8, 20))
+
+
+class PairedCaptureBoundaries(unittest.TestCase):
+    def test_only_second_of_exact_doublet_inside_primary_qualifies(self):
+        # The first pair crosses the lower bound; the triple and the pair
+        # crossing the upper bound are ineligible. Other packets are singletons.
+        times = [1, 3, 11, 12, 13, 20, 29, 31, 40]
+        lost = [False, True, False, True, False, False, False, True, False]
+        self.assertEqual(bbr_queue.eligible_doublets(times, lost, 3, 31, 2), (1, 1))
+        self.assertEqual(bbr_queue.eligible_doublets(times, lost, 4, 31, 2), (0, 0))
+
+    def test_interpolation_accepts_exact_edges_and_rejects_uncovered_windows(self):
+        self.assertEqual(bbr_queue.lerp([10, 20], [3, 7], 10), 3)
+        self.assertEqual(bbr_queue.lerp([10, 20], [3, 7], 20), 7)
+        self.assertEqual(bbr_queue.lerp([10, 20], [3, 7], 15), 5)
+        for t in (9, 21):
+            with self.assertRaisesRegex(ValueError, "not bracketed"):
+                bbr_queue.lerp([10, 20], [3, 7], t)
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            bbr_queue.lerp([10, 10], [3, 7], 10)
+
+    def test_standalone_report_requires_registered_campaign(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(FileNotFoundError):
+                bbr_queue.report(root, root / "out")
+            self.assertFalse((root / "out").exists())
+
+    def test_causal_matching_each_occurrence_and_pcap_quantization(self):
+        inputs = [(100, "a"), (123, "a"), (150, "b")]
+        bbr_queue.validate_forward_times(
+            inputs, [(102, "a"), (125, "a"), (152, "b")], 1
+        )
+        with self.assertRaisesRegex(ValueError, "precedes matching ingress"):
+            bbr_queue.validate_forward_times(inputs, [(102, "a"), (121, "a")], 1)
+        with self.assertRaisesRegex(ValueError, "no matching"):
+            bbr_queue.validate_forward_times(inputs, [(152, "c")], 1)
+        bbr_queue.validate_forward_times([(1004, "f")], [(1000, "f")], 1000)
+        with self.assertRaisesRegex(ValueError, "precedes matching ingress"):
+            bbr_queue.validate_forward_times([(2000, "f")], [(1000, "f")], 1000)
 
 
 class LossWire(unittest.TestCase):
