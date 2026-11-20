@@ -29,6 +29,12 @@ enum class TunOffload { legacy, checksum, tcpv4 };
 
 // IFF_VNET_HDR with the 10-byte Linux virtio-net ABI in little-endian mode.
 inline constexpr std::size_t tun_vnet_header_size = 10;
+inline constexpr std::size_t tun_max_queues = 64;
+
+// Select the transmit queue from the outgoing TCP four-tuple, before
+// adding any VNET header. Non-TCP output goes to queue zero.
+// Precondition: count > 0.
+[[nodiscard]] std::size_t tun_tx_queue(std::span<const std::byte> ip, std::size_t count) noexcept;
 
 struct TunRxPacket {
   std::span<const std::byte> ip;
@@ -48,9 +54,10 @@ public:
   // Opens /dev/net/tun and attaches to interface `name`, creating it if it
   // does not exist (creating needs CAP_NET_ADMIN). An empty name lets the
   // kernel pick one (tun0, tun1, ...). The interface is left down and without
-  // an address.
+  // an address. Use multi_queue for each independent fd of a multi-queue interface.
   static std::expected<TunDevice, std::error_code> open(
-      std::string_view name, bool nonblocking, TunOffload offload = TunOffload::legacy);
+      std::string_view name, bool nonblocking, TunOffload offload = TunOffload::legacy,
+      bool multi_queue = false);
 
   TunDevice(TunDevice&& other) noexcept;
   TunDevice& operator=(TunDevice&& other) noexcept;

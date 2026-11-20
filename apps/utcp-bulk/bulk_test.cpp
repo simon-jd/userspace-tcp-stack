@@ -437,6 +437,23 @@ TEST(BulkBackendOptions, SetAppliesFieldsInOrder) {
   EXPECT_NE(kernel.error().find("utcp backend"), std::string::npos) << kernel.error();
 }
 
+TEST(BulkBackendOptions, TunQueuesAreOptIn) {
+  auto b = parse_backend({"--connect", "1.2.3.4:5"});
+  ASSERT_TRUE(b) << b.error();
+  EXPECT_FALSE(b->utcp.tun_queues);
+  for (const auto count : {1u, 2u, 64u}) {
+    const auto text = std::to_string(count);
+    b = parse_backend({"--connect", "1.2.3.4:5", "--tun-queues", text});
+    ASSERT_TRUE(b) << b.error();
+    EXPECT_EQ(b->utcp.tun_queues, count);
+  }
+  for (const char* value : {"0", "65", "invalid"}) {
+    EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--tun-queues", value}));
+  }
+  EXPECT_FALSE(parse_backend({"--connect", "1.2.3.4:5", "--backend", "kernel",
+                              "--tun-queues", "1"}));
+}
+
 TEST(BulkBackendOptions, TraceKinds) {
   auto b = parse_backend({"--connect", "1.2.3.4:5"});
   ASSERT_TRUE(b) << b.error();

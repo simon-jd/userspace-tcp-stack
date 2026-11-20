@@ -6,7 +6,7 @@
 // One iteration of run() (§8.2):
 // 1. EventLoop::run_once with deadline min(stack.next_deadline(), app timers):
 //    a. the wait (epoll_pwait2, nanosecond timeout, optional --spin-us);
-//    b. the device is readable: stack.advance(mono_now()), then up to 64
+//    b. for each readable queue: stack.advance(mono_now()), then up to 64
 //       datagrams, each stack.receive(mono_now(), ...) (per-packet clock for
 //       RTT precision);
 //    c. the deadline has passed: stack.advance(now) and the app timers due.
@@ -16,7 +16,7 @@
 // 2. Socket events (Stack::poll_event) go to the Handler, whose callbacks
 //    call the Transport, until no event is left.
 // 3. pop_transmit() is drained with write(2); on EAGAIN the packet is kept
-//    and the device is watched for EPOLLOUT until it has been written.
+//    and its queue is watched for EPOLLOUT until it can be retried.
 // 4. The --pcap buffer is written to the file.
 // Host contract (§3.4): drained before every wait, advance when the deadline
 // has passed, now non-decreasing (CLOCK_MONOTONIC). connect, listen, send,
@@ -118,7 +118,8 @@ public:
   // one that never comes up), checks that opts.stack.mtu equals its MTU, waits
   // up to 1 s until the interface is running (TunDevice::wait_running; an
   // error if it is down), fills the seed from getrandom(2) if asked, and opens
-  // the pcap file.
+  // the pcap file. If opts.tun_queues is set, open that many independent
+  // FDs on the same interface with IFF_MULTI_QUEUE.
   static std::expected<std::unique_ptr<UtcpTransport>, std::string> open(
       const UtcpTransportOptions& opts);
   // The same over an already open datagram fd (one IPv4 datagram per read
@@ -127,6 +128,11 @@ public:
   // and the MTU is not checked.
   static std::expected<std::unique_ptr<UtcpTransport>, std::string> attach(
       int fd, const UtcpTransportOptions& opts);
+
+  // Like attach(), but with several distinct datagram FDs. All FDs are
+  // owned by the transport, including on error. Intended for backend tests.
+  static std::expected<std::unique_ptr<UtcpTransport>, std::string> attach_queues(
+      const std::vector<int>& fds, const UtcpTransportOptions& opts);
 
   ~UtcpTransport() override;
   UtcpTransport(const UtcpTransport&) = delete;
@@ -207,17 +213,29 @@ private:
     std::shared_ptr<std::function<void()>> cb{};  // shared: survives a cancel inside the call
   };
 
-  UtcpTransport(int fd, const UtcpTransportOptions& opts, std::size_t vnet_header_size);
+  struct DeviceQueue {
+    int fd = -1;
+    std::uint64_t rx_datagrams = 0;
+    std::uint64_t tx_datagrams = 0;
+    DeviceQueue() = default;
+    DeviceQueue(const DeviceQueue&) = delete;
+    DeviceQueue& operator=(const DeviceQueue&) = delete;
+    ~DeviceQueue();
+  };
+
+  UtcpTransport(std::vector<DeviceQueue> queues, const UtcpTransportOptions& opts,
+                unsigned ifindex, std::size_t vnet_header_size);
   static std::expected<std::unique_ptr<UtcpTransport>, std::string> attach_configured(
-      int fd, const UtcpTransportOptions& opts, std::size_t vnet_header_size);
+      std::vector<DeviceQueue> queues, const UtcpTransportOptions& opts,
+      unsigned ifindex, std::size_t vnet_header_size);
 
   // Scope of a Transport call (utcp_transport.cpp): outside run(), advances
   // the stack to mono_now() on entry and drains its output on every return.
   class OutsideRun;
   void outside_run_enter();
   void outside_run_leave();
-  void on_device(std::uint32_t events);
-  void read_batch();
+  void on_device(std::size_t queue, std::uint32_t events);
+  void read_batch(DeviceQueue& queue);
   void device_failed();
   void drain_tx();
   void deliver_events();
@@ -232,10 +250,11 @@ private:
   void record_pcap(std::span<const std::byte> datagram);
 
   UtcpTransportOptions opt_;
-  int fd_ = -1;
+  std::vector<DeviceQueue> queues_;
+  unsigned ifindex_ = 0;
   std::size_t vnet_header_size_ = 0;
-  bool watched_ = false;       // fd_ is registered with loop_
-  bool watching_out_ = false;  // ... for EPOLLOUT as well
+  bool watched_ = false;       // all queues are registered with loop_
+  bool watching_out_ = false;  // selected queue also registered for EPOLLOUT
   EventLoop loop_;
   Stack stack_;
   std::unique_ptr<PcapWriter> pcap_;
@@ -243,6 +262,7 @@ private:
   std::string trace_file_;
   std::vector<std::byte> rxbuf_;
   std::optional<TxPacket> pending_tx_;  // EAGAIN: written when EPOLLOUT arrives
+  std::size_t pending_tx_queue_ = 0;
   std::uint32_t pending_tx_segments_ = 1;
   std::map<ConnId, Sock> socks_;
   std::map<Handle, ConnId> by_handle_;

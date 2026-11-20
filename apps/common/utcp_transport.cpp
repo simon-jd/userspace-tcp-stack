@@ -190,11 +190,30 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::open(
     }
     return std::unexpected(errno_text("cannot check " + sys, errno));
   }
-  auto tun = TunDevice::open(opts.tun, /*nonblocking=*/true, opts.tun_offload);
+  const std::size_t count = opts.tun_queues.value_or(1);
+  if (count == 0 || count > tun_max_queues) {
+    return std::unexpected(std::format("TUN queue count must be 1..{}", tun_max_queues));
+  }
+  const unsigned ifindex = ::if_nametoindex(opts.tun.c_str());
+  if (ifindex == 0) {
+    return std::unexpected(errno_text("if_nametoindex " + opts.tun, errno));
+  }
+  const bool multi_queue = opts.tun_queues.has_value();
+  const auto open_queue = [&]() -> std::expected<TunDevice, std::string> {
+    auto tun = TunDevice::open(opts.tun, /*nonblocking=*/true, opts.tun_offload, multi_queue);
+    if (!tun) {
+      return std::unexpected(
+          std::format("cannot open TUN interface {} in {} mode: {}", opts.tun,
+                      to_string(opts.tun_offload), tun.error().message()));
+    }
+    if (tun->name() != opts.tun || ::if_nametoindex(tun->name().c_str()) != ifindex) {
+      return std::unexpected("TUN interface changed while attaching " + opts.tun);
+    }
+    return std::move(*tun);
+  };
+  auto tun = open_queue();
   if (!tun) {
-    return std::unexpected(
-        std::format("cannot open TUN interface {} in {} mode: {}", opts.tun,
-                    to_string(opts.tun_offload), tun.error().message()));
+    return std::unexpected(tun.error());
   }
   const auto mtu = interface_mtu(tun->name());
   if (!mtu) {
@@ -212,33 +231,66 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::open(
                                        "is it up?",
                                        tun->name(), tun->operstate()));
   }
-  return attach_configured(tun->release(), opts, tun->vnet_header_size());
+  std::vector<DeviceQueue> queues(count);
+  const auto header_size = tun->vnet_header_size();
+  queues[0].fd = tun->release();
+  for (std::size_t i = 1; i < count; ++i) {
+    auto next = open_queue();
+    if (!next) {
+      return std::unexpected(std::format("TUN queue {}: {}", i, next.error()));
+    }
+    if (next->vnet_header_size() != header_size) {
+      return std::unexpected("inconsistent TUN queue framing");
+    }
+    queues[i].fd = next->release();
+  }
+  return attach_configured(std::move(queues), opts, ifindex, header_size);
+}
+
+UtcpTransport::DeviceQueue::~DeviceQueue() {
+  if (fd >= 0) {
+    ::close(fd);
+  }
 }
 
 std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach(
     int fd, const UtcpTransportOptions& opts) {
-  if (opts.tun_offload != TunOffload::legacy && fd >= 0) {
-    ::close(fd);
-    return std::unexpected("offload modes require a TUN device opened by UtcpTransport");
+  return attach_queues({fd}, opts);
+}
+
+std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach_queues(
+    const std::vector<int>& fds, const UtcpTransportOptions& opts) {
+  std::vector<DeviceQueue> queues(fds.size());
+  bool valid = !fds.empty() && fds.size() <= tun_max_queues;
+  auto first = fds.begin();
+  // Take ownership of each distinct fd once, including on invalid input.
+  for (std::size_t i = 0; i < fds.size(); ++i, ++first) {
+    if (fds[i] < 0 || std::find(fds.begin(), first, fds[i]) != first) {
+      valid = false;
+    } else {
+      queues[i].fd = fds[i];
+    }
   }
-  return attach_configured(fd, opts, 0);
+  if (!valid) {
+    return std::unexpected("attach: expected one or more distinct, valid file descriptors");
+  }
+  if (opts.tun_offload != TunOffload::legacy || opts.tun_queues) {
+    return std::unexpected("TUN offloads and --tun-queues require UtcpTransport::open");
+  }
+  return attach_configured(std::move(queues), opts, 0, 0);
 }
 
 std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach_configured(
-    int fd, const UtcpTransportOptions& opts, std::size_t vnet_header_size) {
-  if (fd < 0) {
-    return std::unexpected(std::string("attach: invalid file descriptor"));
-  }
-  const auto fail = [fd](std::string msg) {
-    ::close(fd);
-    return std::unexpected(std::move(msg));
-  };
-  const int fl = ::fcntl(fd, F_GETFL);
-  if (fl < 0 || ::fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
-    return fail(errno_text("fcntl(O_NONBLOCK)", errno));
+    std::vector<DeviceQueue> queues, const UtcpTransportOptions& opts,
+    unsigned ifindex, std::size_t vnet_header_size) {
+  for (const auto& queue : queues) {
+    const int fl = ::fcntl(queue.fd, F_GETFL);
+    if (fl < 0 || ::fcntl(queue.fd, F_SETFL, fl | O_NONBLOCK) < 0) {
+      return std::unexpected(errno_text("fcntl(O_NONBLOCK)", errno));
+    }
   }
   if (opts.stack.local_addr.v == 0) {
-    return fail("the stack address (StackConfig::local_addr) is not set");
+    return std::unexpected("the stack address (StackConfig::local_addr) is not set");
   }
   UtcpTransportOptions o = opts;
   o.stack.tcp_checksum_offload = vnet_header_size != 0;
@@ -246,7 +298,7 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach
   if (vnet_header_size != 0) {
     // LINKTYPE_RAW cannot describe partial checksums or TCP super-segments.
     if (!o.pcap_file.empty()) {
-      return fail("--pcap requires legacy TUN mode; capture on the peer for offload modes");
+      return std::unexpected("--pcap requires legacy TUN mode; capture on the peer for offload modes");
     }
     o.stack.tx_headroom = std::max(o.stack.tx_headroom,
                                    static_cast<std::uint16_t>(vnet_header_size));
@@ -261,13 +313,14 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach
         continue;
       }
       if (n <= 0) {
-        return fail(errno_text("getrandom", errno));
+        return std::unexpected(errno_text("getrandom", errno));
       }
       got += static_cast<std::size_t>(n);
     }
     std::memcpy(o.stack.seed.w.data(), bytes.data(), bytes.size());
   }
-  std::unique_ptr<UtcpTransport> t(new UtcpTransport(fd, o, vnet_header_size));  // owns fd from here
+  auto t = std::unique_ptr<UtcpTransport>(
+      new UtcpTransport(std::move(queues), o, ifindex, vnet_header_size));
   if (!o.pcap_file.empty()) {
     t->pcap_ = std::make_unique<PcapWriter>();
     if (auto r = t->pcap_->open(o.pcap_file); !r) {
@@ -277,11 +330,14 @@ std::expected<std::unique_ptr<UtcpTransport>, std::string> UtcpTransport::attach
   return t;
 }
 
-UtcpTransport::UtcpTransport(int fd, const UtcpTransportOptions& opts,
-                             std::size_t vnet_header_size)
-    : opt_(opts), fd_(fd), vnet_header_size_(vnet_header_size), loop_(loop_options(opts)),
-      stack_(opts.stack), rxbuf_(max_datagram + vnet_header_size + (vnet_header_size != 0)) {
-  loop_.watch(fd_, EPOLLIN, [this](std::uint32_t ev) { on_device(ev); });
+UtcpTransport::UtcpTransport(std::vector<DeviceQueue> queues, const UtcpTransportOptions& opts,
+                             unsigned ifindex, std::size_t vnet_header_size)
+    : opt_(opts), queues_(std::move(queues)), ifindex_(ifindex), vnet_header_size_(vnet_header_size),
+      loop_(loop_options(opts)), stack_(opts.stack),
+      rxbuf_(max_datagram + vnet_header_size + (vnet_header_size != 0)) {
+  for (std::size_t i = 0; i < queues_.size(); ++i) {
+    loop_.watch(queues_[i].fd, EPOLLIN, [this, i](std::uint32_t ev) { on_device(i, ev); });
+  }
   watched_ = true;
   // §3.4: next_deadline() == now() means that blocked connections can
   // resume. That is work to do at once, not a timer the loop waited for, so
@@ -321,9 +377,10 @@ UtcpTransport::~UtcpTransport() {
     pcap_->close();
   }
   if (watched_) {
-    loop_.unwatch(fd_);
+    for (const auto& queue : queues_) {
+      loop_.unwatch(queue.fd);
+    }
   }
-  ::close(fd_);
 }
 
 std::string UtcpTransport::stats_json() const {
@@ -345,6 +402,13 @@ std::string UtcpTransport::stats_json() const {
   }
   if (trace_) {
     line.add("trace_events", trace_->events()).add("trace_blocks", trace_->blocks());
+  }
+  line.add("dev_tun_ifindex", ifindex_)
+      .add("dev_tun_multi_queue", opt_.tun_queues.has_value())
+      .add("dev_tun_queues", queues_.size());
+  for (std::size_t i = 0; i < queues_.size(); ++i) {
+    line.add(std::format("dev_rx_queue_{}_datagrams", i), queues_[i].rx_datagrams)
+        .add(std::format("dev_tx_queue_{}_datagrams", i), queues_[i].tx_datagrams);
   }
   line.add("dev_tun_offload", to_string(opt_.tun_offload))
       .add("dev_vnet_hdr_size", vnet_header_size_)
@@ -384,12 +448,12 @@ void UtcpTransport::enable_trace(std::string path, bool tx_retransmissions_only)
 
 // --- Device.
 
-void UtcpTransport::on_device(std::uint32_t events) {
-  if ((events & EPOLLOUT) != 0) {
+void UtcpTransport::on_device(std::size_t queue, std::uint32_t events) {
+  if ((events & EPOLLOUT) != 0 && watching_out_ && queue == pending_tx_queue_) {
     drain_tx();
   }
   if ((events & EPOLLIN) != 0) {
-    read_batch();
+    read_batch(queues_[queue]);
   }
   // TUN: EPOLLERR once the interface is gone; socketpair: EPOLLHUP when the
   // peer closed. Level-triggered, so stop watching.
@@ -402,13 +466,15 @@ void UtcpTransport::device_failed() {
   dev_.device_failed = true;
   stop_requested_ = true;
   if (watched_) {
-    loop_.unwatch(fd_);
+    for (const auto& queue : queues_) {
+      loop_.unwatch(queue.fd);
+    }
     watched_ = false;
     watching_out_ = false;
   }
 }
 
-void UtcpTransport::read_batch() {
+void UtcpTransport::read_batch(DeviceQueue& queue) {
   ++dev_.rx_batches;
   // §8.2: the iteration starts with advance(clock()): timers due before these
   // datagrams arrived fire first.
@@ -416,7 +482,7 @@ void UtcpTransport::read_batch() {
   int n_read = 0;
   while (n_read < rx_batch) {
     ++dev_.rx_read_calls;
-    const ssize_t n = ::read(fd_, rxbuf_.data(), rxbuf_.size());
+    const ssize_t n = ::read(queue.fd, rxbuf_.data(), rxbuf_.size());
     if (n < 0) {
       if (errno == EINTR) {
         continue;
@@ -455,6 +521,7 @@ void UtcpTransport::read_batch() {
     }
     record_pcap(d);
     ++dev_.rx_datagrams;
+    ++queue.rx_datagrams;
     dev_.rx_bytes += d.size();
     stack_.receive(mono_now(), d, meta);  // per packet, for RTT precision (§8.2)
   }
@@ -462,6 +529,9 @@ void UtcpTransport::read_batch() {
 }
 
 void UtcpTransport::drain_tx() {
+  if (dev_.device_failed) {
+    return;
+  }
   std::uint64_t popped = 0;
   for (;;) {
     if (!pending_tx_) {
@@ -470,13 +540,17 @@ void UtcpTransport::drain_tx() {
         break;
       }
       dev_.tx_batch_max = std::max(dev_.tx_batch_max, ++popped);
+      pending_tx_queue_ = queues_.size() == 1
+                              ? 0
+                              : tun_tx_queue(std::as_const(pending_tx_->buf).bytes(), queues_.size());
       if (vnet_header_size_ != 0) {
         pending_tx_segments_ = prepend_tun_vnet(*pending_tx_);
       }
     }
     const std::span<const std::byte> b = std::as_const(pending_tx_->buf).bytes();
+    DeviceQueue& queue = queues_[pending_tx_queue_];
     ++dev_.tx_write_calls;
-    const ssize_t n = ::write(fd_, b.data(), b.size());
+    const ssize_t n = ::write(queue.fd, b.data(), b.size());
     if (n < 0) {
       if (errno == EINTR) {
         continue;
@@ -484,8 +558,8 @@ void UtcpTransport::drain_tx() {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         // §8.2: keep the packet and wait for EPOLLOUT.
         ++dev_.tx_eagain;
-        if (watched_ && !watching_out_) {
-          loop_.modify(fd_, EPOLLIN | EPOLLOUT);
+        if (!watching_out_) {
+          loop_.modify(queue.fd, EPOLLIN | EPOLLOUT);
           watching_out_ = true;
         }
         return;
@@ -498,6 +572,7 @@ void UtcpTransport::drain_tx() {
     } else {
       record_pcap(b.subspan(vnet_header_size_));
       ++dev_.tx_datagrams;
+      ++queue.tx_datagrams;
       dev_.tx_bytes += b.size() - vnet_header_size_;
       dev_.tx_csum_partial += pending_tx_->csum_partial;
       if (pending_tx_->gso_size != 0) {
@@ -505,11 +580,11 @@ void UtcpTransport::drain_tx() {
         dev_.tx_gso_segments += pending_tx_segments_;
       }
     }
+    if (watching_out_) {
+      loop_.modify(queue.fd, EPOLLIN);
+      watching_out_ = false;
+    }
     pending_tx_.reset();
-  }
-  if (watching_out_) {
-    loop_.modify(fd_, EPOLLIN);
-    watching_out_ = false;
   }
 }
 

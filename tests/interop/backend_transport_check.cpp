@@ -133,6 +133,9 @@ struct Pair {
     fcntl(theirs, F_SETFL, fcntl(theirs, F_GETFL) | O_NONBLOCK);
   }
   ~Pair() {
+    if (ours >= 0) {
+      close(ours);
+    }
     if (theirs >= 0) {
       close(theirs);
     }
@@ -883,6 +886,151 @@ std::vector<wire::TcpHeader> tcp_from_stack(const Pair& p) {
   return out;
 }
 
+// Force later ingress for an established flow through the other fd. Its
+// server replies, including the ACK to FIN, must continue using its SYN-ACK
+// queue. Also hold a packet on queue 1 under write backpressure.
+void check_multiqueue() {
+  std::array<Pair, 2> pairs;
+  const int small = 4096;
+  if (setsockopt(pairs[1].ours, SOL_SOCKET, SO_SNDBUF, &small, sizeof small) != 0) {
+    expect(false, "multiqueue", "cannot reduce queue 1 send buffer");
+    return;
+  }
+  // Keep a writer for test setup only. This is the same socket and buffer as
+  // queue 1, not a third queue in the transport.
+  const int fill_fd = dup(pairs[1].ours);
+  if (fill_fd < 0) {
+    expect(false, "multiqueue", "dup failed");
+    return;
+  }
+  auto opened = UtcpTransport::attach_queues({pairs[0].give(), pairs[1].give()}, options());
+  if (!opened) {
+    close(fill_fd);
+    expect(false, "multiqueue", opened.error());
+    return;
+  }
+  auto& transport = **opened;
+  constexpr std::uint16_t listen_port = 9600;
+  constexpr std::uint16_t first_port = 41000;
+  constexpr std::uint32_t peer_isn = 1000;
+  constexpr std::size_t flows = 8;
+  const auto listen = transport.listen(utcp::Endpoint{stack_addr, listen_port}, 16, {});
+  if (!listen) {
+    close(fill_fd);
+    expect(false, "multiqueue", "listen failed");
+    return;
+  }
+  struct Receiver final : utcp::app::Handler {
+    ConnId selected = utcp::app::no_conn;
+    std::size_t accepted = 0;
+    void on_accept(ConnId, ConnId conn) override {
+      ++accepted;
+      selected = conn;
+    }
+  } h;
+
+  bool valid = true;
+  for (std::size_t i = 0; i < flows; ++i) {
+    const auto port = static_cast<std::uint16_t>(first_port + i);
+    valid &= pairs[0].write_theirs(tcp_from_kernel(port, listen_port, peer_isn, 0, wire::tcp_syn));
+  }
+
+  struct Placement {
+    std::size_t queue = 0;
+    std::uint32_t isn = 0;
+    bool seen = false;
+  };
+  std::array<Placement, flows> initial{};
+  std::size_t seen = 0;
+  run_until(transport, h, [&] {
+    for (std::size_t q = 0; q < pairs.size(); ++q) {
+      for (const auto& tcp : tcp_from_stack(pairs[q])) {
+        const auto slot = static_cast<std::size_t>(tcp.dport - first_port);
+        if (slot >= flows || initial[slot].seen || tcp.sport != listen_port ||
+            tcp.flags != (wire::tcp_syn | wire::tcp_ack)) {
+          valid = false;
+          continue;
+        }
+        initial[slot] = Placement{q, tcp.seq.raw(), true};
+        ++seen;
+      }
+    }
+  }, [&] { return seen == flows; });
+  const auto chosen = std::ranges::find_if(initial, [](const Placement& p) {
+    return p.seen && p.queue == 1;
+  });
+  const bool uses_first = std::ranges::any_of(initial, [](const Placement& p) {
+    return p.seen && p.queue == 0;
+  });
+  if (!valid || seen != flows || chosen == initial.end() || !uses_first) {
+    close(fill_fd);
+    expect(false, "multiqueue", "SYN-ACKs must reach both queues");
+    return;
+  }
+  const auto peer_port = static_cast<std::uint16_t>(first_port + (chosen - initial.begin()));
+  // The SYN came through queue 0. Complete the handshake through queue 1.
+  valid &= pairs[1].write_theirs(tcp_from_kernel(
+      peer_port, listen_port, peer_isn + 1, chosen->isn + 1, wire::tcp_ack));
+  run_until(transport, h, [] {}, [&] { return h.accepted == 1; });
+  if (!valid || h.accepted != 1) {
+    close(fill_fd);
+    expect(false, "multiqueue", "connection did not establish from queue 1");
+    return;
+  }
+
+  // Fill the selected FD with sentinel datagrams. There is room on queue 0.
+  // The application sends real TCP data on the established flow below.
+  const auto marker = bytes_of("filtered test buffer marker");
+  const ssize_t marker_size = static_cast<ssize_t>(marker.size());
+  while (write(fill_fd, marker.data(), marker.size()) == marker_size) {}
+  const bool full = errno == EAGAIN || errno == EWOULDBLOCK;
+  close(fill_fd);
+  const auto payload = bytes_of("connection data after EAGAIN");
+  const auto sent = transport.send(h.selected, payload);
+  const auto before = transport.device_stats().tx_eagain;
+  const bool other_empty = !pairs[0].read_theirs();
+  bool received = false;
+  std::size_t wrong_queue = 0;
+  run_until(transport, h, [&] {
+    // Removing the markers makes the original fd writable. Check the real
+    // data packet separately from the test-only buffer fill.
+    while (const auto d = pairs[1].read_theirs()) {
+      if (*d == marker) continue;
+      const auto ip = wire::parse_ipv4(*d);
+      if (!ip) { valid = false; continue; }
+      const auto tcp = wire::parse_tcp(ip->payload, ip->h.src, ip->h.dst, true);
+      valid &= tcp && tcp->h.dport == peer_port && tcp->h.seq.raw() == chosen->isn + 1 &&
+               std::ranges::equal(tcp->payload, payload) && !received;
+      received = true;
+    }
+    wrong_queue += tcp_from_stack(pairs[0]).size();
+  }, [&] { return received; });
+  expect(full && sent && *sent == payload.size() && before > 0 && received &&
+             valid && other_empty && wrong_queue == 0 && transport.device_stats().tx_errors == 0,
+         "multiqueue", "flow used the original queue after EAGAIN");
+  if (!received || !valid) return;
+
+  valid &= pairs[0].write_theirs(tcp_from_kernel(peer_port, listen_port, peer_isn + 1,
+      chosen->isn + 1 + static_cast<std::uint32_t>(payload.size()), wire::tcp_fin | wire::tcp_ack));
+  bool acked = false;
+  run_until(transport, h, [&] {
+    for (const auto& tcp : tcp_from_stack(pairs[1])) {
+      acked |= tcp.dport == peer_port && tcp.ack.raw() == peer_isn + 2 &&
+               (tcp.flags & wire::tcp_ack) != 0;
+    }
+    wrong_queue += tcp_from_stack(pairs[0]).size();
+  }, [&] { return acked; });
+  expect(valid && acked && wrong_queue == 0, "multiqueue",
+         "the same flow processed FIN on its alternate ingress queue");
+
+  const auto udp = transport.udp_open(utcp::Endpoint{stack_addr, 9601});
+  const bool udp_sent = udp && transport.send_to(*udp, utcp::Endpoint{kernel_addr, 9602}, payload);
+  const auto d = pairs[0].read_theirs();
+  const auto ip = d ? wire::parse_ipv4(*d) : std::unexpected(wire::ParseError::truncated);
+  expect(udp_sent && ip && ip->h.proto == utcp::ip_proto_udp && !pairs[1].read_theirs(),
+         "multiqueue", "non-TCP datagram used queue 0");
+}
+
 // Interop case E-chunked: utcp-http-get closed after a chunked body and
 // exited before the server's FIN (0.15 ms later) arrived, so the server
 // retransmitted its FIN to a stack that was gone. The kernel's end here
@@ -1022,6 +1170,7 @@ int main(int argc, char** argv) {
     check_icmp_echo();
     check_udp_echo();
     check_tx_eagain();
+    check_multiqueue();
     check_rx_clock();
     check_outside_run_drain();
     check_finish_closing();

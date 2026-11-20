@@ -1457,11 +1457,18 @@ the delay (min_rtt ~0.1 ms, bursts of 45 packets) one run gave 50.008 Mbit/s.
 
 ### 8.4 Later backends
 
-- Multi-queue TUN (`IFF_MULTI_QUEUE`) is not shared-nothing: tun keeps a flow on the queue that last wrote it only
-  while its flow entry lives (`TUN_FLOW_EXPIRE`, 3 s), then uses a keyed hash the stack cannot compute, so an idle
-  connection can land on another thread's `Stack` (no TCB, RST). It needs one dispatcher reading all queues and
-  steering by 4-tuple (partitioned ephemeral ranges), or `TUNSETSTEERINGEBPF` (CAP_BPF, not approved). M4's
-  10k-connection test runs single-queue.
+- Multi-queue TUN uses one EventLoop and Stack with independent queue FDs on one
+  interface. Set up the device with `ip tuntap add dev utcp0 mode tun multi_queue`
+  (add `vnet_hdr` for checksum or TCPv4 offload) and pass `--tun-queues N` to a
+  stack application. `--tun-queues 1` opens one FD on an MQ device. Omitting the
+  option opens the single-queue TUN used by the existing testbed.
+- Each ready FD gets up to 64 datagrams per level-triggered callback. Linux TUN
+  learns RX placement from writes and expires flow entries after about three
+  seconds. Any queue can feed the same TCP connection. TX selects its FD from
+  the outgoing TCP four-tuple, including for VNET super-segments. Other IPv4
+  traffic uses queue zero. If a write returns EAGAIN, the single pending packet
+  keeps its FD and transmission resumes in queue order. `--stats` records the
+  ifindex and per-FD datagram totals as counted by the application.
 - io_uring (optional, PLAN §7): multishot reads into `PacketPool`-backed buffer rings, batched writes, and
   `IORING_OP_TIMEOUT` with `IORING_TIMEOUT_ABS` for the deadline, under the same `run_once` contract (liburing2
   runtime is installed on the server, headers are not).
