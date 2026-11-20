@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from model import measure, schedule
-from run import ethernet_settings, tun_features
+from run import ethernet_settings, functional_pair, tun_features
 
 
 def endpoint(role, backend, cpu):
@@ -63,6 +63,12 @@ class ModelTest(unittest.TestCase):
 
 
 class TopologyTest(unittest.TestCase):
+    def test_functional_pair_requires_two_distinct_e_cores(self):
+        self.assertEqual(functional_pair("16,18"), (16, 18))
+        for spec in ("8,10", "16,16", "31,32", "16", "16,17,18"):
+            with self.subTest(spec=spec), self.assertRaises(ValueError):
+                functional_pair(spec)
+
     def test_aggregation_uses_same_tso_and_gso_policy_on_both_endpoints(self):
         self.assertEqual(list(ethernet_settings(False).values()), ["off", "off", "off"])
         self.assertEqual(list(ethernet_settings(True).values()), ["on", "on", "off"])

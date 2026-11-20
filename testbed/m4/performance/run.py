@@ -19,7 +19,7 @@ from model import measure, schedule, summarize
 SCRIPTS = Path(__file__).resolve().parent
 REPO = SCRIPTS.parents[2]
 VOLUME = "utcp-data"
-HELPER_CPUS = "28-31"
+E_CORES = set(range(16, 32))
 MTU = 1500
 STACK_IP = "198.18.0.2"
 TUN_GATEWAY = "198.18.0.1"
@@ -66,6 +66,13 @@ def load_cgroup(state):
     return {key: int(value) for key, value in (line.split() for line in rows.splitlines())}
 
 
+def functional_pair(spec):
+    cpus = tuple(map(int, spec.split(",")))
+    if len(cpus) != 2 or len(set(cpus)) != 2 or not set(cpus) <= E_CORES:
+        raise ValueError("expected two distinct E-cores, for example 28,30")
+    return cpus
+
+
 def ethernet_settings(aggregation):
     segmentation = "on" if aggregation else "off"
     return {"tso": segmentation, "gso": segmentation, "gro": "off"}
@@ -108,7 +115,8 @@ class Campaign:
         self.network = f"{self.prefix}-net"
         self.store = f"{self.prefix}-data"
         self.containers = {role: f"{self.prefix}-{role}" for role in ("dut", "peer")}
-        self.cpus = dict(zip(self.containers, (28, 30) if args.functional else (8, 10), strict=True))
+        self.cpus = dict(zip(self.containers, args.functional_cpus if args.functional else (8, 10),
+                             strict=True))
         self.addresses = {role: f"198.19.{args.subnet}.{index}"
                           for index, role in enumerate(self.containers, 2)}
         self.created = []
@@ -150,7 +158,8 @@ class Campaign:
         mounts = [option for name, mode in self.modes.items()
                   for option in ("-v", f"{mode.binary}:/input-{name}:ro")]
         data_mount = ("-v", f"{VOLUME}:/data")
-        self.run_container(self.store, "--network", "none", "--cpuset-cpus", HELPER_CPUS,
+        self.run_container(self.store, "--network", "none", "--cpuset-cpus",
+                           ",".join(map(str, self.args.controller_cpus)),
                            *data_mount, *mounts)
         self.docker_exec("data", "mkdir", "-p", "/data/m4/performance")
         self.docker_exec("data", "mkdir", self.directory)
@@ -177,7 +186,8 @@ class Campaign:
             "sha256": self.digest, "cpus": self.cpus, "addresses": self.addresses,
             "stack_ip": STACK_IP, "mtu": MTU, "app_options": APP_OPTIONS,
             "ethernet_aggregation": self.args.ethernet_aggregation,
-            "functional": self.args.functional, "volume": VOLUME, "host_pre": info()})
+            "functional": self.args.functional, "controller_cpus": self.args.controller_cpus,
+            "controller_nice": os.nice(0), "volume": VOLUME, "host_pre": info()})
         if self.args.probe_perf:
             command = ("perf", "stat", "-e", "task-clock,cycles,instructions", "--", "/usr/bin/true")
             attempt = invoke(*command, check=False)
@@ -381,7 +391,8 @@ def parse():
     p.add_argument("--repeats", type=int, default=5)
     p.add_argument("--timeout", type=float, default=120)
     p.add_argument("--subnet", type=int, default=220, help="third octet for a dedicated 198.19.X.0/24 bridge")
-    p.add_argument("--functional", action="store_true", help="use CPUs 28 and 30 for untimed testing")
+    p.add_argument("--functional", action="store_true", help="use E-cores for untimed testing")
+    p.add_argument("--functional-cpus", help="untimed DUT,peer CPUs within controller affinity [28,30]")
     p.add_argument("--probe-perf", action="store_true", help="retain an ordinary process-scoped perf attempt")
     p.add_argument("--ethernet-aggregation", action="store_true",
                    help="enable ethernet TSO/GSO in every arm so aggregates can reach TUN")
@@ -417,8 +428,19 @@ def parse():
     commits = [args.bulk_source, args.candidate_source, args.reference_source]
     if any(not re.fullmatch("[0-9a-f]{40}", commit) for commit in commits if commit):
         p.error("all binary sources must be full commit hashes")
-    if not os.sched_getaffinity(0) <= set(range(28, 32)):
-        p.error("start the controller with taskset -c 28-31 nice -n 10")
+    cpus = os.sched_getaffinity(0)
+    if not cpus <= E_CORES:
+        p.error("pin the controller to the assigned E-cores, e.g. taskset -c 28-31 nice -n 10")
+    args.controller_cpus = sorted(cpus)
+    if args.functional_cpus and not args.functional:
+        p.error("--functional-cpus requires --functional")
+    if args.functional:
+        try:
+            args.functional_cpus = functional_pair(args.functional_cpus or "28,30")
+        except ValueError as error:
+            p.error(str(error))
+        if not set(args.functional_cpus) <= cpus:
+            p.error("--functional-cpus must be within the controller's E-core affinity")
     return args
 
 
