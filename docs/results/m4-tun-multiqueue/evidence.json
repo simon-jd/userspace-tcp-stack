@@ -1,0 +1,3104 @@
+{
+  "mq-echo-r1": {
+    "arms": 10,
+    "host_overlap_arms": [
+      "06-r3-mq2",
+      "08-r4-mq1",
+      "09-r5-mq1"
+    ],
+    "mq1": {
+      "dev_rx_read_calls": [
+        41106,
+        41219,
+        41258
+      ],
+      "dev_tx_write_calls": [
+        25422,
+        25424,
+        25441
+      ],
+      "dut_cpu_s_per_gb": [
+        0.7045362144708633,
+        0.7397234439849852,
+        0.8336566388607025
+      ],
+      "echo_gbps": [
+        0.5239995188195952,
+        0.5240188902012847,
+        0.524038199076246
+      ]
+    },
+    "mq2": {
+      "dev_rx_read_calls": [
+        41203,
+        41260,
+        41275
+      ],
+      "dev_tx_write_calls": [
+        25412,
+        25428,
+        25450
+      ],
+      "dut_cpu_s_per_gb": [
+        0.7057618349790572,
+        0.7545016705989837,
+        0.8451398462057113
+      ],
+      "echo_gbps": [
+        0.5240073822770936,
+        0.5240151181037805,
+        0.524055079523371
+      ]
+    },
+    "rows": [
+      {
+        "accepted_rps": 999,
+        "arm": "01-r1-mq1",
+        "client_seconds": 8.19651,
+        "dev_rx_read_calls": 41219,
+        "dev_tx_write_calls": 25424,
+        "dut_cpu_s_per_gb": 0.7045362144708633,
+        "echo_gbps": 0.5239995188195952,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            24797
+          ],
+          "tx": [
+            25424
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 4.5832768082618704,
+        "queues": 1,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.0,
+        "slot_net_rx_softirqs": 50323,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 6419,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "02-r1-mq2",
+        "client_seconds": 8.195641,
+        "dev_rx_read_calls": 41260,
+        "dev_tx_write_calls": 25430,
+        "dut_cpu_s_per_gb": 0.755343586206436,
+        "echo_gbps": 0.524055079523371,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            18582,
+            6212
+          ],
+          "tx": [
+            19074,
+            6356
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 4.573319107294083,
+        "queues": 2,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.0,
+        "slot_net_rx_softirqs": 50081,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 6804,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "03-r2-mq2",
+        "client_seconds": 8.195985,
+        "dev_rx_read_calls": 41275,
+        "dev_tx_write_calls": 25427,
+        "dut_cpu_s_per_gb": 0.7057618349790572,
+        "echo_gbps": 0.5240330840039361,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            12393,
+            12404
+          ],
+          "tx": [
+            12711,
+            12716
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 4.5414455235004425,
+        "queues": 2,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.0,
+        "slot_net_rx_softirqs": 50010,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 6675,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "04-r2-mq1",
+        "client_seconds": 8.196207,
+        "dev_rx_read_calls": 41258,
+        "dev_tx_write_calls": 25424,
+        "dut_cpu_s_per_gb": 0.7103681564331054,
+        "echo_gbps": 0.5240188902012847,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            24797
+          ],
+          "tx": [
+            25424
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 4.464350640773773,
+        "queues": 1,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.0,
+        "slot_net_rx_softirqs": 49977,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 7060,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "05-r3-mq1",
+        "client_seconds": 8.196085,
+        "dev_rx_read_calls": 41234,
+        "dev_tx_write_calls": 25437,
+        "dut_cpu_s_per_gb": 0.7397234439849852,
+        "echo_gbps": 0.5240266903039683,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            24799
+          ],
+          "tx": [
+            25437
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 4.528628662228584,
+        "queues": 1,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.0,
+        "slot_net_rx_softirqs": 50543,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 6705,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "06-r3-mq2",
+        "client_seconds": 8.196266,
+        "dev_rx_read_calls": 41237,
+        "dev_tx_write_calls": 25428,
+        "dut_cpu_s_per_gb": 0.7545016705989837,
+        "echo_gbps": 0.5240151181037805,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            12406,
+            12392
+          ],
+          "tx": [
+            12718,
+            12710
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 5.543958395719527,
+        "queues": 2,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 8.331179941002949,
+        "slot_net_rx_softirqs": 50580,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 8.250729418074549,
+        "slot_timer_softirqs": 8385,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "07-r4-mq2",
+        "client_seconds": 8.19627,
+        "dev_rx_read_calls": 41203,
+        "dev_tx_write_calls": 25412,
+        "dut_cpu_s_per_gb": 0.8451398462057113,
+        "echo_gbps": 0.5240148623703221,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            13930,
+            10838
+          ],
+          "tx": [
+            14292,
+            11120
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 6.179327145218849,
+        "queues": 2,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.0,
+        "slot_net_rx_softirqs": 50130,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 8122,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "08-r4-mq1",
+        "client_seconds": 8.196256,
+        "dev_rx_read_calls": 41106,
+        "dev_tx_write_calls": 25441,
+        "dut_cpu_s_per_gb": 0.8336566388607025,
+        "echo_gbps": 0.5240157574385182,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            24816
+          ],
+          "tx": [
+            25441
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 5.539532750844955,
+        "queues": 1,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 4.6894682301608945,
+        "slot_net_rx_softirqs": 50028,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 4.334955004090538,
+        "slot_timer_softirqs": 8208,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "09-r5-mq1",
+        "client_seconds": 8.195905,
+        "dev_rx_read_calls": 41211,
+        "dev_tx_write_calls": 25422,
+        "dut_cpu_s_per_gb": 0.7726680487394332,
+        "echo_gbps": 0.524038199076246,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            24795
+          ],
+          "tx": [
+            25422
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 6.165586411952972,
+        "queues": 1,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 10.101049156272927,
+        "slot_net_rx_softirqs": 49884,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 9.783123012961605,
+        "slot_timer_softirqs": 8012,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      },
+      {
+        "accepted_rps": 999,
+        "arm": "10-r5-mq2",
+        "client_seconds": 8.196387,
+        "dev_rx_read_calls": 41271,
+        "dev_tx_write_calls": 25450,
+        "dut_cpu_s_per_gb": 0.7415469735860825,
+        "echo_gbps": 0.5240073822770936,
+        "established": 16,
+        "fd_traffic": {
+          "rx": [
+            12424,
+            12393
+          ],
+          "tx": [
+            12738,
+            12712
+          ]
+        },
+        "offered_rps": 1000,
+        "peer_cpu_s_per_gb": 6.158476695418358,
+        "queues": 2,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.0,
+        "slot_net_rx_softirqs": 50142,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 8293,
+        "tun_flags": "0x5901",
+        "valid": true,
+        "verified_echo_bytes": 536870912
+      }
+    ],
+    "sha256_manifest": "7d128a7af834a638c8527bfd9902893a63e595e271732b6f29b818720cb8afe9"
+  },
+  "mq-paced-p1": {
+    "arms": 6,
+    "groups": {
+      "dut-to-peer/kernel": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.109025547,
+            "median": 14.109025547,
+            "min": 14.109025547
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.064897,
+            "median": 0.064897,
+            "min": 0.064897
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.44718499999999994,
+            "median": 0.44718499999999994,
+            "min": 0.44718499999999994
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.38228799999999996,
+            "median": 0.38228799999999996,
+            "min": 0.38228799999999996
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.081805,
+            "median": 0.081805,
+            "min": 0.081805
+          },
+          "send_total_s_per_gb": {
+            "max": 0.567649,
+            "median": 0.567649,
+            "min": 0.567649
+          },
+          "send_user_s_per_gb": {
+            "max": 0.485844,
+            "median": 0.485844,
+            "min": 0.485844
+          }
+        },
+        "valid": 1
+      },
+      "dut-to-peer/mq1": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 0.9958486,
+            "median": 0.9958486,
+            "min": 0.9958486
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.070823,
+            "median": 0.070823,
+            "min": 0.070823
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.47112699999999996,
+            "median": 0.47112699999999996,
+            "min": 0.47112699999999996
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.400304,
+            "median": 0.400304,
+            "min": 0.400304
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.146729,
+            "median": 0.146729,
+            "min": 0.146729
+          },
+          "send_total_s_per_gb": {
+            "max": 0.860742,
+            "median": 0.860742,
+            "min": 0.860742
+          },
+          "send_user_s_per_gb": {
+            "max": 0.714013,
+            "median": 0.714013,
+            "min": 0.714013
+          }
+        },
+        "valid": 1
+      },
+      "dut-to-peer/mq2": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 0.998827856,
+            "median": 0.998827856,
+            "min": 0.998827856
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.070633,
+            "median": 0.070633,
+            "min": 0.070633
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.455638,
+            "median": 0.455638,
+            "min": 0.455638
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.385005,
+            "median": 0.385005,
+            "min": 0.385005
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.129804,
+            "median": 0.129804,
+            "min": 0.129804
+          },
+          "send_total_s_per_gb": {
+            "max": 0.776749,
+            "median": 0.776749,
+            "min": 0.776749
+          },
+          "send_user_s_per_gb": {
+            "max": 0.646945,
+            "median": 0.646945,
+            "min": 0.646945
+          }
+        },
+        "valid": 1
+      },
+      "peer-to-dut/kernel": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.42852991,
+            "median": 14.42852991,
+            "min": 14.42852991
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.050628,
+            "median": 0.050628,
+            "min": 0.050628
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.428849,
+            "median": 0.428849,
+            "min": 0.428849
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.378221,
+            "median": 0.378221,
+            "min": 0.378221
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.09285199999999999,
+            "median": 0.09285199999999999,
+            "min": 0.09285199999999999
+          },
+          "send_total_s_per_gb": {
+            "max": 0.5551159999999999,
+            "median": 0.5551159999999999,
+            "min": 0.5551159999999999
+          },
+          "send_user_s_per_gb": {
+            "max": 0.46226399999999995,
+            "median": 0.46226399999999995,
+            "min": 0.46226399999999995
+          }
+        },
+        "valid": 1
+      },
+      "peer-to-dut/mq1": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.558367579,
+            "median": 14.558367579,
+            "min": 14.558367579
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.088405,
+            "median": 0.088405,
+            "min": 0.088405
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.5213909999999999,
+            "median": 0.5213909999999999,
+            "min": 0.5213909999999999
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.432986,
+            "median": 0.432986,
+            "min": 0.432986
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.087064,
+            "median": 0.087064,
+            "min": 0.087064
+          },
+          "send_total_s_per_gb": {
+            "max": 0.550405,
+            "median": 0.550405,
+            "min": 0.550405
+          },
+          "send_user_s_per_gb": {
+            "max": 0.463341,
+            "median": 0.463341,
+            "min": 0.463341
+          }
+        },
+        "valid": 1
+      },
+      "peer-to-dut/mq2": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.482195761,
+            "median": 14.482195761,
+            "min": 14.482195761
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.09042399999999999,
+            "median": 0.09042399999999999,
+            "min": 0.09042399999999999
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.524461,
+            "median": 0.524461,
+            "min": 0.524461
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.434037,
+            "median": 0.434037,
+            "min": 0.434037
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.109013,
+            "median": 0.109013,
+            "min": 0.109013
+          },
+          "send_total_s_per_gb": {
+            "max": 0.553067,
+            "median": 0.553067,
+            "min": 0.553067
+          },
+          "send_user_s_per_gb": {
+            "max": 0.444054,
+            "median": 0.444054,
+            "min": 0.444054
+          }
+        },
+        "valid": 1
+      }
+    },
+    "host_overlap_arms": [
+      "02-r1-dut-to-peer-mq1"
+    ],
+    "rows": [
+      {
+        "arm": "01-r1-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.567649,
+        "dut_sys_s_per_gb": 0.081805,
+        "dut_user_s_per_gb": 0.485844,
+        "mode": "kernel",
+        "receiver_gbps": 14.109025547,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.205246636771302,
+        "slot_net_rx_softirqs": 26110,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.532600896860988,
+        "slot_timer_softirqs": 189
+      },
+      {
+        "arm": "02-r1-dut-to-peer-mq1",
+        "dev_rx_read_calls": 30635,
+        "dev_tx_write_calls": 15355,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.860742,
+        "dut_sys_s_per_gb": 0.146729,
+        "dut_user_s_per_gb": 0.714013,
+        "fd_traffic": {
+          "rx": [
+            15319
+          ],
+          "tx": [
+            15355
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 0.9958486,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.161161520190024,
+        "slot_net_rx_softirqs": 16436,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 2.0186437054631834,
+        "slot_timer_softirqs": 958
+      },
+      {
+        "arm": "03-r1-dut-to-peer-mq2",
+        "dev_rx_read_calls": 30695,
+        "dev_tx_write_calls": 15355,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.776749,
+        "dut_sys_s_per_gb": 0.129804,
+        "dut_user_s_per_gb": 0.646945,
+        "fd_traffic": {
+          "rx": [
+            1,
+            15347
+          ],
+          "tx": [
+            0,
+            15355
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 0.998827856,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.8784911946692051,
+        "slot_net_rx_softirqs": 16193,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.7832984293193715,
+        "slot_timer_softirqs": 1024
+      },
+      {
+        "arm": "04-r1-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.428849,
+        "dut_sys_s_per_gb": 0.050628,
+        "dut_user_s_per_gb": 0.378221,
+        "mode": "kernel",
+        "receiver_gbps": 14.42852991,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.8519859813084121,
+        "slot_net_rx_softirqs": 23006,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.1510514018691596,
+        "slot_timer_softirqs": 244
+      },
+      {
+        "arm": "05-r1-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23198,
+        "dev_tx_write_calls": 19038,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5213909999999999,
+        "dut_sys_s_per_gb": 0.088405,
+        "dut_user_s_per_gb": 0.432986,
+        "fd_traffic": {
+          "rx": [
+            19357
+          ],
+          "tx": [
+            19038
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.558367579,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.1153156822810602,
+        "slot_net_rx_softirqs": 38419,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.09698574338085657,
+        "slot_timer_softirqs": 314
+      },
+      {
+        "arm": "06-r1-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23142,
+        "dev_tx_write_calls": 19031,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.524461,
+        "dut_sys_s_per_gb": 0.09042399999999999,
+        "dut_user_s_per_gb": 0.434037,
+        "fd_traffic": {
+          "rx": [
+            19304,
+            2
+          ],
+          "tx": [
+            19031,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.482195761,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.6070721649484533,
+        "slot_net_rx_softirqs": 38218,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.19470103092783472,
+        "slot_timer_softirqs": 319
+      }
+    ],
+    "sha256_manifest": "af6cd3335bf606d1167d4534b258a48c0b4b5ab43720c2cdaab4d26369e0ba2c"
+  },
+  "mq-paced-r1": {
+    "arms": 30,
+    "groups": {
+      "dut-to-peer/kernel": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.58925914,
+            "median": 14.429789185,
+            "min": 14.049499498
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.0569,
+            "median": 0.052719999999999996,
+            "min": 0.044254999999999996
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.44234799999999996,
+            "median": 0.43248999999999993,
+            "min": 0.42711299999999996
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.387055,
+            "median": 0.382858,
+            "min": 0.370868
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.095996,
+            "median": 0.080993,
+            "min": 0.075815
+          },
+          "send_total_s_per_gb": {
+            "max": 0.5584549999999999,
+            "median": 0.554771,
+            "min": 0.548958
+          },
+          "send_user_s_per_gb": {
+            "max": 0.480531,
+            "median": 0.471806,
+            "min": 0.458984
+          }
+        },
+        "valid": 5
+      },
+      "dut-to-peer/mq1": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 0.994489663,
+            "median": 0.99317264,
+            "min": 0.986003268
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.296746,
+            "median": 0.242701,
+            "min": 0.16441999999999998
+          },
+          "recv_total_s_per_gb": {
+            "max": 1.914523,
+            "median": 1.413313,
+            "min": 1.185338
+          },
+          "recv_user_s_per_gb": {
+            "max": 1.617777,
+            "median": 1.157473,
+            "min": 1.005742
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.506693,
+            "median": 0.375216,
+            "min": 0.344201
+          },
+          "send_total_s_per_gb": {
+            "max": 2.9591309999999997,
+            "median": 2.156978,
+            "min": 1.9155989999999998
+          },
+          "send_user_s_per_gb": {
+            "max": 2.452438,
+            "median": 1.781762,
+            "min": 1.5713979999999999
+          }
+        },
+        "valid": 5
+      },
+      "dut-to-peer/mq2": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 0.997694044,
+            "median": 0.976331824,
+            "min": 0.970151637
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.23299399999999998,
+            "median": 0.201536,
+            "min": 0.079645
+          },
+          "recv_total_s_per_gb": {
+            "max": 1.6461329999999998,
+            "median": 1.3839569999999999,
+            "min": 0.473838
+          },
+          "recv_user_s_per_gb": {
+            "max": 1.4211719999999999,
+            "median": 1.182421,
+            "min": 0.39419299999999996
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.435874,
+            "median": 0.388018,
+            "min": 0.162695
+          },
+          "send_total_s_per_gb": {
+            "max": 2.6174109999999997,
+            "median": 2.1890959999999997,
+            "min": 0.870473
+          },
+          "send_user_s_per_gb": {
+            "max": 2.182534,
+            "median": 1.8086929999999999,
+            "min": 0.707778
+          }
+        },
+        "valid": 5
+      },
+      "peer-to-dut/kernel": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.497831225,
+            "median": 14.359853826,
+            "min": 13.596176891
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.067088,
+            "median": 0.053842,
+            "min": 0.047674999999999995
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.45665599999999995,
+            "median": 0.43589199999999995,
+            "min": 0.426909
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.40293199999999996,
+            "median": 0.38575699999999996,
+            "min": 0.372452
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.10381,
+            "median": 0.08594099999999999,
+            "min": 0.077967
+          },
+          "send_total_s_per_gb": {
+            "max": 0.5869289999999999,
+            "median": 0.5571200000000001,
+            "min": 0.552622
+          },
+          "send_user_s_per_gb": {
+            "max": 0.48311899999999997,
+            "median": 0.476799,
+            "min": 0.46668099999999996
+          }
+        },
+        "valid": 5
+      },
+      "peer-to-dut/mq1": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.705255352,
+            "median": 14.473469874,
+            "min": 13.946047053
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.09158899999999999,
+            "median": 0.08609699999999999,
+            "min": 0.082117
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.547986,
+            "median": 0.5238079999999999,
+            "min": 0.518599
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.461889,
+            "median": 0.43401799999999996,
+            "min": 0.429639
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.099988,
+            "median": 0.08483099999999999,
+            "min": 0.07608
+          },
+          "send_total_s_per_gb": {
+            "max": 0.5743499999999999,
+            "median": 0.5532119999999999,
+            "min": 0.544935
+          },
+          "send_user_s_per_gb": {
+            "max": 0.48029299999999997,
+            "median": 0.46933199999999997,
+            "min": 0.444947
+          }
+        },
+        "valid": 5
+      },
+      "peer-to-dut/mq2": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.567803542,
+            "median": 14.361536066,
+            "min": 13.951744647
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.09713999999999999,
+            "median": 0.084136,
+            "min": 0.07688099999999999
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.5484359999999999,
+            "median": 0.525016,
+            "min": 0.520842
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.45613699999999996,
+            "median": 0.448135,
+            "min": 0.432938
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.095078,
+            "median": 0.078967,
+            "min": 0.064089
+          },
+          "send_total_s_per_gb": {
+            "max": 0.574476,
+            "median": 0.5567679999999999,
+            "min": 0.548766
+          },
+          "send_user_s_per_gb": {
+            "max": 0.48467699999999997,
+            "median": 0.479246,
+            "min": 0.47135699999999997
+          }
+        },
+        "valid": 5
+      }
+    },
+    "host_overlap_arms": [
+      "01-r1-dut-to-peer-kernel",
+      "02-r1-dut-to-peer-mq1",
+      "03-r1-dut-to-peer-mq2",
+      "10-r2-dut-to-peer-mq2",
+      "11-r2-dut-to-peer-mq1",
+      "13-r3-dut-to-peer-kernel",
+      "14-r3-dut-to-peer-mq1",
+      "15-r3-dut-to-peer-mq2",
+      "17-r3-peer-to-dut-mq1",
+      "21-r4-peer-to-dut-kernel",
+      "22-r4-dut-to-peer-mq2",
+      "23-r4-dut-to-peer-mq1",
+      "26-r5-dut-to-peer-mq1",
+      "27-r5-dut-to-peer-mq2",
+      "28-r5-peer-to-dut-kernel",
+      "29-r5-peer-to-dut-mq1"
+    ],
+    "rows": [
+      {
+        "arm": "01-r1-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.5584549999999999,
+        "dut_sys_s_per_gb": 0.077924,
+        "dut_user_s_per_gb": 0.480531,
+        "mode": "kernel",
+        "receiver_gbps": 14.049499498,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 15.847370786516853,
+        "slot_net_rx_softirqs": 22564,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 14.94849438202247,
+        "slot_timer_softirqs": 300
+      },
+      {
+        "arm": "02-r1-dut-to-peer-mq1",
+        "dev_rx_read_calls": 30588,
+        "dev_tx_write_calls": 15357,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.009296,
+        "dut_sys_s_per_gb": 0.36569999999999997,
+        "dut_user_s_per_gb": 1.643596,
+        "fd_traffic": {
+          "rx": [
+            15296
+          ],
+          "tx": [
+            15357
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 0.986003268,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 12.178657560056525,
+        "slot_net_rx_softirqs": 16195,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 11.754729156853509,
+        "slot_timer_softirqs": 1448
+      },
+      {
+        "arm": "03-r1-dut-to-peer-mq2",
+        "dev_rx_read_calls": 30431,
+        "dev_tx_write_calls": 15356,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.6174109999999997,
+        "dut_sys_s_per_gb": 0.43487699999999996,
+        "dut_user_s_per_gb": 2.182534,
+        "fd_traffic": {
+          "rx": [
+            1,
+            15217
+          ],
+          "tx": [
+            0,
+            15356
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 0.971693844,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 6.930918200885575,
+        "slot_net_rx_softirqs": 16466,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 6.534740153810301,
+        "slot_timer_softirqs": 1270
+      },
+      {
+        "arm": "04-r1-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.426909,
+        "dut_sys_s_per_gb": 0.054457,
+        "dut_user_s_per_gb": 0.372452,
+        "mode": "kernel",
+        "receiver_gbps": 14.443342295,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.6964745011086473,
+        "slot_net_rx_softirqs": 23016,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.8095565410199556,
+        "slot_timer_softirqs": 254
+      },
+      {
+        "arm": "05-r1-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23277,
+        "dev_tx_write_calls": 19051,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.518599,
+        "dut_sys_s_per_gb": 0.08896,
+        "dut_user_s_per_gb": 0.429639,
+        "fd_traffic": {
+          "rx": [
+            19452
+          ],
+          "tx": [
+            19051
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.64862717,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.053927893738141,
+        "slot_net_rx_softirqs": 38346,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.2949146110056935,
+        "slot_timer_softirqs": 406
+      },
+      {
+        "arm": "06-r1-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23106,
+        "dev_tx_write_calls": 19028,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.520842,
+        "dut_sys_s_per_gb": 0.084136,
+        "dut_user_s_per_gb": 0.436706,
+        "fd_traffic": {
+          "rx": [
+            0,
+            19260
+          ],
+          "tx": [
+            0,
+            19028
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.55313336,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.0553544776119406,
+        "slot_net_rx_softirqs": 38301,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.3090858208955225,
+        "slot_timer_softirqs": 399
+      },
+      {
+        "arm": "07-r2-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23465,
+        "dev_tx_write_calls": 19006,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.525016,
+        "dut_sys_s_per_gb": 0.07688099999999999,
+        "dut_user_s_per_gb": 0.448135,
+        "fd_traffic": {
+          "rx": [
+            2,
+            19649
+          ],
+          "tx": [
+            0,
+            19006
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.567803542,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.1298839458413918,
+        "slot_net_rx_softirqs": 38258,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.35618955512572464,
+        "slot_timer_softirqs": 427
+      },
+      {
+        "arm": "08-r2-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23490,
+        "dev_tx_write_calls": 18008,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5238079999999999,
+        "dut_sys_s_per_gb": 0.09158899999999999,
+        "dut_user_s_per_gb": 0.43221899999999996,
+        "fd_traffic": {
+          "rx": [
+            19782
+          ],
+          "tx": [
+            18008
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.705255352,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.0338519924098684,
+        "slot_net_rx_softirqs": 36147,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.2748387096774206,
+        "slot_timer_softirqs": 360
+      },
+      {
+        "arm": "09-r2-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.42780399999999996,
+        "dut_sys_s_per_gb": 0.053842,
+        "dut_user_s_per_gb": 0.37396199999999996,
+        "mode": "kernel",
+        "receiver_gbps": 14.497831225,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.9538779956427006,
+        "slot_net_rx_softirqs": 23997,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.5181481481481472,
+        "slot_timer_softirqs": 229
+      },
+      {
+        "arm": "10-r2-dut-to-peer-mq2",
+        "dev_rx_read_calls": 30523,
+        "dev_tx_write_calls": 15355,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.576363,
+        "dut_sys_s_per_gb": 0.435874,
+        "dut_user_s_per_gb": 2.140489,
+        "fd_traffic": {
+          "rx": [
+            15263,
+            0
+          ],
+          "tx": [
+            15355,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 0.970151637,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 7.943876930276088,
+        "slot_net_rx_softirqs": 16016,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 7.47593121197941,
+        "slot_timer_softirqs": 1355
+      },
+      {
+        "arm": "11-r2-dut-to-peer-mq1",
+        "dev_rx_read_calls": 30581,
+        "dev_tx_write_calls": 15357,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.9591309999999997,
+        "dut_sys_s_per_gb": 0.506693,
+        "dut_user_s_per_gb": 2.452438,
+        "fd_traffic": {
+          "rx": [
+            15292
+          ],
+          "tx": [
+            15357
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 0.993637754,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 4.73081293082957,
+        "slot_net_rx_softirqs": 16101,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 4.279184692179701,
+        "slot_timer_softirqs": 1334
+      },
+      {
+        "arm": "12-r2-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.554651,
+        "dut_sys_s_per_gb": 0.075815,
+        "dut_user_s_per_gb": 0.478836,
+        "mode": "kernel",
+        "receiver_gbps": 14.435036255,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.5812641083521451,
+        "slot_net_rx_softirqs": 22940,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.3555304740406327,
+        "slot_timer_softirqs": 194
+      },
+      {
+        "arm": "13-r3-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.554771,
+        "dut_sys_s_per_gb": 0.082965,
+        "dut_user_s_per_gb": 0.471806,
+        "mode": "kernel",
+        "receiver_gbps": 14.285281518,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 4.476474501108648,
+        "slot_net_rx_softirqs": 22702,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 4.033015521064303,
+        "slot_timer_softirqs": 203
+      },
+      {
+        "arm": "14-r3-dut-to-peer-mq1",
+        "dev_rx_read_calls": 30577,
+        "dev_tx_write_calls": 15356,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.578151,
+        "dut_sys_s_per_gb": 0.422681,
+        "dut_user_s_per_gb": 2.15547,
+        "fd_traffic": {
+          "rx": [
+            15290
+          ],
+          "tx": [
+            15356
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 0.99317264,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 7.100437766209182,
+        "slot_net_rx_softirqs": 15821,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 6.698166114529106,
+        "slot_timer_softirqs": 1051
+      },
+      {
+        "arm": "15-r3-dut-to-peer-mq2",
+        "dev_rx_read_calls": 30488,
+        "dev_tx_write_calls": 15355,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.1890959999999997,
+        "dut_sys_s_per_gb": 0.380403,
+        "dut_user_s_per_gb": 1.8086929999999999,
+        "fd_traffic": {
+          "rx": [
+            1,
+            15246
+          ],
+          "tx": [
+            0,
+            15355
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 0.976331824,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 5.185317608594115,
+        "slot_net_rx_softirqs": 15986,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 4.8350140121438585,
+        "slot_timer_softirqs": 1187
+      },
+      {
+        "arm": "16-r3-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.43589199999999995,
+        "dut_sys_s_per_gb": 0.047674999999999995,
+        "dut_user_s_per_gb": 0.388217,
+        "mode": "kernel",
+        "receiver_gbps": 14.359853826,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.318795454545453,
+        "slot_net_rx_softirqs": 25321,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.8642499999999986,
+        "slot_timer_softirqs": 212
+      },
+      {
+        "arm": "17-r3-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23333,
+        "dev_tx_write_calls": 18258,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.519824,
+        "dut_sys_s_per_gb": 0.085806,
+        "dut_user_s_per_gb": 0.43401799999999996,
+        "fd_traffic": {
+          "rx": [
+            19398
+          ],
+          "tx": [
+            18258
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.473469874,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 3.892056451612902,
+        "slot_net_rx_softirqs": 37443,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 3.085604838709676,
+        "slot_timer_softirqs": 359
+      },
+      {
+        "arm": "18-r3-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23042,
+        "dev_tx_write_calls": 19051,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5248349999999999,
+        "dut_sys_s_per_gb": 0.09189699999999999,
+        "dut_user_s_per_gb": 0.432938,
+        "fd_traffic": {
+          "rx": [
+            0,
+            19145
+          ],
+          "tx": [
+            0,
+            19051
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.361536066,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.2697005988023944,
+        "slot_net_rx_softirqs": 38172,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.4712974051896201,
+        "slot_timer_softirqs": 276
+      },
+      {
+        "arm": "19-r4-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23449,
+        "dev_tx_write_calls": 18971,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5372279999999999,
+        "dut_sys_s_per_gb": 0.081091,
+        "dut_user_s_per_gb": 0.45613699999999996,
+        "fd_traffic": {
+          "rx": [
+            0,
+            19548
+          ],
+          "tx": [
+            0,
+            18971
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.144216628,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.164563492063493,
+        "slot_net_rx_softirqs": 38120,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 1.172500000000001,
+        "slot_timer_softirqs": 342
+      },
+      {
+        "arm": "20-r4-peer-to-dut-mq1",
+        "dev_rx_read_calls": 21947,
+        "dev_tx_write_calls": 14923,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.536769,
+        "dut_sys_s_per_gb": 0.082117,
+        "dut_user_s_per_gb": 0.454652,
+        "fd_traffic": {
+          "rx": [
+            18654
+          ],
+          "tx": [
+            14923
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.324228811,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.7821995926680256,
+        "slot_net_rx_softirqs": 28778,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.1712016293279033,
+        "slot_timer_softirqs": 359
+      },
+      {
+        "arm": "21-r4-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.45665599999999995,
+        "dut_sys_s_per_gb": 0.053724,
+        "dut_user_s_per_gb": 0.40293199999999996,
+        "mode": "kernel",
+        "receiver_gbps": 13.596176891,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 20.620465631929047,
+        "slot_net_rx_softirqs": 20813,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 19.95527716186253,
+        "slot_timer_softirqs": 317
+      },
+      {
+        "arm": "22-r4-dut-to-peer-mq2",
+        "dev_rx_read_calls": 30342,
+        "dev_tx_write_calls": 15357,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.105786,
+        "dut_sys_s_per_gb": 0.388018,
+        "dut_user_s_per_gb": 1.717768,
+        "fd_traffic": {
+          "rx": [
+            0,
+            15174
+          ],
+          "tx": [
+            0,
+            15357
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 0.984353328,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 9.985230805463965,
+        "slot_net_rx_softirqs": 15963,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 9.655508714083844,
+        "slot_timer_softirqs": 1124
+      },
+      {
+        "arm": "23-r4-dut-to-peer-mq1",
+        "dev_rx_read_calls": 30447,
+        "dev_tx_write_calls": 15356,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 2.156978,
+        "dut_sys_s_per_gb": 0.375216,
+        "dut_user_s_per_gb": 1.781762,
+        "fd_traffic": {
+          "rx": [
+            15224
+          ],
+          "tx": [
+            15356
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 0.988221959,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 8.21457643161382,
+        "slot_net_rx_softirqs": 25474,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 7.883293894936111,
+        "slot_timer_softirqs": 1082
+      },
+      {
+        "arm": "24-r4-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.548958,
+        "dut_sys_s_per_gb": 0.080993,
+        "dut_user_s_per_gb": 0.46796499999999996,
+        "mode": "kernel",
+        "receiver_gbps": 14.58925914,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.226176470588234,
+        "slot_net_rx_softirqs": 25942,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.9999321266968313,
+        "slot_timer_softirqs": 236
+      },
+      {
+        "arm": "25-r5-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.55498,
+        "dut_sys_s_per_gb": 0.095996,
+        "dut_user_s_per_gb": 0.458984,
+        "mode": "kernel",
+        "receiver_gbps": 14.429789185,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.2167849223946794,
+        "slot_net_rx_softirqs": 22913,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.10813747228381458,
+        "slot_timer_softirqs": 225
+      },
+      {
+        "arm": "26-r5-dut-to-peer-mq1",
+        "dev_rx_read_calls": 30463,
+        "dev_tx_write_calls": 15356,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 1.9155989999999998,
+        "dut_sys_s_per_gb": 0.344201,
+        "dut_user_s_per_gb": 1.5713979999999999,
+        "fd_traffic": {
+          "rx": [
+            15233
+          ],
+          "tx": [
+            15356
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 0.994489663,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 7.1541929367148605,
+        "slot_net_rx_softirqs": 16175,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 6.846063048115666,
+        "slot_timer_softirqs": 999
+      },
+      {
+        "arm": "27-r5-dut-to-peer-mq2",
+        "dev_rx_read_calls": 30681,
+        "dev_tx_write_calls": 15355,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.870473,
+        "dut_sys_s_per_gb": 0.162695,
+        "dut_user_s_per_gb": 0.707778,
+        "fd_traffic": {
+          "rx": [
+            15340,
+            1
+          ],
+          "tx": [
+            15355,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 0.997694044,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 3.3562728785357736,
+        "slot_net_rx_softirqs": 16248,
+        "slot_net_tx_softirqs": 2,
+        "slot_nonirq_remainder_pct": 3.166113620156881,
+        "slot_timer_softirqs": 988
+      },
+      {
+        "arm": "28-r5-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.45284499999999994,
+        "dut_sys_s_per_gb": 0.067088,
+        "dut_user_s_per_gb": 0.38575699999999996,
+        "mode": "kernel",
+        "receiver_gbps": 13.647188974,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 3.4330196936542676,
+        "slot_net_rx_softirqs": 25414,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 2.557746170678338,
+        "slot_timer_softirqs": 237
+      },
+      {
+        "arm": "29-r5-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23358,
+        "dev_tx_write_calls": 18981,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.547986,
+        "dut_sys_s_per_gb": 0.08609699999999999,
+        "dut_user_s_per_gb": 0.461889,
+        "fd_traffic": {
+          "rx": [
+            19375
+          ],
+          "tx": [
+            18981
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 13.946047053,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 3.4631669865642984,
+        "slot_net_rx_softirqs": 38242,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 2.311535508637235,
+        "slot_timer_softirqs": 341
+      },
+      {
+        "arm": "30-r5-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23475,
+        "dev_tx_write_calls": 19011,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5484359999999999,
+        "dut_sys_s_per_gb": 0.09713999999999999,
+        "dut_user_s_per_gb": 0.451296,
+        "fd_traffic": {
+          "rx": [
+            19514,
+            0
+          ],
+          "tx": [
+            19011,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 13.951744647,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.8180038759689918,
+        "slot_net_rx_softirqs": 38545,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.0428100775193792,
+        "slot_timer_softirqs": 387
+      }
+    ],
+    "sha256_manifest": "560cbe5816cfecfce284f912277d92c0f739572ef4a5787dfe1edbe85fcac756"
+  },
+  "mq-uncapped-p1": {
+    "arms": 6,
+    "groups": {
+      "dut-to-peer/kernel": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 13.98628327,
+            "median": 13.98628327,
+            "min": 13.98628327
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.07239,
+            "median": 0.07239,
+            "min": 0.07239
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.44351999999999997,
+            "median": 0.44351999999999997,
+            "min": 0.44351999999999997
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.37112999999999996,
+            "median": 0.37112999999999996,
+            "min": 0.37112999999999996
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.083947,
+            "median": 0.083947,
+            "min": 0.083947
+          },
+          "send_total_s_per_gb": {
+            "max": 0.57264,
+            "median": 0.57264,
+            "min": 0.57264
+          },
+          "send_user_s_per_gb": {
+            "max": 0.488693,
+            "median": 0.488693,
+            "min": 0.488693
+          }
+        },
+        "valid": 1
+      },
+      "dut-to-peer/mq1": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 11.337012324,
+            "median": 11.337012324,
+            "min": 11.337012324
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.073701,
+            "median": 0.073701,
+            "min": 0.073701
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.464422,
+            "median": 0.464422,
+            "min": 0.464422
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.390721,
+            "median": 0.390721,
+            "min": 0.390721
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.09869599999999999,
+            "median": 0.09869599999999999,
+            "min": 0.09869599999999999
+          },
+          "send_total_s_per_gb": {
+            "max": 0.693867,
+            "median": 0.693867,
+            "min": 0.693867
+          },
+          "send_user_s_per_gb": {
+            "max": 0.595171,
+            "median": 0.595171,
+            "min": 0.595171
+          }
+        },
+        "valid": 1
+      },
+      "dut-to-peer/mq2": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 11.304739202,
+            "median": 11.304739202,
+            "min": 11.304739202
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.06482,
+            "median": 0.06482,
+            "min": 0.06482
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.459057,
+            "median": 0.459057,
+            "min": 0.459057
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.394237,
+            "median": 0.394237,
+            "min": 0.394237
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.099743,
+            "median": 0.099743,
+            "min": 0.099743
+          },
+          "send_total_s_per_gb": {
+            "max": 0.696211,
+            "median": 0.696211,
+            "min": 0.696211
+          },
+          "send_user_s_per_gb": {
+            "max": 0.596468,
+            "median": 0.596468,
+            "min": 0.596468
+          }
+        },
+        "valid": 1
+      },
+      "peer-to-dut/kernel": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.085667249,
+            "median": 14.085667249,
+            "min": 14.085667249
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.049048999999999995,
+            "median": 0.049048999999999995,
+            "min": 0.049048999999999995
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.434434,
+            "median": 0.434434,
+            "min": 0.434434
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.385385,
+            "median": 0.385385,
+            "min": 0.385385
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.099962,
+            "median": 0.099962,
+            "min": 0.099962
+          },
+          "send_total_s_per_gb": {
+            "max": 0.568785,
+            "median": 0.568785,
+            "min": 0.568785
+          },
+          "send_user_s_per_gb": {
+            "max": 0.468823,
+            "median": 0.468823,
+            "min": 0.468823
+          }
+        },
+        "valid": 1
+      },
+      "peer-to-dut/mq1": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.295575348,
+            "median": 14.295575348,
+            "min": 14.295575348
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.08699599999999999,
+            "median": 0.08699599999999999,
+            "min": 0.08699599999999999
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.53108,
+            "median": 0.53108,
+            "min": 0.53108
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.444084,
+            "median": 0.444084,
+            "min": 0.444084
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.091879,
+            "median": 0.091879,
+            "min": 0.091879
+          },
+          "send_total_s_per_gb": {
+            "max": 0.560266,
+            "median": 0.560266,
+            "min": 0.560266
+          },
+          "send_user_s_per_gb": {
+            "max": 0.468387,
+            "median": 0.468387,
+            "min": 0.468387
+          }
+        },
+        "valid": 1
+      },
+      "peer-to-dut/mq2": {
+        "attempts": 1,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.278095774,
+            "median": 14.278095774,
+            "min": 14.278095774
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.068894,
+            "median": 0.068894,
+            "min": 0.068894
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.513216,
+            "median": 0.513216,
+            "min": 0.513216
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.444322,
+            "median": 0.444322,
+            "min": 0.444322
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.090835,
+            "median": 0.090835,
+            "min": 0.090835
+          },
+          "send_total_s_per_gb": {
+            "max": 0.560981,
+            "median": 0.560981,
+            "min": 0.560981
+          },
+          "send_user_s_per_gb": {
+            "max": 0.47014599999999995,
+            "median": 0.47014599999999995,
+            "min": 0.47014599999999995
+          }
+        },
+        "valid": 1
+      }
+    },
+    "host_overlap_arms": [],
+    "rows": [
+      {
+        "arm": "01-r1-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.57264,
+        "dut_sys_s_per_gb": 0.083947,
+        "dut_user_s_per_gb": 0.488693,
+        "mode": "kernel",
+        "receiver_gbps": 13.98628327,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.298348214285713,
+        "slot_net_rx_softirqs": 23928,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.6287053571428558,
+        "slot_timer_softirqs": 190
+      },
+      {
+        "arm": "02-r1-dut-to-peer-mq1",
+        "dev_rx_read_calls": 16447,
+        "dev_tx_write_calls": 22908,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.693867,
+        "dut_sys_s_per_gb": 0.09869599999999999,
+        "dut_user_s_per_gb": 0.595171,
+        "fd_traffic": {
+          "rx": [
+            12626
+          ],
+          "tx": [
+            22908
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 11.337012324,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.7130448222565684,
+        "slot_net_rx_softirqs": 33305,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.403925811437403,
+        "slot_timer_softirqs": 155
+      },
+      {
+        "arm": "03-r1-dut-to-peer-mq2",
+        "dev_rx_read_calls": 17421,
+        "dev_tx_write_calls": 22922,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.696211,
+        "dut_sys_s_per_gb": 0.099743,
+        "dut_user_s_per_gb": 0.596468,
+        "fd_traffic": {
+          "rx": [
+            1,
+            13590
+          ],
+          "tx": [
+            0,
+            22922
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 11.304739202,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.3543431221020101,
+        "slot_net_rx_softirqs": 32319,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.0452241112828449,
+        "slot_timer_softirqs": 265
+      },
+      {
+        "arm": "04-r1-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.434434,
+        "dut_sys_s_per_gb": 0.049048999999999995,
+        "dut_user_s_per_gb": 0.385385,
+        "mode": "kernel",
+        "receiver_gbps": 14.085667249,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.4073814898419874,
+        "slot_net_rx_softirqs": 22940,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.73018058690745,
+        "slot_timer_softirqs": 210
+      },
+      {
+        "arm": "05-r1-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23073,
+        "dev_tx_write_calls": 18971,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.53108,
+        "dut_sys_s_per_gb": 0.08699599999999999,
+        "dut_user_s_per_gb": 0.444084,
+        "fd_traffic": {
+          "rx": [
+            19198
+          ],
+          "tx": [
+            18971
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.295575348,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.6362449799196777,
+        "slot_net_rx_softirqs": 38068,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 320
+      },
+      {
+        "arm": "06-r1-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23067,
+        "dev_tx_write_calls": 6750,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.513216,
+        "dut_sys_s_per_gb": 0.068894,
+        "dut_user_s_per_gb": 0.444322,
+        "fd_traffic": {
+          "rx": [
+            19181,
+            2
+          ],
+          "tx": [
+            6750,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.278095774,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.727574552683897,
+        "slot_net_rx_softirqs": 25920,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 1.1311530815109347,
+        "slot_timer_softirqs": 256
+      }
+    ],
+    "sha256_manifest": "42c630ec04ea3ae89d6558ae1e9d0d84493d866d37d5a289210497f81cffa1bf"
+  },
+  "mq-uncapped-r1": {
+    "arms": 30,
+    "groups": {
+      "dut-to-peer/kernel": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.525937337,
+            "median": 14.230725846,
+            "min": 14.014315013
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.070467,
+            "median": 0.052898999999999995,
+            "min": 0.042581999999999995
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.451186,
+            "median": 0.434175,
+            "min": 0.432068
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.39513,
+            "median": 0.381276,
+            "min": 0.37881899999999996
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.09906999999999999,
+            "median": 0.089957,
+            "min": 0.08394499999999999
+          },
+          "send_total_s_per_gb": {
+            "max": 0.568723,
+            "median": 0.563079,
+            "min": 0.550639
+          },
+          "send_user_s_per_gb": {
+            "max": 0.47706699999999996,
+            "median": 0.468777,
+            "min": 0.46432799999999996
+          }
+        },
+        "valid": 5
+      },
+      "dut-to-peer/mq1": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 11.633042305,
+            "median": 11.451898225,
+            "min": 11.143295626
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.076719,
+            "median": 0.07008199999999999,
+            "min": 0.06633
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.46041099999999996,
+            "median": 0.456745,
+            "min": 0.452941
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.39408099999999996,
+            "median": 0.388183,
+            "min": 0.37848099999999996
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.127439,
+            "median": 0.10614399999999999,
+            "min": 0.100646
+          },
+          "send_total_s_per_gb": {
+            "max": 0.706889,
+            "median": 0.685963,
+            "min": 0.676622
+          },
+          "send_user_s_per_gb": {
+            "max": 0.585226,
+            "median": 0.57945,
+            "min": 0.573996
+          }
+        },
+        "valid": 5
+      },
+      "dut-to-peer/mq2": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 11.625374436,
+            "median": 11.540445063,
+            "min": 11.407269591
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.07607599999999999,
+            "median": 0.06708599999999999,
+            "min": 0.060648
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.46146499999999996,
+            "median": 0.456609,
+            "min": 0.446914
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.391727,
+            "median": 0.389575,
+            "min": 0.379828
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.11560899999999999,
+            "median": 0.10858999999999999,
+            "min": 0.100052
+          },
+          "send_total_s_per_gb": {
+            "max": 0.690029,
+            "median": 0.682358,
+            "min": 0.677273
+          },
+          "send_user_s_per_gb": {
+            "max": 0.582306,
+            "median": 0.57583,
+            "min": 0.566086
+          }
+        },
+        "valid": 5
+      },
+      "peer-to-dut/kernel": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.343211327,
+            "median": 14.33128108,
+            "min": 14.139460478
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.05193,
+            "median": 0.048347999999999995,
+            "min": 0.040248
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.434125,
+            "median": 0.42864199999999997,
+            "min": 0.42763599999999996
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.38839399999999996,
+            "median": 0.38547499999999996,
+            "min": 0.378085
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.09096399999999999,
+            "median": 0.08698299999999999,
+            "min": 0.077924
+          },
+          "send_total_s_per_gb": {
+            "max": 0.566451,
+            "median": 0.558916,
+            "min": 0.5557799999999999
+          },
+          "send_user_s_per_gb": {
+            "max": 0.488527,
+            "median": 0.47156,
+            "min": 0.46481599999999995
+          }
+        },
+        "valid": 5
+      },
+      "peer-to-dut/mq1": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.663131454,
+            "median": 14.608566367,
+            "min": 14.457120357
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.09307,
+            "median": 0.07991999999999999,
+            "min": 0.06156
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.522443,
+            "median": 0.518815,
+            "min": 0.5177149999999999
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.456155,
+            "median": 0.438247,
+            "min": 0.425745
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.09199399999999999,
+            "median": 0.080942,
+            "min": 0.07406399999999999
+          },
+          "send_total_s_per_gb": {
+            "max": 0.553968,
+            "median": 0.548612,
+            "min": 0.544476
+          },
+          "send_user_s_per_gb": {
+            "max": 0.470412,
+            "median": 0.46767,
+            "min": 0.461974
+          }
+        },
+        "valid": 5
+      },
+      "peer-to-dut/mq2": {
+        "attempts": 5,
+        "metrics": {
+          "receiver_gbps": {
+            "max": 14.630149491,
+            "median": 14.529183919,
+            "min": 14.48863452
+          },
+          "recv_sys_s_per_gb": {
+            "max": 0.106766,
+            "median": 0.09013199999999999,
+            "min": 0.083701
+          },
+          "recv_total_s_per_gb": {
+            "max": 0.523134,
+            "median": 0.519894,
+            "min": 0.519068
+          },
+          "recv_user_s_per_gb": {
+            "max": 0.43943299999999996,
+            "median": 0.429539,
+            "min": 0.412693
+          },
+          "send_sys_s_per_gb": {
+            "max": 0.112865,
+            "median": 0.08909,
+            "min": 0.076891
+          },
+          "send_total_s_per_gb": {
+            "max": 0.5525899999999999,
+            "median": 0.55122,
+            "min": 0.547346
+          },
+          "send_user_s_per_gb": {
+            "max": 0.474329,
+            "median": 0.462468,
+            "min": 0.434481
+          }
+        },
+        "valid": 5
+      }
+    },
+    "host_overlap_arms": [
+      "08-r2-peer-to-dut-mq1",
+      "14-r3-dut-to-peer-mq1",
+      "23-r4-dut-to-peer-mq1",
+      "24-r4-dut-to-peer-kernel",
+      "25-r5-dut-to-peer-kernel",
+      "26-r5-dut-to-peer-mq1",
+      "27-r5-dut-to-peer-mq2"
+    ],
+    "rows": [
+      {
+        "arm": "01-r1-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.563398,
+        "dut_sys_s_per_gb": 0.09906999999999999,
+        "dut_user_s_per_gb": 0.46432799999999996,
+        "mode": "kernel",
+        "receiver_gbps": 14.21093442,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.5315242494226338,
+        "slot_net_rx_softirqs": 22893,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 222
+      },
+      {
+        "arm": "02-r1-dut-to-peer-mq1",
+        "dev_rx_read_calls": 15874,
+        "dev_tx_write_calls": 22890,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.685963,
+        "dut_sys_s_per_gb": 0.10457999999999999,
+        "dut_user_s_per_gb": 0.581383,
+        "fd_traffic": {
+          "rx": [
+            12056
+          ],
+          "tx": [
+            22890
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 11.451898225,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.284744976816074,
+        "slot_net_rx_softirqs": 33832,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.9756259659969089,
+        "slot_timer_softirqs": 185
+      },
+      {
+        "arm": "03-r1-dut-to-peer-mq2",
+        "dev_rx_read_calls": 16001,
+        "dev_tx_write_calls": 22889,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.690029,
+        "dut_sys_s_per_gb": 0.112353,
+        "dut_user_s_per_gb": 0.577676,
+        "fd_traffic": {
+          "rx": [
+            1,
+            12183
+          ],
+          "tx": [
+            0,
+            22889
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 11.407269591,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.633979829325058,
+        "slot_net_rx_softirqs": 33590,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 1.4012412723041114,
+        "slot_timer_softirqs": 91
+      },
+      {
+        "arm": "04-r1-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.428228,
+        "dut_sys_s_per_gb": 0.050143,
+        "dut_user_s_per_gb": 0.378085,
+        "mode": "kernel",
+        "receiver_gbps": 14.339389668,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.0625,
+        "slot_net_rx_softirqs": 23231,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.12792056074766342,
+        "slot_timer_softirqs": 204
+      },
+      {
+        "arm": "05-r1-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23140,
+        "dev_tx_write_calls": 19038,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5199769999999999,
+        "dut_sys_s_per_gb": 0.07991999999999999,
+        "dut_user_s_per_gb": 0.440057,
+        "fd_traffic": {
+          "rx": [
+            19304
+          ],
+          "tx": [
+            19038
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.663131454,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.0756728778467894,
+        "slot_net_rx_softirqs": 38322,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 1.4545548654244294,
+        "slot_timer_softirqs": 347
+      },
+      {
+        "arm": "06-r1-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23052,
+        "dev_tx_write_calls": 18996,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.519068,
+        "dut_sys_s_per_gb": 0.089529,
+        "dut_user_s_per_gb": 0.429539,
+        "fd_traffic": {
+          "rx": [
+            19216,
+            2
+          ],
+          "tx": [
+            18996,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.603207096,
+        "repeat": 1,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.0138729508196715,
+        "slot_net_rx_softirqs": 38151,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.19420081967213065,
+        "slot_timer_softirqs": 283
+      },
+      {
+        "arm": "07-r2-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23128,
+        "dev_tx_write_calls": 19029,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.523134,
+        "dut_sys_s_per_gb": 0.083701,
+        "dut_user_s_per_gb": 0.43943299999999996,
+        "fd_traffic": {
+          "rx": [
+            2,
+            19276
+          ],
+          "tx": [
+            0,
+            19029
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.48863452,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.6386842105263162,
+        "slot_net_rx_softirqs": 38244,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.0313967611336037,
+        "slot_timer_softirqs": 287
+      },
+      {
+        "arm": "08-r2-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23062,
+        "dev_tx_write_calls": 19038,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5179279999999999,
+        "dut_sys_s_per_gb": 0.079681,
+        "dut_user_s_per_gb": 0.438247,
+        "fd_traffic": {
+          "rx": [
+            19217
+          ],
+          "tx": [
+            19038
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.608566367,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 3.5338767395626256,
+        "slot_net_rx_softirqs": 38174,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 2.937455268389663,
+        "slot_timer_softirqs": 295
+      },
+      {
+        "arm": "09-r2-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.42864199999999997,
+        "dut_sys_s_per_gb": 0.040248,
+        "dut_user_s_per_gb": 0.38839399999999996,
+        "mode": "kernel",
+        "receiver_gbps": 14.343211327,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.07140186915887811,
+        "slot_net_rx_softirqs": 22916,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.0,
+        "slot_timer_softirqs": 199
+      },
+      {
+        "arm": "10-r2-dut-to-peer-mq2",
+        "dev_rx_read_calls": 17352,
+        "dev_tx_write_calls": 22903,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.6816949999999999,
+        "dut_sys_s_per_gb": 0.11560899999999999,
+        "dut_user_s_per_gb": 0.566086,
+        "fd_traffic": {
+          "rx": [
+            13532,
+            0
+          ],
+          "tx": [
+            22903,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 11.543943662,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.39201405152224794,
+        "slot_net_rx_softirqs": 32343,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.1578220140515219,
+        "slot_timer_softirqs": 168
+      },
+      {
+        "arm": "11-r2-dut-to-peer-mq1",
+        "dev_rx_read_calls": 16571,
+        "dev_tx_write_calls": 22896,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.676622,
+        "dut_sys_s_per_gb": 0.100646,
+        "dut_user_s_per_gb": 0.5759759999999999,
+        "fd_traffic": {
+          "rx": [
+            12748
+          ],
+          "tx": [
+            22896
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 11.633042305,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.43760343481654945,
+        "slot_net_rx_softirqs": 33080,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.12534738485558147,
+        "slot_timer_softirqs": 93
+      },
+      {
+        "arm": "12-r2-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.568723,
+        "dut_sys_s_per_gb": 0.093954,
+        "dut_user_s_per_gb": 0.474769,
+        "mode": "kernel",
+        "receiver_gbps": 14.014315013,
+        "repeat": 2,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 2.060226244343892,
+        "slot_net_rx_softirqs": 23204,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.1552488687782807,
+        "slot_timer_softirqs": 207
+      },
+      {
+        "arm": "13-r3-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.563079,
+        "dut_sys_s_per_gb": 0.08601199999999999,
+        "dut_user_s_per_gb": 0.47706699999999996,
+        "mode": "kernel",
+        "receiver_gbps": 14.230725846,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.1507586206896536,
+        "slot_net_rx_softirqs": 23658,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.6909885057471249,
+        "slot_timer_softirqs": 232
+      },
+      {
+        "arm": "14-r3-dut-to-peer-mq1",
+        "dev_rx_read_calls": 18910,
+        "dev_tx_write_calls": 22900,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.706889,
+        "dut_sys_s_per_gb": 0.127439,
+        "dut_user_s_per_gb": 0.57945,
+        "fd_traffic": {
+          "rx": [
+            15094
+          ],
+          "tx": [
+            22900
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 11.143295626,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 5.040015408320492,
+        "slot_net_rx_softirqs": 30673,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 4.731848998459168,
+        "slot_timer_softirqs": 215
+      },
+      {
+        "arm": "15-r3-dut-to-peer-mq2",
+        "dev_rx_read_calls": 15183,
+        "dev_tx_write_calls": 22842,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.682358,
+        "dut_sys_s_per_gb": 0.100052,
+        "dut_user_s_per_gb": 0.582306,
+        "fd_traffic": {
+          "rx": [
+            1,
+            11381
+          ],
+          "tx": [
+            0,
+            22842
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 11.418952152,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.8710224632068166,
+        "slot_net_rx_softirqs": 34133,
+        "slot_net_tx_softirqs": 1,
+        "slot_nonirq_remainder_pct": 0.561185127807901,
+        "slot_timer_softirqs": 214
+      },
+      {
+        "arm": "16-r3-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.434125,
+        "dut_sys_s_per_gb": 0.048347999999999995,
+        "dut_user_s_per_gb": 0.385777,
+        "mode": "kernel",
+        "receiver_gbps": 14.139460478,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.8829885057471251,
+        "slot_net_rx_softirqs": 22923,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.42321839080459633,
+        "slot_timer_softirqs": 177
+      },
+      {
+        "arm": "17-r3-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23113,
+        "dev_tx_write_calls": 19042,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.522443,
+        "dut_sys_s_per_gb": 0.085729,
+        "dut_user_s_per_gb": 0.436714,
+        "fd_traffic": {
+          "rx": [
+            19211
+          ],
+          "tx": [
+            19042
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.457120357,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.212842535787322,
+        "slot_net_rx_softirqs": 38233,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.1903476482617597,
+        "slot_timer_softirqs": 313
+      },
+      {
+        "arm": "18-r3-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23093,
+        "dev_tx_write_calls": 19031,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.519894,
+        "dut_sys_s_per_gb": 0.092043,
+        "dut_user_s_per_gb": 0.427851,
+        "fd_traffic": {
+          "rx": [
+            2,
+            19204
+          ],
+          "tx": [
+            0,
+            19031
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.519618731,
+        "repeat": 3,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.8967216494845375,
+        "slot_net_rx_softirqs": 38265,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.07197938144330042,
+        "slot_timer_softirqs": 295
+      },
+      {
+        "arm": "19-r4-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23057,
+        "dev_tx_write_calls": 19061,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.520763,
+        "dut_sys_s_per_gb": 0.09013199999999999,
+        "dut_user_s_per_gb": 0.430631,
+        "fd_traffic": {
+          "rx": [
+            19163,
+            2
+          ],
+          "tx": [
+            19061,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.529183919,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.5487654320987656,
+        "slot_net_rx_softirqs": 38170,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.5199588477366257,
+        "slot_timer_softirqs": 282
+      },
+      {
+        "arm": "20-r4-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23139,
+        "dev_tx_write_calls": 19046,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.518815,
+        "dut_sys_s_per_gb": 0.09307,
+        "dut_user_s_per_gb": 0.425745,
+        "fd_traffic": {
+          "rx": [
+            19227
+          ],
+          "tx": [
+            19046
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.499719398,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.5361680327868847,
+        "slot_net_rx_softirqs": 38299,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.5115778688524585,
+        "slot_timer_softirqs": 302
+      },
+      {
+        "arm": "21-r4-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.42763599999999996,
+        "dut_sys_s_per_gb": 0.042161,
+        "dut_user_s_per_gb": 0.38547499999999996,
+        "mode": "kernel",
+        "receiver_gbps": 14.33128108,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 0.7704861111111123,
+        "slot_net_rx_softirqs": 22934,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.07604166666666791,
+        "slot_timer_softirqs": 205
+      },
+      {
+        "arm": "22-r4-dut-to-peer-mq2",
+        "dev_rx_read_calls": 15762,
+        "dev_tx_write_calls": 22904,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.677273,
+        "dut_sys_s_per_gb": 0.102286,
+        "dut_user_s_per_gb": 0.574987,
+        "fd_traffic": {
+          "rx": [
+            0,
+            11941
+          ],
+          "tx": [
+            0,
+            22904
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 11.625374436,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.7938173302107734,
+        "slot_net_rx_softirqs": 33985,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.4034972677595634,
+        "slot_timer_softirqs": 140
+      },
+      {
+        "arm": "23-r4-dut-to-peer-mq1",
+        "dev_rx_read_calls": 18925,
+        "dev_tx_write_calls": 22904,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.69554,
+        "dut_sys_s_per_gb": 0.110314,
+        "dut_user_s_per_gb": 0.585226,
+        "fd_traffic": {
+          "rx": [
+            15106
+          ],
+          "tx": [
+            22904
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 11.320015632,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 17.324222737819024,
+        "slot_net_rx_softirqs": 30904,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 17.014864655839133,
+        "slot_timer_softirqs": 155
+      },
+      {
+        "arm": "24-r4-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.558734,
+        "dut_sys_s_per_gb": 0.089957,
+        "dut_user_s_per_gb": 0.468777,
+        "mode": "kernel",
+        "receiver_gbps": 14.267201496,
+        "repeat": 4,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 3.6018385650224216,
+        "slot_net_rx_softirqs": 22948,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 2.704977578475336,
+        "slot_timer_softirqs": 260
+      },
+      {
+        "arm": "25-r5-dut-to-peer-kernel",
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.550639,
+        "dut_sys_s_per_gb": 0.08394499999999999,
+        "dut_user_s_per_gb": 0.466694,
+        "mode": "kernel",
+        "receiver_gbps": 14.525937337,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 18.08386574074074,
+        "slot_net_rx_softirqs": 22949,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 17.62090277777778,
+        "slot_timer_softirqs": 377
+      },
+      {
+        "arm": "26-r5-dut-to-peer-mq1",
+        "dev_rx_read_calls": 15718,
+        "dev_tx_write_calls": 22875,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.68014,
+        "dut_sys_s_per_gb": 0.10614399999999999,
+        "dut_user_s_per_gb": 0.573996,
+        "fd_traffic": {
+          "rx": [
+            11911
+          ],
+          "tx": [
+            22875
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 11.549692209,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 5.7716894977168955,
+        "slot_net_rx_softirqs": 34002,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 5.315068493150686,
+        "slot_timer_softirqs": 347
+      },
+      {
+        "arm": "27-r5-dut-to-peer-mq2",
+        "dev_rx_read_calls": 18465,
+        "dev_tx_write_calls": 22908,
+        "direction": "dut-to-peer",
+        "dut_s_per_gb": 0.6844199999999999,
+        "dut_sys_s_per_gb": 0.10858999999999999,
+        "dut_user_s_per_gb": 0.57583,
+        "fd_traffic": {
+          "rx": [
+            14643,
+            1
+          ],
+          "tx": [
+            22908,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 11.540445063,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 9.980362095531586,
+        "slot_net_rx_softirqs": 31522,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 9.749237288135594,
+        "slot_timer_softirqs": 326
+      },
+      {
+        "arm": "28-r5-peer-to-dut-kernel",
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.43142299999999995,
+        "dut_sys_s_per_gb": 0.05193,
+        "dut_user_s_per_gb": 0.37949299999999997,
+        "mode": "kernel",
+        "receiver_gbps": 14.172276022,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.1772317596566526,
+        "slot_net_rx_softirqs": 22756,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.3188626609442062,
+        "slot_timer_softirqs": 247
+      },
+      {
+        "arm": "29-r5-peer-to-dut-mq1",
+        "dev_rx_read_calls": 23197,
+        "dev_tx_write_calls": 18128,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.5177149999999999,
+        "dut_sys_s_per_gb": 0.06156,
+        "dut_user_s_per_gb": 0.456155,
+        "fd_traffic": {
+          "rx": [
+            19378
+          ],
+          "tx": [
+            18128
+          ]
+        },
+        "mode": "mq1",
+        "receiver_gbps": 14.634889017,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.9803294573643424,
+        "slot_net_rx_softirqs": 37450,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 1.398934108527133,
+        "slot_timer_softirqs": 364
+      },
+      {
+        "arm": "30-r5-peer-to-dut-mq2",
+        "dev_rx_read_calls": 23137,
+        "dev_tx_write_calls": 19059,
+        "direction": "peer-to-dut",
+        "dut_s_per_gb": 0.519459,
+        "dut_sys_s_per_gb": 0.106766,
+        "dut_user_s_per_gb": 0.412693,
+        "fd_traffic": {
+          "rx": [
+            19298,
+            0
+          ],
+          "tx": [
+            19059,
+            0
+          ]
+        },
+        "mode": "mq2",
+        "receiver_gbps": 14.630149491,
+        "repeat": 5,
+        "slot_hrtimer_softirqs": 0,
+        "slot_irq_inclusive_remainder_pct": 1.1039763779527554,
+        "slot_net_rx_softirqs": 38240,
+        "slot_net_tx_softirqs": 0,
+        "slot_nonirq_remainder_pct": 0.11972440944881821,
+        "slot_timer_softirqs": 376
+      }
+    ],
+    "sha256_manifest": "4c5cc30f5cd308a5dc1b50d7e0d18ca8f6572be3dd3cf0f1de14030df70f1af5"
+  }
+}
