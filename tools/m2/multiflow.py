@@ -4,12 +4,14 @@
 import argparse
 import csv
 import datetime
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -426,29 +428,44 @@ def adjudicate(slot, rd, gate, key):
         "-IB",
         code,
     ]
-    m.sh(prefix + ["capture", rd], timeout=900)
-    check = subprocess.run(
-        prefix
-        + [
-            "run",
-            rd,
-            "--schedule",
-            "/utcp/docs/results/m2-multiflow/schedule.csv",
-            "--gate",
-            f"/data/m2/{gate}",
-        ],
+    raw = subprocess.run(
+        prefix + ["capture", rd],
         check=False,
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=900,
     )
-    if check.returncode not in (0, 1):
-        raise RuntimeError(f"analysis process failed: {check.stderr[-2000:]}")
-    result = json.loads(check.stdout)
-    if not isinstance(result.get("valid"), bool) or result["valid"] != (
-        check.returncode == 0
-    ):
-        raise ValueError("inconsistent study verdict")
+    if raw.returncode == 3:
+        result = json.loads(raw.stdout)
+        if result.get("valid") is not False or not result.get("reason"):
+            raise ValueError("invalid capture evidence receipt")
+    elif raw.returncode:
+        raise RuntimeError(
+            f"capture helper failed ({raw.returncode}): {raw.stderr[-2000:]}"
+        )
+    else:
+        check = subprocess.run(
+            prefix
+            + [
+                "run",
+                rd,
+                "--schedule",
+                "/utcp/docs/results/m2-multiflow/schedule.csv",
+                "--gate",
+                f"/data/m2/{gate}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if check.returncode not in (0, 1):
+            raise RuntimeError(f"analysis process failed: {check.stderr[-2000:]}")
+        result = json.loads(check.stdout)
+        if not isinstance(result.get("valid"), bool) or result["valid"] != (
+            check.returncode == 0
+        ):
+            raise ValueError("inconsistent study verdict")
     write_meta(slot, f"{rd}/summary.json", result)
     write_meta(
         slot,
@@ -533,6 +550,18 @@ def production(gate, proof):
     return receipt
 
 
+@contextmanager
+def slot_lock(slot_number):
+    """One owner per project slot across checkouts; the kernel releases on exit."""
+    path = Path.home() / "Desktop/utcp-wt" / f".utcp-m2-multiflow-s{slot_number}.lock"
+    with path.open("a") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"multi-flow slot {slot_number} is busy") from exc
+        yield
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -548,32 +577,28 @@ def main():
     prod.add_argument("--proof", required=True)
     args = p.parse_args()
     if args.command == "produce":
-        import fcntl
-
-        lockdir = m.REPO / ".logs"
-        lockdir.mkdir(exist_ok=True)
-        with (lockdir / "multiflow-acquisition.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with slot_lock(0):
             print(json.dumps(production(args.gate, args.proof)), flush=True)
         return
     if args.command == "endpoints":
         endpoint_group(args.directory, args.role)
         return
-    slot = m.Slot(2)
-    if slot.timing or set(slot.cpus.values()) != {"16-31"}:
-        raise RuntimeError("rehearsal requires the non-timing placement")
-    print(
-        acquire(
-            slot,
-            schedule()[args.pair - 1],
-            args.side,
-            "rehearsal",
-            args.attempt,
-            m.static_meta(),
-            None,
-        ),
-        flush=True,
-    )
+    with slot_lock(2):
+        slot = m.Slot(2)
+        if slot.timing or set(slot.cpus.values()) != {"16-31"}:
+            raise RuntimeError("rehearsal requires the non-timing placement")
+        print(
+            acquire(
+                slot,
+                schedule()[args.pair - 1],
+                args.side,
+                "rehearsal",
+                args.attempt,
+                m.static_meta(),
+                None,
+            ),
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
