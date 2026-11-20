@@ -210,7 +210,8 @@ private:
   void transmit(Tcb& t, Time now);
   // Sends the ACK AckPolicy wants now, if nothing else carried it.
   void flush_ack(Tcb& t, Time now);
-  bool send_segment(Tcb& t, Time now, const SegOut& o);
+  bool send_segment(Tcb& t, Time now, const SegOut& o, std::uint32_t segments = 1);
+  void record_segment(Tcb& t, Time now, const SegOut& o, Seq32 ack, std::uint16_t window);
   bool send_ack(Tcb& t, Time now, TxKind kind = TxKind::ack);
   // Our SYN, or SYN-ACK once IRS is known. `counts`: a transmission of the
   // SYN schedule (syn_tries); the SYN-ACK of a simultaneous open is not.
@@ -220,7 +221,8 @@ private:
   void send_reset_reply(const FourTuple& tuple, const InSeg& s);
   void send_tw_ack(TimeWaitEntry& e, Time now);
   bool retransmit_seg(Tcb& t, Time now, const TxSeg& seg, TxKind kind);
-  bool send_new_data(Tcb& t, Time now, std::uint32_t len, bool fin);
+  bool send_new_data(Tcb& t, Time now, std::uint32_t len, bool fin,
+                     std::uint32_t segments = 1);
   [[nodiscard]] std::uint32_t mss_now(const Tcb& t) const;
   [[nodiscard]] std::size_t sack_blocks(const Tcb& t, std::span<Range> out) const;
   [[nodiscard]] std::uint32_t initial_window(const Tcb& t) const;

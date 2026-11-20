@@ -45,6 +45,7 @@ namespace utcp {
 
 // Size of every PacketPool buffer in M1 (§3.3).
 inline constexpr std::uint32_t packet_buf_size = 2048;
+inline constexpr std::uint32_t gso_packet_buf_size = 65536;
 
 // Receives the resume calls of the blocked-connection FIFO (§3.4). In a Stack
 // it is the TcpEngine (StackImpl registers it); a test may register a fake
@@ -111,7 +112,9 @@ public:
   // and `l4_header` transport-header bytes, and room for `payload` bytes after
   // it; nullopt if the pool is empty (or the sizes exceed one buffer).
   [[nodiscard]] std::optional<PacketBuf> alloc_packet(std::uint32_t l4_header,
-                                                      std::uint32_t payload);
+                                                      std::uint32_t payload,
+                                                      bool aggregate = false);
+  [[nodiscard]] const PacketPool& gso_pool() const noexcept { return gso_pool_; }
   // Largest l4_header + payload that alloc_packet can serve.
   [[nodiscard]] std::uint32_t max_l4_size() const noexcept;
   // One more datagram fits in the transmit queue and the pool.
@@ -126,7 +129,8 @@ public:
   // (release_tx_owner); nullopt for UDP, ICMP and packets of no connection
   // (RSTs to unknown tuples, TIME-WAIT ACKs).
   bool send_ipv4(Ipv4Addr dst, std::uint8_t proto, std::uint16_t ip_id, PacketBuf&& l4,
-                 std::optional<std::uint32_t> owner_slot = std::nullopt);
+                 std::optional<std::uint32_t> owner_slot = std::nullopt,
+                 std::uint16_t gso_size = 0, bool csum_partial = false);
   // Datagrams sent with this owner_slot that are still in the transmit queue:
   // the "no packet of the connection waits in the stack transmit queue" test
   // of the app-limited marker (§5.4, rate_check_app_limited's queued_in_stack;
@@ -235,6 +239,7 @@ private:
   TimerHeap timers_;
   ChunkPool chunks_;
   PacketPool pool_;
+  PacketPool gso_pool_;
   TraceSink* sink_ = nullptr;
   TcpEngine* tcp_ = nullptr;
   TxSpaceListener* tx_listener_ = nullptr;

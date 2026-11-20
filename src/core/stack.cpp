@@ -19,6 +19,7 @@ StackCore::StackCore(const StackConfig& cfg)
       rng_(Rng::derive(cfg.seed, "stack/runtime")),
       chunks_(cfg.chunk_limit),
       pool_(cfg.pool_buffers, packet_buf_size),
+      gso_pool_(cfg.tcp_gso_buffers, gso_packet_buf_size),
       keys_(StackKeys::derive(cfg.seed)),
       txq_(cfg.tx_queue_packets),
       pmtu_(cfg.mtu, cfg.tcp.min_pmtu, cfg.tcp.pmtu_expiry),
@@ -28,6 +29,7 @@ StackCore::StackCore(const StackConfig& cfg)
   // the PMTU clamp assume it.
   UTCP_CHECK(cfg.mtu >= 68);
   UTCP_CHECK(cfg.tcp.min_pmtu >= 68);
+  UTCP_CHECK(cfg.tcp_gso_buffers == 0 || cfg.tcp_checksum_offload);
   UTCP_CHECK(std::uint32_t{cfg.mtu} + cfg.tx_headroom <= packet_buf_size);
   pmtu_timer_ = timers_.create(0, TimerKind::pmtu_expiry);
 }
@@ -36,13 +38,15 @@ StackCore::~StackCore() = default;
 
 const SipKey& StackCore::hash_key() const noexcept { return keys_.hash; }
 
-std::optional<PacketBuf> StackCore::alloc_packet(std::uint32_t l4_header, std::uint32_t payload) {
+std::optional<PacketBuf> StackCore::alloc_packet(std::uint32_t l4_header, std::uint32_t payload,
+                                                 bool aggregate) {
   const std::uint64_t head =
       std::uint64_t{cfg_.tx_headroom} + wire::ipv4_header_len + std::uint64_t{l4_header};
-  if (head + payload > pool_.buf_size()) {
+  PacketPool& pool = aggregate ? gso_pool_ : pool_;
+  if (head + payload > pool.buf_size()) {
     return std::nullopt;
   }
-  return pool_.alloc(payload, static_cast<std::uint32_t>(head));
+  return pool.alloc(payload, static_cast<std::uint32_t>(head));
 }
 
 std::uint32_t StackCore::max_l4_size() const noexcept {
@@ -271,8 +275,8 @@ StackUsage StackImpl::debug_usage() const {
   u.tcp_slots = t.slots;
   u.udp_slots = udp.open_count();
   u.time_wait_entries = t.time_wait_entries;
-  u.pool_buffers = core.pool().count();
-  u.pool_buffers_free = core.pool().available();
+  u.pool_buffers = core.pool().count() + core.gso_pool().count();
+  u.pool_buffers_free = core.pool().available() + core.gso_pool().available();
   u.chunks = core.chunks().allocated();
   u.chunks_free = core.chunks().free_count();
   u.tx_queued = core.tx_queue().size();

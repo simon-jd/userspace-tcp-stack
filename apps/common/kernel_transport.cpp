@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 
 #include "common/utcp_transport.hpp"
 #include "utcp/check.hpp"
@@ -762,6 +763,11 @@ void add_backend_options(CliParser& p) {
   p.option("backend", "kernel|utcp", "transport: Linux sockets or the userspace stack", "utcp")
       .option("profile", "rfc|linux", "TCP profile of the utcp backend", "linux")
       .option("tun", "IFNAME", "utcp backend: TUN interface", "utcp0")
+      .option("tun-offload", "legacy|checksum|tcpv4",
+              "utcp backend: raw TUN, checksum offload, or TCPv4 checksum and segmentation",
+              "legacy")
+      .option("tun-queues", "COUNT",
+              "utcp backend: attach COUNT active FDs to an IFF_MULTI_QUEUE TUN (1..64)")
       .option("addr", "IP", "utcp backend: the stack's address", "198.18.0.2")
       .option("mtu", "N", "utcp backend: the TUN interface's MTU", "1500")
       .option("pcap", "FILE", "utcp backend: record the datagrams that cross the TUN")
@@ -837,6 +843,27 @@ std::expected<BackendSelection, std::string> parse_backend_options(const CliArgs
     return std::unexpected("--profile must be rfc or linux, not '" + profile + "'");
   }
   u.tun = a.get("tun").value_or("utcp0");
+  const std::string offload = a.get("tun-offload").value_or("legacy");
+  if (offload == "checksum") {
+    u.tun_offload = TunOffload::checksum;
+  } else if (offload == "tcpv4") {
+    u.tun_offload = TunOffload::tcpv4;
+  } else if (offload != "legacy") {
+    return std::unexpected("--tun-offload must be legacy, checksum or tcpv4, not '" + offload + "'");
+  }
+  if (b.kernel && u.tun_offload != TunOffload::legacy) {
+    return std::unexpected("--tun-offload requires --backend utcp");
+  }
+  if (const auto queues = a.get("tun-queues")) {
+    if (b.kernel) {
+      return std::unexpected("--tun-queues requires --backend utcp");
+    }
+    const auto count = parse_u64(*queues);
+    if (!count || *count == 0 || *count > tun_max_queues) {
+      return std::unexpected(std::format("--tun-queues must be 1..{}", tun_max_queues));
+    }
+    u.tun_queues = static_cast<std::size_t>(*count);
+  }
   const auto addr = parse_ipv4(a.get("addr").value_or("198.18.0.2"));
   if (!addr) {
     return std::unexpected("--addr: " + addr.error());

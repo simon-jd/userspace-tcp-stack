@@ -231,7 +231,8 @@ TEST(Defs, TestKnobsAreDeclared) {
   X(StackConfig, seed) X(StackConfig, tcp) X(StackConfig, udp) X(StackConfig, icmp) \
   X(StackConfig, pool_buffers) X(StackConfig, tx_queue_packets)                   \
   X(StackConfig, max_connections) X(StackConfig, chunk_limit) X(StackConfig, trace_mask) \
-  X(StackConfig, tx_headroom) X(StackConfig, assert_time_monotonic)               \
+  X(StackConfig, tx_headroom) X(StackConfig, tcp_checksum_offload)               \
+  X(StackConfig, tcp_gso_buffers) X(StackConfig, assert_time_monotonic)           \
   X(StackConfig, test_recovery_script)                                            \
   X(UdpConfig, rcv_buf) X(UdpConfig, ephemeral_ports)                             \
   X(IcmpConfig, echo_reply) X(IcmpConfig, rate_per_s) X(IcmpConfig, burst)

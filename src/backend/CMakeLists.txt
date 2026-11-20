@@ -6,7 +6,7 @@ add_library(utcp_backend STATIC ${utcp_backend_sources})
 add_library(utcp::backend ALIAS utcp_backend)
 
 target_include_directories(utcp_backend PUBLIC ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(utcp_backend PUBLIC utcp_core)
+target_link_libraries(utcp_backend PUBLIC utcp_core PRIVATE utcp_core_internal)
 utcp_target_warnings(utcp_backend)
 
 # The backend's public headers compile on their own with the backend's flags.

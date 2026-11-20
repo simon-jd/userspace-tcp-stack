@@ -95,18 +95,23 @@ private:
   std::vector<std::uint32_t> free_;  // LIFO
 };
 
-// One complete IPv4 datagram for the host to send.
+// One IPv4 datagram or a TCPv4 super-segment for an offload-capable host.
 struct TxPacket {
   PacketBuf buf;
-  std::uint16_t gso_size = 0;   // M4: > 0 means a TCP super-segment split by the kernel
-  bool csum_partial = false;    // M4: TCP checksum left to the kernel
+  std::uint16_t gso_size = 0;   // nonzero: TCP payload bytes per logical segment
+  bool csum_partial = false;    // TCP checksum field holds the folded pseudo-header sum
 };
 
-// Metadata of a received datagram. M1 hosts leave it zero.
+// Metadata supplied by a trusted host. Hosts using raw IPv4 leave it zero.
 struct RxMeta {
   bool csum_verified = false;  // M4: VIRTIO_NET_HDR_F_DATA_VALID; skip transport checksum check
   bool csum_partial = false;   // M4: NEEDS_CSUM (field holds the pseudo-header sum); treated as verified
-  std::uint16_t gso_size = 0;  // M4: GRO super-segment; rcv_mss uses it (tcp_measure_rcv_mss)
+  std::uint16_t gso_size = 0;  // TCPv4 receive aggregate, stride in payload bytes
+
+  [[nodiscard]] constexpr std::uint32_t segments(std::size_t payload) const noexcept {
+    return gso_size == 0 || payload == 0 ? 1
+                                        : static_cast<std::uint32_t>(1 + (payload - 1) / gso_size);
+  }
 };
 
 }  // namespace utcp

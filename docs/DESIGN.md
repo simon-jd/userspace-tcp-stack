@@ -358,7 +358,9 @@ struct StackConfig {
   TcpConfig tcp = tcp_config(ProfileId::linux_compat); UdpConfig udp; IcmpConfig icmp;
   std::uint32_t pool_buffers = 4096, tx_queue_packets = 1024, max_connections = 65536, chunk_limit = 1u << 20;
   std::uint32_t trace_mask = 0;                     // §10.2
-  std::uint16_t tx_headroom = 0;                    // M4: the backend reserves room for virtio_net_hdr
+  std::uint16_t tx_headroom = 0;                     // room for the backend's prefix
+  bool tcp_checksum_offload = false;                // emit partial TCP checksums
+  std::uint32_t tcp_gso_buffers = 0;                 // 64 KiB TX buffers, requires TCP checksum offload
   bool assert_time_monotonic = false;               // §3.4 item 4; on in the simulator
   RecoveryScript* test_recovery_script = nullptr;   // tests only: LossRecovery's hooks ask it first (§5.1)
 };
@@ -1397,10 +1399,21 @@ M0's `utcp::TunDevice::open(name, nonblocking)` opens `/dev/net/tun` with `IFF_T
 return `std::expected<std::size_t, std::error_code>`. Addresses, MTU and routes are set by testbed scripts with
 `ip` (no netlink code). `StackConfig::mtu` must equal the TUN MTU. One datagram per read or write.
 
-M4: `IFF_VNET_HDR` with `TUNSETOFFLOAD(TUN_F_CSUM|TUN_F_TSO4)`; each read/write is prefixed by `struct
-virtio_net_hdr`. Received datagrams carry `DATA_VALID` or, for CHECKSUM_PARTIAL skbs (local or forwarded from a
-TSO veth), `NEEDS_CSUM`, mapped to `RxMeta::csum_verified`/`csum_partial`, plus GRO `gso_size`; `TxPacket` fields
-map to `VIRTIO_NET_HDR_GSO_TCPV4` and `NEEDS_CSUM`. The core API carries these fields now; M1 leaves them zero.
+`--tun-offload=legacy` is the default. `checksum` and `tcpv4` attach with `IFF_VNET_HDR` and
+use `TUNSETOFFLOAD` to request `TUN_F_CSUM` or `TUN_F_CSUM|TUN_F_TSO4`, respectively.
+The backend verifies the active framing and header size with `TUNGETIFF` and `TUNGETVNETHDRSZ`.
+Each device frame has a 10-byte little-endian `virtio_net_hdr`. An ioctl failure fails the
+explicit mode during startup. The run manifest records live device features using `ethtool -k`.
+
+The backend checks frame boundaries and the IPv4 transport offset before mapping
+`DATA_VALID` and `NEEDS_CSUM` to trusted receive metadata. The core still validates the IPv4
+checksum. Zero flags leave software transport checksum verification in place. A checksum-only write
+sets `NEEDS_CSUM` and carries the folded TCP pseudo-header sum. TCPv4 aggregates also specify the
+header length and the payload stride. The pending framed buffer survives `EAGAIN`.
+The `dev_rx_gro_*` counters record TCPv4 aggregates received from Linux, including any Linux GSO
+packet forwarded intact. The `dev_tx_gso_*` counters record accepted TUN writes and their logical
+segment counts. `--pcap` uses LINKTYPE_RAW in legacy mode. For offload modes, capture on the
+egress path after segmentation and checksum completion.
 
 ### 8.2 Event loop
 
@@ -1444,11 +1457,18 @@ the delay (min_rtt ~0.1 ms, bursts of 45 packets) one run gave 50.008 Mbit/s.
 
 ### 8.4 Later backends
 
-- Multi-queue TUN (`IFF_MULTI_QUEUE`) is not shared-nothing: tun keeps a flow on the queue that last wrote it only
-  while its flow entry lives (`TUN_FLOW_EXPIRE`, 3 s), then uses a keyed hash the stack cannot compute, so an idle
-  connection can land on another thread's `Stack` (no TCB, RST). It needs one dispatcher reading all queues and
-  steering by 4-tuple (partitioned ephemeral ranges), or `TUNSETSTEERINGEBPF` (CAP_BPF, not approved). M4's
-  10k-connection test runs single-queue.
+- Multi-queue TUN uses one EventLoop and Stack with independent queue FDs on one
+  interface. Set up the device with `ip tuntap add dev utcp0 mode tun multi_queue`
+  (add `vnet_hdr` for checksum or TCPv4 offload) and pass `--tun-queues N` to a
+  stack application. `--tun-queues 1` opens one FD on an MQ device. Omitting the
+  option opens the single-queue TUN used by the existing testbed.
+- Each ready FD gets up to 64 datagrams per level-triggered callback. Linux TUN
+  learns RX placement from writes and expires flow entries after about three
+  seconds. Any queue can feed the same TCP connection. TX selects its FD from
+  the outgoing TCP four-tuple, including for VNET super-segments. Other IPv4
+  traffic uses queue zero. If a write returns EAGAIN, the single pending packet
+  keeps its FD and transmission resumes in queue order. `--stats` records the
+  ifindex and per-FD datagram totals as counted by the application.
 - io_uring (optional, PLAN §7): multishot reads into `PacketPool`-backed buffer rings, batched writes, and
   `IORING_OP_TIMEOUT` with `IORING_TIMEOUT_ABS` for the deadline, under the same `run_once` contract (liburing2
   runtime is installed on the server, headers are not).
@@ -1597,9 +1617,13 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
    rings are chunked from M1 (§3.3), M4 tunes the chunk size.
 2. **Batching**: read up to 64 datagrams per wake-up, one `advance` per batch, write all queued packets before
    sleeping. Delayed-ACK decisions stay per segment, as in §3.4.
-3. **GSO**: the output path packs k consecutive new-data TxSegs sent at the same instant into one super-segment
-   (`gso_size = mss_cache`, partial checksum); retransmissions stay single packets, so scoreboard code is unchanged;
-   `min_tso_segs` and the quantum bound k. A GRO super-segment is one insert with ACK accounting by `gso_segs`.
+3. **GSO**: the output path packs consecutive fresh full-MSS segments from the same allowed burst.
+   The cwnd, peer window, remaining pacing quota and 64 KiB packet budget bound each group.
+   Retransmissions and segments needing PSH, FIN or SACK headers use the regular output path.
+   Each logical segment keeps its own recovery, delivery and trace state. The 16-buffer aggregate
+   pool falls back to regular packets when exhausted. Eligible in-order GRO data is inserted once,
+   with logical receive counters and the usual byte-based delayed-ACK decision. Out-of-order,
+   overlapping, FIN-bearing, window-crossing or buffer-limited aggregates use logical payload slices.
 4. **Memory target for 10k connections**: TCB ≤ 1 KiB (a `static_assert` once M4 starts), TIME_WAIT entry ≤ 64
    bytes, buffers allocated on first use. Target: an idle established connection ≤ 2 KiB, an echo connection with
    small messages ≤ 12 KiB, so 10k echo connections ≤ 128 MiB RSS. Measured against Linux for the same load

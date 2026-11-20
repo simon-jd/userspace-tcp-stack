@@ -19,6 +19,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -27,6 +28,7 @@
 #include "utcp/event_loop.hpp"
 #include "utcp/stack.hpp"
 #include "utcp/stats.hpp"
+#include "utcp/tun_device.hpp"
 #include "utcp/time.hpp"
 #include "utcp/types.hpp"
 
@@ -132,7 +134,9 @@ inline constexpr Duration finish_closing_max = std::chrono::seconds(2);
 
 struct UtcpTransportOptions {
   StackConfig stack;            // local_addr, mtu (must equal the TUN MTU), profile, seed, ...
-  std::string tun = "utcp0";    // TUN interface, IFF_TUN | IFF_NO_PI (§8.1)
+  std::string tun = "utcp0";    // TUN interface (§8.1)
+  TunOffload tun_offload = TunOffload::legacy;
+  std::optional<std::size_t> tun_queues;  // explicit count requests IFF_MULTI_QUEUE
   std::string pcap_file;        // non-empty: write what crosses the TUN (CLOCK_REALTIME, §10.2)
   std::string stats_file;       // non-empty: write StackStats and DeviceStats here at destruction
   std::uint32_t spin_us = 0;    // --spin-us: busy-poll the last N us before a deadline (§8.3)
