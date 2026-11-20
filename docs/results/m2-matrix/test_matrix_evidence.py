@@ -7,11 +7,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit
 import loss_replay as loss
 import report
+import replay_captures
 from replay_captures import SequenceCoverage
 
 
@@ -133,6 +136,37 @@ class IngressSequenceHistory(unittest.TestCase):
         self.assertEqual(covered.add(12, 5), "all_bytes_first_seen")
         self.assertEqual(covered.add(8, 8), "partly_previously_seen")
         self.assertIsNone(covered.add(40, 5))
+
+    def test_ingress_follows_wire_syn_source_when_interface_ip_differs(self):
+        segment = dict(
+            src="198.18.0.2",
+            sport=49152,
+            dst="198.19.12.5",
+            dport=5201,
+            ts_ns=6_000_000_000,
+        )
+        flow = [
+            SimpleNamespace(**segment, seq=seq, payload=size, flags=flags)
+            for seq, size, flags in [(11, 0, 2), (12, 10, 16), (12, 10, 16)]
+        ]
+        with (
+            patch.object(audit.diagnostics, "rows", return_value=[]),
+            patch.object(
+                audit.analyze,
+                "clock_of",
+                return_value=SimpleNamespace(realtime_ns=0, monotonic_ns=0),
+            ),
+            patch.object(audit.analyze, "tcp_segments", return_value=flow),
+        ):
+            row = replay_captures.flagged_ingress(
+                Path("."),
+                {"snd_ip": "198.19.10.2", "rcv_ip": segment["dst"]},
+                {"t0_ns": 0, "window_end_ns": 8_000_000_000},
+                1,
+            )
+        self.assertEqual(
+            (row["primary_exact_repeat"], row["lifetime_exact_repeat"]), (1, 1)
+        )
 
     def test_relative_sequence_wrap_near_previous_high(self):
         covered = SequenceCoverage()

@@ -88,19 +88,17 @@ def flagged_ingress(directory, meta, summary, lifetime_count):
     coverage = SequenceCoverage()
     counts = Counter()
     for segment in analyze.tcp_segments(directory / "r1-in.pcap"):
-        if (segment.src, segment.dst, segment.dport) != (
-            meta["snd_ip"],
-            meta["rcv_ip"],
-            5201,
-        ):
+        if (segment.dst, segment.dport) != (meta["rcv_ip"], 5201):
             continue
+        # The userspace TCP wire source can differ from the namespace interface IP.
+        observed_flow = (segment.src, segment.sport, segment.dst, segment.dport)
         if segment.flags & 2 and not segment.flags & 16:
             if origin is not None:
-                assert (segment.sport, segment.seq) == (flow, origin)
-            flow, origin = segment.sport, segment.seq
+                assert (observed_flow, segment.seq) == (flow, origin)
+            flow, origin = observed_flow, segment.seq
         if segment.payload <= 0:
             continue
-        assert origin is not None and segment.sport == flow
+        assert origin is not None and observed_flow == flow
         outcome = coverage.add((segment.seq - origin) % (2**32), segment.payload)
         if outcome:
             counts["lifetime", outcome] += 1

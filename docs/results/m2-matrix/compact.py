@@ -12,7 +12,9 @@ import tarfile
 from pathlib import Path
 
 
-def write_archive(campaign, output, physical, source_manifest, loss_inputs):
+def write_archive(
+    campaign, output, physical, source_manifest, loss_inputs, queue_inputs=None
+):
     if not (campaign / "plan.json").is_file() or output.exists():
         raise ValueError("expected a campaign with a plan and a new archive path")
     files = {}
@@ -42,6 +44,18 @@ def write_archive(campaign, output, physical, source_manifest, loss_inputs):
             ):
                 raise ValueError(f"unexpected Linux loss input {path}")
             name = "wire-loss-inputs/" + path.name
+            if name in files:
+                raise ValueError(f"duplicate entry {name}")
+            files[name] = path
+    if queue_inputs:
+        for path in sorted(queue_inputs.iterdir()):
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or not path.name.endswith(".json.gz")
+            ):
+                raise ValueError(f"unexpected paired-queue projection {path}")
+            name = "wire-queue-inputs/" + path.name
             if name in files:
                 raise ValueError(f"duplicate entry {name}")
             files[name] = path
@@ -81,6 +95,7 @@ if __name__ == "__main__":
     parser.add_argument("--physical", type=Path)
     parser.add_argument("--source-manifest", type=Path)
     parser.add_argument("--loss-inputs", type=Path)
+    parser.add_argument("--queue-inputs", type=Path)
     args = parser.parse_args()
     write_archive(
         args.campaign,
@@ -88,4 +103,5 @@ if __name__ == "__main__":
         args.physical,
         args.source_manifest,
         args.loss_inputs,
+        args.queue_inputs,
     )
