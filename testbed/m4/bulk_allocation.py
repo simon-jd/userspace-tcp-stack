@@ -11,6 +11,22 @@ import time
 from echo_load import PORT, STACK_IP, Trial, require
 
 
+class BulkTrial(Trial):
+    def latest(self, role):
+        # The stdio writer can leave a partial JSON line at its buffer
+        # boundary. Fall back to the preceding complete event.
+        try:
+            tail = self.docker(role, "tail", "-n", "2", f"{self.out}/{role}/events.jsonl")
+        except subprocess.CalledProcessError:
+            return {}
+        for line in reversed(tail.splitlines()):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        return {}
+
+
 def window(samples, first, last, byte_field, seg_field):
     # The app's transport samples bracket the externally read allocation
     # counters. Keep both bounds instead of assigning packets to an exact
@@ -96,7 +112,11 @@ def main():
     args.offload = "legacy"
     args.cpus = (24, 25, 26)
     args.binary_source = args.client_source = args.client_binary = None
-    trial = Trial(args, result_dir="m4-bulk-allocation")
+    try:
+        trial = BulkTrial(args, result_dir="m4-bulk-allocation")
+    except (OSError, ValueError) as error:
+        print(f"invalid benchmark binary or allocation counter: {error}", file=sys.stderr)
+        return 1
     try:
         trial.setup()
         result = measure(trial, args.direction)
