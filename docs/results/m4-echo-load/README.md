@@ -147,3 +147,5 @@ of the full population, a mismatched echo, or a missing sample within
 the active interval prevents a successful result. Check endpoint stderr
 and the final telemetry for failed runs. The runner preserves evidence
 already written if a later gate fails.
+
+The [legacy single-queue baseline](pre-copy.md) records the five paired timing runs.
