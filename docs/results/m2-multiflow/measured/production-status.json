@@ -1,0 +1,20 @@
+{
+ "gate": "m2d-multiflow/acquisition-q1/gate-s0",
+ "invalid_attempts": {
+  "1": 0,
+  "2": 0,
+  "3": 0,
+  "4": 0,
+  "5": 0,
+  "6": 0,
+  "7": 0,
+  "8": 0,
+  "9": 0,
+  "10": 0
+ },
+ "planned_pairs": 50,
+ "proof": "m2d-multiflow/acquisition-q1/proof",
+ "reuse_key": "ad713cad0d39dcec867c31937a0c902094b4e72c515dbef985e04b03abf0935e",
+ "schedule_sha256": "2578224d2af0326873288b34c8d1b102c2f52ebda0edd8b830df0debf3ddf327",
+ "valid_pairs": 50
+}

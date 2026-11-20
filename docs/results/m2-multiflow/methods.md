@@ -33,3 +33,24 @@ For each physical role ID, the report gives the median and observed minimum/maxi
 
 For each side, choose the lowest registered repetition ID attaining the median aggregate receiver rate in the fully active common fairness window. The figure shows both selected real runs as aligned panels, with per-flow 100 ms receiver rates and observed join times. The one-flow comparison binds the five serial CUBIC proof senders to the study key; their registered writes last 30 seconds. Scenario 3 lasts 60 seconds, with 60-second registered writes for the seven incumbents and 40 seconds for late flow f7. Each sender's lifetime histogram contains timer observations during its own setup, transfer and drain. The histogram count and the span from its initial clock record to the final sender sample quantify exposure. The p99 uses the inclusive upper bound of the observed rank's logarithmic nanosecond bucket, capped at the exact maximum. The maximum is directly observed. Lateness comparisons describe this placement and offered load. They do not isolate a core-sharing effect.
 
+## Sealed evidence export
+
+The `archive.sh` wrapper uses the frozen image to create and restore the full
+and compact archives on the private volume. It exports the small results and
+qualification receipts as the checkout owner, using the verified compact
+restore. The archive manifest binds each exported acquisition receipt.
+
+```sh
+stage=/data/m2/archive/m2d-multiflow-verify-final01
+docs/results/m2-multiflow/archive.sh --export-only acquisition-q1 "$stage"
+sha256sum -c docs/results/m2-multiflow/measured/source.sha256
+sha256sum -c docs/results/m2-multiflow/measured/production-source-approved
+```
+
+`--export-only` requires a completed replay in the supplied directory. It
+reads the existing restore and leaves both archives and the live evidence
+unchanged. The normal two-argument invocation creates a new replay in a fresh
+stage directory. The first export attempt reached both completed archive
+restores and then failed on permissions while copying the original qualification
+receipts. The export retry read the manifest-verified copies from the compact
+restore while preserving the original receipt permissions and archive digests.

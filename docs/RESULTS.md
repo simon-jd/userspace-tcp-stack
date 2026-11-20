@@ -1217,3 +1217,80 @@ The full archive contains 12,257 raw and acquisition files (39,233,265,248 bytes
 | [100 · 100 · 0.1 · 2](results/m2-matrix/plots/100-100-0.1-2-bbr.png) | 92.77 [92.28, 93.39]<br>92.32 [92.27, 92.57] | 0.1001 [0.08956, 0.1115]<br>0.1004 [0.0896, 0.1119] | 1.124 [0.9967, 1.511]<br>0.6841 [0.5293, 0.8195] | 26.76 [25.76, 27.03]<br>26.25 [25.2, 27.17] | p50 delay (<1 ms) |
 | [100 · 100 · 1 · 0.5](results/m2-matrix/plots/100-100-1-0.5-bbr.png) | 92.04 [91.49, 92.11]<br>91.85 [91.83, 91.99] | 0.9961 [0.9801, 1.029]<br>0.9971 [0.979, 1.024] | -0.02631 [-0.02931, -0.02239]<br>-0.02729 [-0.04635, -0.01553] | 24.38 [23.8, 24.8]<br>23.96 [23.7, 24.67] | None |
 | [100 · 100 · 1 · 2](results/m2-matrix/plots/100-100-1-2-bbr.png) | 91.88 [91.59, 92.19]<br>92.01 [91.83, 92.09] | 1.011 [0.9776, 1.027]<br>1.009 [0.9761, 1.029] | -0.02473 [-0.03132, -0.02289]<br>-0.02814 [-0.03936, -0.02256] | 23.99 [22.52, 24.78]<br>24.23 [23.67, 24.76] | None |
+
+## Multi-flow
+
+The shared-bottleneck study ran all ten [registered scenarios](results/m2-multiflow/protocol.md)
+on November 20, 2026 (UTC). Each scenario has five adjacent test/baseline pairs
+with matched roles, join order and seed. All 50 pairs passed on their first
+attempt in serial slot 0. The 100 production runs opened and closed 300 connections
+(125 userspace, 175 Linux), each with matching positive payload bytes and SHA-256
+at both endpoints. Three separate rehearsals opened and closed another 16.
+See the [run inventory](results/m2-multiflow/measured/runs.csv),
+[per-flow metrics](results/m2-multiflow/measured/flows.csv), and
+[physical endpoint census](results/m2-multiflow/measured/physical-connections.csv).
+
+The [ten paired scenario tables](results/m2-multiflow/measured/tables.md) include
+per-role goodput medians and ranges, both Jain windows, convergence counts, and
+links to aligned traces for the two selected measured repetitions per scenario.
+The five-second convergence hold was confirmed in 16/50 test runs and 20/50
+Linux baselines. The remaining 34 and 30, respectively, were right-censored at
+the measured horizons. No run had a sampling gap that prevented classification.
+The [methods](results/m2-multiflow/methods.md) describe the operational active
+end and the conditional onset ranges.
+
+Scenario 8 (late BBR joining incumbent Linux CUBIC) had the only nominal Jain
+difference greater than 0.05 in magnitude. The medians were 0.878 test versus
+0.996 baseline, a difference of −0.119. Neither side converged in any of the five
+runs. The fully active Jain difference was also −0.119.
+
+Scenario 10 (mixed CUBIC) had the two registered per-role goodput gaps. Stack
+incumbent f0 delivered 18.141 [17.678, 21.730] Mbit/s versus its Linux counterpart's
+33.087 [28.066, 35.186]. Linux incumbent f1 delivered 35.034 [30.606, 36.407]
+versus 24.517 [21.919, 28.265] Mbit/s in the all-Linux baseline. The
+[phase observations](results/m2-multiflow/measured/gap-phases.csv) show that both
+shifts were already present before the fourth sender joined. In the incumbents-only
+window, the median sampled cwnd for f0 was 111 versus 221 packets, and f1's was
+196 versus 134, with median sampled RTT about 56 ms in all four series. Both
+goodput differences persisted after the join. These observations describe the
+change in bandwidth share. The measured comparisons leave the cause of the
+window difference unresolved. The test side converged in 0/5 and the baseline in
+1/5.
+
+Every production run retained a `foreign_cpu` flag from the shared timing CPUs.
+Seven per-flow endpoint/capture retransmission-count discrepancies and one
+`stack_blocked` flag were retained in the run inventory. The
+[network records](results/m2-multiflow/measured/network.csv) include CPU, softirq,
+queue and shared-path observations. The eight-flow timer comparison uses the
+five same-key serial one-flow CUBIC controls. Median per-role p99 histogram
+bounds in the eight-flow case were 65.535–131.071 µs, versus 262.143 µs in the
+one-flow controls. The largest observed timer delay was 67.044 ms versus 44.159
+ms. The observation counts and registered sender durations differ across the
+groups and are preserved in the
+[timer comparison](results/m2-multiflow/measured/eight-vs-one-lateness.csv).
+
+### Qualification and replay
+
+The [runtime freeze](results/m2-multiflow/measured/freeze.json) records the bulk
+and core build hashes, helper tree, kernel, image and CPU placement for reuse key
+`ad713cad0d39dcec867c31937a0c902094b4e72c515dbef985e04b03abf0935e`.
+Both full calibration gates passed all 67 criteria and reopened their 62 bound
+files per slot. The primary 2×BDP receiver-goodput references for slot 0 were
+95,625,954.47623314 bps at 100 Mbit/s and 20 ms, and 9,549,729.709013484 bps at
+10 Mbit/s and 100 ms. The [qualification](results/m2-multiflow/measured/qualified.json)
+binds both gates and the passing 15-transfer CUBIC proof. All five simultaneous
+proof pairs had observed overlap. The registered production mode was serial.
+The [production receipt](results/m2-multiflow/measured/production-status.json),
+[source commit](results/m2-multiflow/measured/source-commit.txt) and
+[source checksums](results/m2-multiflow/measured/source.sha256) record the source
+used by the campaign.
+
+The full and compact archives stay in the private `utcp-data` volume under
+`/data/m2/archive`. The [replay receipt](results/m2-multiflow/measured/archive-replay.json)
+records both archive names and byte counts, SHA-256 digests and manifest hashes.
+Both restores reproduced all 20 table and plot files and the endpoint census
+byte for byte. The full restore also reproduced the byte counts and packet
+counts in the [capture census](results/m2-multiflow/measured/physical-captures.csv)
+for 392 capture files and regenerated the capture projections of all 100
+production runs and three rehearsals. These archives include the separate
+qualification and rehearsal evidence.

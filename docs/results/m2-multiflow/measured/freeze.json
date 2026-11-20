@@ -1,0 +1,28 @@
+{
+ "reuse_key": "ad713cad0d39dcec867c31937a0c902094b4e72c515dbef985e04b03abf0935e",
+ "schedule_sha256": "2578224d2af0326873288b34c8d1b102c2f52ebda0edd8b830df0debf3ddf327",
+ "slots": [
+  {
+   "utcp-m2-multiflow-s0-r1": "11",
+   "utcp-m2-multiflow-s0-r2": "11",
+   "utcp-m2-multiflow-s0-rcv": "10",
+   "utcp-m2-multiflow-s0-snd": "8,9"
+  },
+  {
+   "utcp-m2-multiflow-s1-r1": "15",
+   "utcp-m2-multiflow-s1-r2": "15",
+   "utcp-m2-multiflow-s1-rcv": "14",
+   "utcp-m2-multiflow-s1-snd": "12,13"
+  }
+ ],
+ "static": {
+  "build": "build/tb-gcc-release",
+  "bulk_sha256": "6bf415a2a5745d356e4583d633327bc3d58f7b49a4ae2c47078fb54405acbc7d",
+  "commit": "67d4b48341dd74e70e00f1953e711fc49038e8e9",
+  "core_sha256": "c3d0fa75effdfc6215e5eb80db0e96cb196ccf79c4c3bffc0b2bce54e2e35d53",
+  "image": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+  "image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+  "scripts_sha256": "b4960cbe4f6955b091346828aa9d507c1b00c013d1494802be95a592c16c86c6",
+  "uname_r": "7.0.0-42-generic"
+ }
+}
