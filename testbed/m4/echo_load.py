@@ -40,22 +40,25 @@ def require(condition, why):
 
 
 class Trial:
-    def __init__(self, args):
+    def __init__(self, args, result_dir="m4-echo-load"):
         self.args = args
         self.binary_paths = {"server": (ROOT / args.binary).resolve(),
                              "client": (ROOT / (args.client_binary or args.binary)).resolve()}
         self.binaries = {role: "/utcp/" + path.relative_to(ROOT).as_posix()
                          for role, path in self.binary_paths.items()}
         self.allocation_counter = None
+        self.allocation_counter_sha = None
         if args.allocation_counter:
             library = (ROOT / args.allocation_counter).resolve()
             if not library.is_file():
                 raise ValueError(f"allocation counter library is missing: {library}")
             self.allocation_counter = "/utcp/" + library.relative_to(ROOT).as_posix()
+            with library.open("rb") as stream:
+                self.allocation_counter_sha = hashlib.file_digest(stream, "sha256").hexdigest()
         self.tag = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
-        self.name = "utcp-m4-echo-" + self.tag.lower()
+        self.name = f"utcp-{result_dir.removesuffix('-load')}-{self.tag.lower()}"
         self.net = self.name + "-net"
-        self.out = "/data/m4-echo-load/" + self.tag
+        self.out = f"/data/{result_dir}/{self.tag}"
         addresses = ipaddress.ip_network(f"198.19.{args.net_base}.0/24")
         self.subnet = str(addresses)
         self.ips = {"server": str(addresses[2]), "client": str(addresses[3])}
@@ -96,6 +99,7 @@ class Trial:
                          "binary_sha256": self.binary_shas["server"], "arguments": vars(a),
                          "binary_sha256_by_role": self.binary_shas,
                          "binary_source_by_role": self.sources, "runner_source": self.runner_source,
+                         "allocation_counter_sha256": self.allocation_counter_sha,
                          "docker_image_id": self.image, "net": self.subnet, "ips": self.ips,
                          "transport_address": STACK_IP, "port": PORT, "mtu": MTU,
                          "nofile_requested": NOFILE, "uname": run("uname", "-a"),
@@ -129,7 +133,7 @@ class Trial:
             self.created.append(role)
             run("docker", "start", self.container(role))
             if role == "server":
-                self.docker(role, "mkdir", "-p", "/data/m4-echo-load")
+                self.docker(role, "mkdir", "-p", str(Path(self.out).parent))
                 self.docker(role, "mkdir", self.out)
                 self.artifacts_created = True
                 self.capture_json("server", "run.json", self.manifest)
@@ -515,7 +519,7 @@ def main():
     try:
         trial = Trial(args)
     except ValueError as error:
-        print(f"the benchmark binary must be under the source checkout: {error}", file=sys.stderr)
+        print(f"invalid benchmark binary or allocation counter: {error}", file=sys.stderr)
         return 1
     try:
         trial.setup()
