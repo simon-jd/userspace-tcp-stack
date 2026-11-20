@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
+#include <limits>
 #include <optional>
 
 #include "common/kernel_transport.hpp"
+#include "common/utcp_transport.hpp"
+#include "core/stack_impl.hpp"
+#include "core/tcp/tcb.hpp"
 
 namespace utcp::app::echo {
 
@@ -174,12 +179,10 @@ EchoClient::EchoClient(Transport& t, const ClientOptions& o) : t_(t), o_(o), buf
 std::expected<void, std::string> EchoClient::start(bool stop_when_done) {
   stop_when_done_ = stop_when_done;
   start_ = t_.now();
-  if (o_.rate > 0) {
-    last_refill_ = start_;
-    tokens_milli_ = 1000;  // the first request may start at once
-    rate_timer_ = t_.add_timer(std::chrono::milliseconds(1), [this] { refill(t_.now()); });
-    rate_timer_on_ = true;
+  if (o_.open_batch != 0) {
+    return {};  // wait for the controller to capture both endpoint baselines
   }
+  start_rate();
   open_more();
   if (conns_.empty() && opened_ == 0 && o_.connections > 0) {
     return std::unexpected("connect to " + to_string(o_.remote) + ": " + result_.first_error);
@@ -188,10 +191,53 @@ std::expected<void, std::string> EchoClient::start(bool stop_when_done) {
   return {};
 }
 
+void EchoClient::start_rate() {
+  if (o_.rate > 0) {
+    last_refill_ = start_;
+    tokens_milli_ = 1000;  // the first request may start at once
+    rate_timer_ = t_.add_timer(std::chrono::milliseconds(1), [this] { refill(t_.now()); });
+    rate_timer_on_ = true;
+  }
+}
+
+void EchoClient::advance_load() {
+  switch (load_phase_) {
+    case LoadPhase::baseline:
+      load_phase_ = LoadPhase::opening;
+      open_timer_ = t_.add_timer(std::chrono::milliseconds(2), [this] { open_more(); });
+      break;
+    case LoadPhase::idle:
+      load_phase_ = LoadPhase::active;
+      start_ = t_.now();
+      start_rate();
+      for (const auto& [id, c] : conns_) {
+        begin_request(id);
+      }
+      break;
+    case LoadPhase::drained:
+      for (const auto& [id, c] : conns_) {
+        t_.close(id);
+      }
+      conns_.clear();
+      established_ = 0;
+      check_done();
+      break;
+    case LoadPhase::opening:
+    case LoadPhase::active:
+      break;  // only a connection or response can advance these phases
+  }
+}
+
 void EchoClient::open_more() {
-  while (!done_ && opened_ < o_.connections && conns_.size() < o_.concurrency) {
+  while (!done_ && opened_ < o_.connections && conns_.size() < o_.concurrency &&
+         (o_.open_batch == 0 || conns_.size() - established_ < o_.open_batch)) {
     auto c = t_.connect(o_.remote, o_.sock);
     if (!c) {
+      if (o_.open_batch != 0) {
+        ++result_.errors;
+        abort("connect: " + describe(c.error()));
+        return;
+      }
       if (result_.first_error.empty()) {
         result_.first_error = describe(c.error());
       }
@@ -209,11 +255,18 @@ void EchoClient::open_more() {
 
 void EchoClient::on_connected(ConnId id) {
   const auto it = conns_.find(id);
-  if (it == conns_.end()) {
+  if (it == conns_.end() || it->second.connected) {
     return;
   }
   it->second.connected = true;
-  begin_request(id);
+  ++established_;
+  if (o_.open_batch == 0) {
+    begin_request(id);
+  } else if (established_ == o_.connections) {
+    t_.cancel_timer(open_timer_);
+    open_timer_ = 0;
+    load_phase_ = LoadPhase::idle;
+  }
 }
 
 void EchoClient::begin_request(ConnId id) {
@@ -230,6 +283,7 @@ void EchoClient::begin_request(ConnId id) {
   c.in_request = true;
   c.sent = c.received = 0;
   c.started = t_.now();
+  ++requests_started_;
   send_some(id);
 }
 
@@ -320,8 +374,19 @@ void EchoClient::read_some(ConnId id) {
       c.in_request = false;
       ++c.req;
       if (c.req == o_.count) {
-        finish_conn(id, true, "");
-        return;
+        if (o_.open_batch == 0) {
+          finish_conn(id, true, "");
+          return;
+        }
+        if (++result_.connections_done == o_.connections) {
+          result_.duration = t_.now() - start_;
+          load_phase_ = LoadPhase::drained;
+          if (rate_timer_on_) {
+            t_.cancel_timer(rate_timer_);
+            rate_timer_on_ = false;
+          }
+        }
+        continue;  // keep the socket open and detect unsolicited data or FIN
       }
       begin_request(id);
     }
@@ -353,7 +418,12 @@ void EchoClient::on_error(ConnId id, Error e) {
 }
 
 void EchoClient::finish_conn(ConnId id, bool ok, const std::string& why) {
+  if (o_.open_batch != 0) {
+    abort(why);
+    return;
+  }
   t_.close(id);
+  established_ -= conns_.at(id).connected;
   conns_.erase(id);
   if (ok) {
     ++result_.connections_done;
@@ -372,9 +442,15 @@ void EchoClient::check_done() {
     return;
   }
   done_ = true;
-  result_.duration = t_.now() - start_;
+  if (o_.open_batch == 0 || load_phase_ != LoadPhase::drained) {
+    result_.duration = t_.now() - start_;
+  }
   result_.ok = result_.errors == 0 && result_.mismatches == 0 &&
                result_.requests_ok == o_.connections * o_.count;
+  if (open_timer_ != 0) {
+    t_.cancel_timer(open_timer_);
+    open_timer_ = 0;
+  }
   if (rate_timer_on_) {
     t_.cancel_timer(rate_timer_);
     rate_timer_on_ = false;
@@ -393,6 +469,7 @@ void EchoClient::abort(const std::string& why) {
     ++result_.errors;
   }
   conns_.clear();
+  established_ = 0;
   if (result_.first_error.empty()) {
     result_.first_error = why;
   }
@@ -429,6 +506,29 @@ JsonLine EchoClient::summary() const {
       .add("latency_p99_ns", r.latency.percentile(0.99).count())
       .add("latency_p999_ns", r.latency.percentile(0.999).count())
       .add("latency_max_ns", r.latency.max().count());
+  if (o_.open_batch != 0) {
+    line.add("offered_requests_per_s", o_.rate)
+        .add("requests_started", requests_started_)
+        .add("latency_samples", r.latency.count())
+        .add("workload_start_ns", start_.ns)
+        .add("workload_end_ns", (start_ + r.duration).ns);
+  }
+  return line;
+}
+
+JsonLine EchoClient::load_report() const {
+  constexpr const char* phases[]{"baseline", "opening", "idle", "active", "drained"};
+  JsonLine line;
+  line.add("role", "client")
+      .add("phase", phases[static_cast<std::size_t>(load_phase_)])
+      .add("open", conns_.size())
+      .add("established", established_)
+      .add("connections_ok", result_.connections_done)
+      .add("requests_started", requests_started_)
+      .add("requests_ok", result_.requests_ok)
+      .add("bytes", result_.bytes)
+      .add("errors", result_.errors)
+      .add("workload_start_ns", start_.ns);
   return line;
 }
 
@@ -437,6 +537,10 @@ JsonLine EchoClient::summary() const {
 void add_options(CliParser& p) {
   p.option("listen", "PORT", "server: listen on PORT (or IP:PORT)")
       .flag("udp", "server: UDP echo instead of TCP")
+      .option("backlog", "N", "server: requested TCP listen backlog", "4096")
+      .flag("load-report", "emit periodic TCP connection and buffer counts as JSON lines")
+      .option("load-control", "DIR", "client: hold all connections, advancing on open/active/close files")
+      .option("open-batch", "N", "gated client: maximum outstanding handshakes", "32")
       .option("connect", "IP:PORT", "client: connect to IP:PORT")
       .option("size", "N", "client: bytes per request", "64")
       .option("count", "N", "client: requests per connection", "100")
@@ -469,6 +573,27 @@ std::expected<std::uint64_t, std::string> get_u64(const CliArgs& a, const char* 
     return std::unexpected(std::string("--") + name + ": " + r.error());
   }
   return *r;
+}
+
+// The process remains responsive while the controller reads /proc. Only
+// benchmark invocations pay for these snapshots.
+bool report_load(Transport& t, JsonLine line) {
+  line.add("ev", "load").add("monotonic_ns", t.now().ns);
+  if (const auto* u = dynamic_cast<const UtcpTransport*>(&t)) {
+    const StackUsage usage = u->stack().debug_usage();
+    line.add("tcb_bytes", sizeof(Tcb))
+        .add("tcp_slots", usage.tcp_slots)
+        .add("time_wait_entries", usage.time_wait_entries)
+        .add("packet_buffer_bytes", packet_buf_size)
+        .add("pool_buffers", usage.pool_buffers)
+        .add("pool_buffers_free", usage.pool_buffers_free)
+        .add("chunk_bytes", ChunkPool::chunk_size)
+        .add("chunks", usage.chunks)
+        .add("chunks_free", usage.chunks_free)
+        .add("tx_queued", usage.tx_queued)
+        .add("conn_timers_armed", usage.conn_timers_armed);
+  }
+  return std::printf("%s\n", line.str().c_str()) >= 0 && std::fflush(stdout) == 0;
 }
 
 }  // namespace
@@ -506,6 +631,12 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
   if (listen.has_value() == connect.has_value()) {
     return die("give exactly one of --listen and --connect");
   }
+  const bool load_report = args->flag("load-report");
+  const auto control_dir = args->get("load-control");
+  if ((control_dir && !connect) || (connect && load_report != control_dir.has_value()) ||
+      (load_report && args->flag("udp"))) {
+    return die("gated TCP clients need both --load-control and --load-report; --load-report is TCP only");
+  }
   auto transport = make(*backend);
   if (!transport) {
     std::fprintf(stderr, "utcp-echo: %s\n", transport.error().c_str());
@@ -520,6 +651,11 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     so.local = *ep;
     so.udp = args->flag("udp");
     so.sock = sock;
+    auto backlog = get_u64(*args, "backlog");
+    if (!backlog || *backlog == 0 || *backlog > std::numeric_limits<int>::max()) {
+      return die("--backlog must be 1..INT_MAX");
+    }
+    so.backlog = static_cast<std::uint32_t>(*backlog);
     EchoServer server(t, so);
     if (auto s = server.start(); !s) {
       std::fprintf(stderr, "utcp-echo: %s\n", s.error().c_str());
@@ -527,7 +663,25 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     }
     std::fprintf(stderr, "utcp-echo: %s echo on %s\n", so.udp ? "UDP" : "TCP",
                  to_string(so.local).c_str());
-    t.run(server);  // until a signal
+    bool report_ok = true;
+    const auto emit = [&] {
+      const ServerStats& stats = server.stats();
+      JsonLine line;
+      line.add("role", "server").add("open", server.open_connections())
+          .add("accepted", stats.accepted).add("closed", stats.closed)
+          .add("errors", stats.errors).add("bytes", stats.bytes)
+          .add("requested_backlog", so.backlog);
+      if (!(report_ok = report_load(t, std::move(line)))) {
+        t.stop();
+      }
+    };
+    if (load_report) {
+      emit();
+      t.add_timer(std::chrono::milliseconds(500), emit);
+    }
+    if (report_ok) {
+      t.run(server);  // until a signal
+    }
     const ServerStats& st = server.stats();
     JsonLine line;
     line.add("ev", "summary").add("role", "server").add("udp", so.udp)
@@ -535,7 +689,7 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
         .add("bytes", st.bytes).add("datagrams", st.datagrams).add("udp_dropped", st.udp_dropped);
     server.close_all();
     std::printf("%s\n", line.str().c_str());
-    return 0;
+    return report_ok ? 0 : 1;
   }
 
   if (args->flag("udp")) return die("--udp is a server mode (use nc -u as the client)");
@@ -563,10 +717,58 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
   co.concurrency = *conc;
   co.rate = *rate;
   co.seed = *seed;
+  if (control_dir) {
+    auto batch = get_u64(*args, "open-batch");
+    if (!batch || *batch == 0 || *batch > 1024 || *conns == 0 || *conns != *conc || *rate == 0 ||
+        std::numeric_limits<std::uint64_t>::max() / *size / *count < *conns) {
+      return die("gated load needs equal positive --connections and --concurrency, positive --rate,"
+                 " --open-batch 1..1024 and a representable expected byte count");
+    }
+    std::error_code error;
+    if (!std::filesystem::is_directory(*control_dir, error)) {
+      return die("--load-control needs an existing directory");
+    }
+    for (const char* name : {"open", "active", "close"}) {
+      if (std::filesystem::exists(std::filesystem::path(*control_dir) / name, error) || error) {
+        return die("--load-control directory must be accessible and contain no gate files at startup");
+      }
+    }
+    co.open_batch = *batch;
+  }
   EchoClient client(t, co);
   if (auto s = client.start(); !s) {
     std::fprintf(stderr, "utcp-echo: %s\n", s.error().c_str());
     return 1;
+  }
+  const auto emit = [&] {
+    if (!report_load(t, client.load_report())) {
+      client.abort("cannot write load report");
+    }
+  };
+  std::optional<TimerToken> report_timer, gate_timer;
+  if (load_report && !client.done()) {
+    emit();
+    report_timer = t.add_timer(std::chrono::milliseconds(500), emit);
+  }
+  if (control_dir) {
+    const auto dir = std::filesystem::path(*control_dir);
+    auto last_phase = client.load_phase();
+    gate_timer = t.add_timer(std::chrono::milliseconds(50), [&, dir, last_phase]() mutable {
+      const auto phase = client.load_phase();
+      const char* gate = phase == LoadPhase::baseline ? "open" :
+                         phase == LoadPhase::idle ? "active" :
+                         phase == LoadPhase::drained ? "close" : nullptr;
+      std::error_code error;
+      if (gate && std::filesystem::exists(dir / gate, error)) {
+        client.advance_load();
+      } else if (error) {
+        client.abort("cannot read load control: " + error.message());
+      }
+      if (!client.done() && last_phase != client.load_phase()) {
+        last_phase = client.load_phase();
+        emit();
+      }
+    });
   }
   if (!client.done()) {
     t.run(client);
@@ -574,6 +776,8 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
   if (!client.done()) {
     client.abort("interrupted");
   }
+  if (report_timer) t.cancel_timer(*report_timer);
+  if (gate_timer) t.cancel_timer(*gate_timer);
   t.finish_closing(finish_closing_max);
   std::printf("%s\n", client.summary().str().c_str());
   if (!client.result().ok) {
