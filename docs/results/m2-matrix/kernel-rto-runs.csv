@@ -1,0 +1,2 @@
+run,valid,counted,timeouts,spurious_rtos,capture_complete,sampled_loss_spans,interior_new_segments,boundary_new_segments,summary
+100-20-1-2-bbr-r4-linux,1,1,1,0,1,1,0,0,no new data observed in sampled Loss intervals; sub-sample episodes unresolved

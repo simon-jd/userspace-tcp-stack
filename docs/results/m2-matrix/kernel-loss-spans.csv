@@ -1,0 +1,4 @@
+run,span,first_loss_ns,last_loss_ns,prior_sample_ns,next_sample_ns,prior_state,next_state,first_loss_after_window_end_ms,last_loss_after_window_end_ms,first_phase,last_phase,loss_samples,max_inner_sampling_ms,phase,position,data_segments,payload_bytes,exact_repeat_segments,advance_segments,new_sequence_bytes,first_advance_ns,last_advance_ns
+100-20-1-2-bbr-r4-linux,1,1028794567949998,1028794577920502,1028794557933780,1028794585280137,recovery,open,750.070909,760.041413,drain,drain,2,9.970504,drain,interior,0,0,0,0,0,,
+100-20-1-2-bbr-r4-linux,1,1028794567949998,1028794577920502,1028794557933780,1028794585280137,recovery,open,750.070909,760.041413,drain,drain,2,9.970504,drain,leading boundary,1,296,1,0,0,,
+100-20-1-2-bbr-r4-linux,1,1028794567949998,1028794577920502,1028794557933780,1028794585280137,recovery,open,750.070909,760.041413,drain,drain,2,9.970504,drain,trailing boundary,0,0,0,0,0,,

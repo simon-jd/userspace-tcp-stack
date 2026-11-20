@@ -1,0 +1,9 @@
+algo,cell,metric,verdict,stack_median,linux_median,overlay
+newreno,100-20-0-0.5,qdelay_p50_ms,gap (below resolution),3.4872460000000025,3.0056870000000018,plots/100-20-0-0.5-newreno.png
+newreno,100-100-0.1-0.5,qdelay_p50_ms,gap (below resolution),-0.016905500000007123,-0.003249500000009675,plots/100-100-0.1-0.5-newreno.png
+newreno,100-100-1-2,qdelay_p50_ms,gap (below resolution),-0.01295199999999852,-0.001860000000000639,plots/100-100-1-2-newreno.png
+cubic,10-100-1-2,qdelay_p99_ms,gap (below resolution),0.4754209200000003,0.8588312199999973,plots/10-100-1-2-cubic.png
+cubic,100-20-1-2,qdelay_p50_ms,gap (below resolution),-0.03088549999999657,-0.011190999999998397,plots/100-20-1-2-cubic.png
+bbr,10-20-0-0.5,retrans_pct,gap,2.3835973378430277,2.0685599839767193,plots/10-20-0-0.5-bbr.png
+bbr,10-20-0.1-0.5,retrans_pct,gap,2.5097422731308496,2.279916254840607,plots/10-20-0.1-0.5-bbr.png
+bbr,100-100-0.1-2,qdelay_p50_ms,gap (below resolution),1.123639500000003,0.6841475000000088,plots/100-100-0.1-2-bbr.png
