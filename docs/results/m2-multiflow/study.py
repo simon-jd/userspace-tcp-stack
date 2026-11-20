@@ -312,6 +312,31 @@ def option(argv, name):
     return argv[argv.index(name) + 1]
 
 
+def lateness_evidence(stats, summary):
+    """Read the whole-process histogram and independently recover its p99."""
+    buckets = {
+        int(key.removeprefix("loop_lateness_bucket_")): count
+        for key, count in stats.items()
+        if key.startswith("loop_lateness_bucket_")
+    }
+    require(
+        buckets
+        and all(0 <= k <= 63 and type(v) is int and v >= 0 for k, v in buckets.items()),
+        "missing or malformed lateness histogram",
+    )
+    observed = sum(buckets.values())
+    maximum = stats["loop_lateness_max_ns"]
+    upper = M.hist_percentile(buckets, 0.99, maximum)
+    require(
+        observed > 0
+        and observed == stats["loop_lateness_count"] == summary["lateness_count"]
+        and maximum == summary["lateness_max_ns"]
+        and upper == summary["lateness_p99_ns"],
+        "event-loop histogram and sender summary disagree",
+    )
+    return {"lateness_histogram": buckets, "lateness_count": observed}
+
+
 def endpoint(folder, meta, f):
     times, summaries, samples, launches, clocks = [], [], [], [], []
     for side, role in (("snd", "sender"), ("rcv", "receiver")):
@@ -452,6 +477,11 @@ def endpoint(folder, meta, f):
         sha256=snd["sha256"],
         sender_cc=measured,
         receiver_cc=rcv["cc"],
+        lateness_count=snd.get("lateness_count"),
+        sender_clock_to_last_sample_s=(samples[0][-1]["t"] - clocks[0].monotonic_ns)
+        / N,
+        sender_connect_to_last_sample_s=(samples[0][-1]["t"] - times[0]) / N,
+        sender_summary_duration_s=snd["duration_us"] / 1e6,
         lateness_p99_ns=snd.get("lateness_p99_ns"),
         lateness_max_ns=snd.get("lateness_max_ns"),
     )
@@ -696,6 +726,11 @@ def summarize(rd, sched, gatedir, pilot=False, capture_data=None):
                     "tun",
                     "bytes",
                     "sha256",
+                    "lateness_count",
+                    "sender_clock_to_last_sample_s",
+                    "sender_connect_to_last_sample_s",
+                    "sender_summary_duration_s",
+                    "duration_s",
                     "lateness_p99_ns",
                     "lateness_max_ns",
                     "target_ns",
@@ -762,6 +797,7 @@ def summarize(rd, sched, gatedir, pilot=False, capture_data=None):
                 and st["loop_lateness_max_ns"] >= 0,
                 f"{f['id']} missing loop lateness",
             )
+            r.update(lateness_evidence(st, r))
             src, sport, dst, dport, _ = r["identity"]
             socket_tuple = f"{src}:{sport}>{dst}:{dport}"
             trace_counts = {}

@@ -175,6 +175,27 @@ class PhysicalIdentity(unittest.TestCase):
         self.assertEqual(len(S.wire_check(self.cap, self.fs)), 2)
 
 
+class LatenessExposure(unittest.TestCase):
+    def test_reopens_histogram_count_bucket_ceiling_and_clamped_max(self):
+        st = {
+            "loop_lateness_bucket_4": 98,
+            "loop_lateness_bucket_5": 2,
+            "loop_lateness_count": 100,
+            "loop_lateness_max_ns": 29,
+        }
+        end = {"lateness_count": 100, "lateness_p99_ns": 29, "lateness_max_ns": 29}
+        self.assertEqual(
+            S.lateness_evidence(st, end)["lateness_histogram"], {4: 98, 5: 2}
+        )
+        for field, value in [
+            ("lateness_count", 101),
+            ("lateness_p99_ns", 28),
+            ("lateness_max_ns", 30),
+        ]:
+            with self.assertRaisesRegex(ValueError, "disagree"):
+                S.lateness_evidence(st, {**end, field: value})
+
+
 class RoleReports(unittest.TestCase):
     def build(self):
         rows = []

@@ -147,7 +147,13 @@ def control_rows(source, key):
         expected = dict(spec, campaign=m["campaign"], run=run, slot=0)
         why = S.M.proof_row_error(s, m, expected, "run")
         S.require(not why, f"invalid one-flow control {run}: {why}")
-        end = S.one(S.A.read_jsonl(path / "snd.jsonl"), "summary")
+        records = S.A.read_jsonl(path / "snd.jsonl")
+        end = S.one(records, "summary")
+        clock = S.one(records, "clock")["monotonic_ns"]
+        connected = S.one(records, "start")["t"]
+        final_sample = max(r["t"] for r in records if r["ev"] == "sample")
+        raw_stats = S.read(path / "stats.json")
+        hist = S.lateness_evidence(raw_stats, end)
         S.require(
             end["role"] == "sender"
             and end["backend"] == "utcp"
@@ -170,6 +176,10 @@ def control_rows(source, key):
                 slot=m["slot"],
                 reuse_key=key,
                 duration_s=m["duration_s"],
+                sender_clock_to_last_sample_s=(final_sample - clock) / S.N,
+                sender_connect_to_last_sample_s=(final_sample - connected) / S.N,
+                sender_summary_duration_s=end["duration_us"] / 1e6,
+                **hist,
                 lateness_p99_ns=end["lateness_p99_ns"],
                 lateness_max_ns=end["lateness_max_ns"],
                 summary_sha256=S.sha(path / "summary.json"),
@@ -276,6 +286,9 @@ def aggregate(scenario, runs, invalid):
                 "goodput_bps",
                 "fair_nominal_bps",
                 "fair_active_bps",
+                "lateness_count",
+                "sender_clock_to_last_sample_s",
+                "sender_connect_to_last_sample_s",
                 "lateness_p99_ns",
                 "lateness_max_ns",
             ):
@@ -466,10 +479,21 @@ def tables(stage, sched, gate, controls, out):
                     comp = dict(
                         id=r["id"],
                         metric=k,
-                        eight_flow_duration_s=60,
+                        eight_flow_scenario_duration_s=60,
+                        eight_flow_sender_duration_s=40 if r["id"] == "f7" else 60,
                         one_flow_duration_s=30,
                     )
                     add_stats(comp, "one_flow", distribution(cs, k))
+                    for metric in (
+                        "lateness_count",
+                        "sender_clock_to_last_sample_s",
+                        "sender_connect_to_last_sample_s",
+                    ):
+                        add_stats(comp, "one_flow_" + metric, distribution(cs, metric))
+                        for key in ("min", "median", "max", "n"):
+                            comp[f"eight_flow_{metric}_{key}"] = r[
+                                f"test_{metric}_{key}"
+                            ]
                     comp.update(
                         {
                             l: r["test_" + k + "_" + l]

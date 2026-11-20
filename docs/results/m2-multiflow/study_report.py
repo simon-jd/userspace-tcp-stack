@@ -23,7 +23,9 @@ def report(out, summaries, roles, choices, comparison):
         "Brackets show the observed minimum and maximum across five matched repetitions. "
         "The reported convergence time is conditional on observing a full five-second hold. "
         "Where early sampling leaves the onset ambiguous, the first confirmed onset is an upper bound. "
-        "Individual onset bounds and censoring horizons are in `runs.csv`.",
+        "Individual onset bounds and censoring horizons are in `runs.csv`. The common active cutoff uses "
+        "each observed sender connect timestamp plus its registered write duration. The callback and "
+        "last application write have no independent timestamps.",
         "",
     ]
     for r in summaries:
@@ -86,19 +88,24 @@ def report(out, summaries, roles, choices, comparison):
                 "## Eight-flow loop lateness",
                 "",
                 "Each row compares the five serial one-flow CUBIC controls of 30 seconds with a single "
-                "physical sender role across the five eight-flow CUBIC runs of 60 seconds. "
+                "physical sender role across five 60-second eight-flow CUBIC scenarios. The seven incumbents have "
+                "60-second registered writes and the late f7 sender has a 40-second registered write. "
                 "Both use the same slot and runtime key. Each p99 or maximum describes one process's "
-                "event-loop histogram over the whole transfer.",
+                "whole-process timer lateness. The p99 is the inclusive upper bound of its logarithmic "
+                "histogram bucket, capped at the exact maximum. Maxima depend on observation length "
+                "and timer count. Exposure, histogram counts and sender sample spans appear in "
+                "`eight-vs-one-lateness.csv`, `flows.csv` and `one-flow-controls.csv`.",
                 "",
-                "| Physical flow | Histogram metric | One flow, µs | Eight flows, µs |",
-                "|---|---|---|---|",
+                "| Physical flow | Histogram metric | One flow, µs | Eight flows, µs | Median timer observations, one / eight |",
+                "|---|---|---|---|---|",
             ]
         )
         for c in comparison:
             eight = {f"eight_{k}": c[k] for k in ("min", "max", "median", "n")}
             lines.append(
                 f"| {c['id']} | {c['metric'].replace('lateness_', '').replace('_ns', '')} | "
-                f"{interval(c, 'one_flow', 1000)} | {interval(eight, 'eight', 1000)} |"
+                f"{interval(c, 'one_flow', 1000)} | {interval(eight, 'eight', 1000)} | "
+                f"{c['one_flow_lateness_count_median']:.0f} / {c['eight_flow_lateness_count_median']:.0f} |"
             )
         lines.append("")
     (out / "tables.md").write_text("\n".join(lines) + "\n")
