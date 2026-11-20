@@ -1,9 +1,9 @@
 # M3 simulator validation
 
 The production simulator source is private main
-`22b7cf30961cffb4b456c01aafb8c662f404212d`. The study records Gen6 strict seed
-verdicts, application byte outcomes, serialized replays, independent
-packet-capture checks, and historical TCP diagnostics.
+`22b7cf30961cffb4b456c01aafb8c662f404212d`. The initial builds and their
+corpus checks passed. The Gen6 long-run acceptance remains open with
+**0 of 1,000,000 newly counted seeds**.
 
 ## Initial build and corpus receipt
 
@@ -27,15 +27,30 @@ The build log, exit, provenance, CMake caches and compilation databases are
 under `utcp-data:/m3-sim-validation/22b7cf3-attempt-1/`. The `build.log`
 SHA-256 is `63871d9c73fece05a880feb4d891f4e80cf2f717c4524e5b5031a5f6e1e1d2e0`.
 
-At `2026-11-20T19:24:51Z`, `utcp-m3-sim-sweep` contained only its idle holder and
-sleep process. No campaign or waiter was observed. The attempt directory
-had no sweep provenance, observer control, pilot, or shard records.
+## Gen6 long-run outcome
 
-The one-million-seed coverage proof, application delivery categories,
-2,000 serialized sample comparisons and independent capture checks each
-require completed Gen6 sweep records.
+The first launcher returned Docker exit `125` with
+`invalid reference format`. At `2026-11-20T19:24:51Z`, the temporary
+`utcp-m3-sim-sweep` container held only its bootstrap Bash and sleep
+processes. The initial attempt archive had no campaign shard records.
+
+The subsequent stock runner launch started and exited at
+`2026-11-20T19:27:07Z` before writing a counted shard. On Ubuntu,
+`~/Desktop/utcp-wt/m3-stock-transfer/launch.exit` contains `1`.
+The corresponding `launch.log` ends with `mkdir: Permission denied`.
+Its SHA-256 is
+`a48b7d122b5203112d598e8867c177c95e7e16d2179cf3d9c9e49adfc15725af`.
+
+The long-run evidence still lacks unique coverage of the target seed
+range, per-seed verdicts and application-delivery outcomes, the 2,000
+serialized replay comparisons, and the independent capture checks.
 
 ## Historical diagnostics
 
-- [Positive-window persist pacing](persist-pacing.md)
-- [D-SACK capture replay and SYN retransmissions](dsack-capture-counts.md)
+These two cases use retained Gen5 and M1 evidence from earlier work.
+
+- Positive-window persist pacing. A matching post-fix capture for the
+  passing Gen5 seed remains unverified. [Case notes](persist-pacing.md)
+- D-SACK capture replay and SYN retransmissions. The replay corrected the
+  original case, and `run8` and `run9` still differ by one dubious D-SACK
+  each. [Case notes](dsack-capture-counts.md)
