@@ -1307,3 +1307,56 @@ counts in the [capture census](results/m2-multiflow/measured/physical-captures.c
 for 392 capture files and regenerated the capture projections of all 100
 production runs and three rehearsals. These archives include the separate
 qualification and rehearsal evidence.
+
+## M3 validation
+
+### Valid IPv4 datagrams and receive streams
+
+On Ubuntu, four fixed seeds at scale 1024 passed eight test entries under
+Clang ASan and UBSan. The tests round-tripped 1,572,864 valid IPv4 datagrams
+(524,288 each for TCP, UDP and ICMP), checking decoded fields and payload
+with checksum verification enabled. The receive-buffer tests compared
+65,536 streams with a naive byte-based reassembler, checking repeated and
+out-of-order inserts, hole fills, and reads. The returned bytes also
+matched the original streams. The focused run passed 83 CTest entries,
+and a fresh rebuild and rerun reproduced the counts.
+[Method and commands](results/m3-fuzz/VALID_WIRE_STREAM.md)
+[Per-seed counts](results/m3-fuzz/valid-wire-stream-counts.csv)
+
+### Packetdrill
+
+A fresh build of unmodified Google Packetdrill at
+`15ab46aedd01a5e664ec5cfb2b1888328cdd3901` ran both synchronous,
+nonblocking IPv4 cases against the Stack through its shared-object
+interface. In each of two runner invocations, the active and passive
+scripts passed twice each. The active case handed off five payload bytes
+and reached TIME-WAIT after the FIN exchange. The passive case delivered
+four bytes, emitted its delayed ACK after 200 ms of virtual time, and
+returned EOF after the peer FIN. Both invocations rejected an incorrect
+ACK expectation and an expectation for absent output with the recorded
+diagnostics. [Cases and run instructions](results/m3-packetdrill/README.md)
+[Original run receipt](results/m3-packetdrill/verification.md)
+The independent run logs remain in
+`~/Desktop/utcp-wt/m3-packetdrill-verify-1.zNTrFT/logs/` on Ubuntu.
+
+### Simulator corpus and historical cases
+
+The archived Ubuntu builds passed 20 of 20 simulator corpus cases in
+`gcc-sweep` and 20 of 20 in `gcc-asan`.
+[Build and launcher receipts](results/m3-sim/README.md)
+
+- The saved Gen5 persist-pacing case passed after the timer fix. The
+  directed test checked that the send respected and advanced the
+  pacing deadline. A matching post-fix capture for the original
+  seed remains unverified. [Persist-pacing case](results/m3-sim/persist-pacing.md)
+- The M1 capture replay accounted for a retransmitted SYN and reproduced
+  the kernel's original D-SACK and discard counts. Two other retained
+  runs still differ from the kernel by one dubious D-SACK each.
+  [D-SACK capture case](results/m3-sim/dsack-capture-counts.md)
+
+### Pending validation
+
+The planned fresh Gen6 simulator campaign recorded 0 of 1,000,000 seeds.
+Both launches ended before a counted shard was written. The 2,000 sampled
+serialized replays and independent capture checks remain unexecuted. The
+planned sustained arbitrary-input parser validation also remains unexecuted.

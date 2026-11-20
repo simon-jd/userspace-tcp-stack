@@ -11,8 +11,9 @@ comparison. [Protocol design](docs/DESIGN.md) · [Linux interoperability](docs/I
 |---|---|
 | M0 and M1 | Toolchain, deterministic core, simulator, TUN backend and TCP interoperability complete |
 | M2a and M2b | Loss recovery, delivery-rate sampling, pacing, NewReno and CUBIC complete |
-| M2c and M2d | [BBRv1 paired smoke](docs/RESULTS.md#bbrv1-paired-smoke) and the [24-cell NewReno/CUBIC/BBRv1 matrix](docs/RESULTS.md#core-matrix) complete |
-| M3–M5 | Pending |
+| M2c and M2d | [BBRv1 paired smoke](docs/RESULTS.md#bbrv1-paired-smoke), [24-cell NewReno/CUBIC/BBRv1 matrix](docs/RESULTS.md#core-matrix), and [multi-flow study](docs/RESULTS.md#multi-flow) complete |
+| M3 | [Valid-wire and receive-stream tests, Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) recorded. The simulator campaign and sustained parser validation remain pending. |
+| M4 and M5 | Pending |
 
 The implementation covers the TCP state machine (RFC 9293), timestamps and window scaling
 (RFC 7323), SACK and D-SACK (RFCs 2018 and 2883), RST handling (RFC 5961), retransmission
