@@ -1,0 +1,585 @@
+"""Targeted regressions for an enabled trace sink emitting zero filtered events and for gap boundaries."""
+
+import gzip
+import hashlib
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audit
+import bbr_queue
+import loss_replay as loss
+import report
+import replay_captures
+from replay_captures import SequenceCoverage
+
+
+class FilteredTrace(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.path = Path(scratch.name) / "trace.jsonl"
+        self.path.touch()
+        self.sender_rows = [
+            dict(ev="sample", role="sender", t=t, total_retrans=0, bytes_retrans=0)
+            for t in (1, 10, 15)
+        ]
+        self.sender_rows.append(dict(ev="summary", role="sender", total_retrans=0))
+        self.path.with_name("snd.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in self.sender_rows)
+        )
+        self.meta = {"trace": True, "rcv_ip": "198.19.12.5"}
+        self.stats = dict(
+            trace_events=0, trace_blocks=1, **dict.fromkeys(audit.ELIGIBLE_COUNTERS, 0)
+        )
+        self.summary = dict(
+            capture={"r1-in": {"retrans_segs": 0}},
+            trace_events=0,
+            sender_counters=dict.fromkeys(audit.ELIGIBLE_COUNTERS, 0),
+        )
+
+    def check(self):
+        return audit.verified_trace(self.path, self.meta, 7, self.stats, self.summary)
+
+    def test_present_enabled_zero(self):
+        self.assertEqual(self.check(), ({}, hashlib.sha256(b"").hexdigest()))
+
+    def test_missing_or_disabled(self):
+        self.meta["trace"] = False
+        with self.assertRaises(AssertionError):
+            self.check()
+        self.meta["trace"] = True
+        self.path.unlink()
+        with self.assertRaises(AssertionError):
+            self.check()
+
+    def test_absent_sink_or_unallocated_buffer(self):
+        del self.stats["trace_events"]
+        with self.assertRaises(AssertionError):
+            self.check()
+        self.stats["trace_events"] = 0
+        self.stats["trace_blocks"] = 0
+        with self.assertRaises(AssertionError):
+            self.check()
+
+    def test_shorter_than_reported_or_different_count(self):
+        self.stats["trace_events"] = 1
+        with self.assertRaises(AssertionError):
+            self.check()
+        self.summary["trace_events"] = 1
+        with self.assertRaises(ValueError):
+            self.check()
+
+    def test_bytes_with_zero_count(self):
+        self.path.write_text("{}\n")
+        with self.assertRaises(AssertionError):
+            self.check()
+
+    def test_empty_trace_contradicts_ingress_capture(self):
+        self.summary["capture"]["r1-in"]["retrans_segs"] = 1
+        with self.assertRaises(AssertionError):
+            self.check()
+
+    def test_empty_trace_rejects_lifetime_socket_contradictions(self):
+        for index, key in (
+            (0, "total_retrans"),
+            (2, "bytes_retrans"),
+            (3, "total_retrans"),
+        ):
+            with self.subTest(index=index, key=key):
+                rows = [dict(row) for row in self.sender_rows]
+                rows[index][key] = 1
+                self.path.with_name("snd.jsonl").write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows)
+                )
+                with self.assertRaisesRegex(AssertionError, "lifetime sender"):
+                    self.check()
+
+    def test_empty_trace_contradicts_native_counter(self):
+        for counter in audit.ELIGIBLE_COUNTERS:
+            with self.subTest(counter=counter):
+                self.stats[counter] = self.summary["sender_counters"][counter] = 1
+                with self.assertRaises(AssertionError):
+                    self.check()
+                self.stats[counter] = self.summary["sender_counters"][counter] = 0
+
+    def test_nonempty_trace_retains_connection_and_count_checks(self):
+        event = dict(
+            t=5,
+            conn=7,
+            ev="tx",
+            tx="fast_rexmit",
+            cwnd=9,
+            tuple="198.18.0.2:34560>198.19.12.5:5201",
+        )
+        data = (json.dumps(event) + "\n").encode()
+        self.path.write_bytes(data)
+        self.stats["trace_events"] = self.summary["trace_events"] = 1
+        self.assertEqual(self.check(), ({"tx": 1}, hashlib.sha256(data).hexdigest()))
+        event["conn"] = 99
+        self.path.write_text(json.dumps(event) + "\n")
+        with self.assertRaises(ValueError):
+            self.check()
+
+
+class IngressSequenceHistory(unittest.TestCase):
+    def test_first_seen_repeat_resegmented_and_partial_below_high_end(self):
+        covered = SequenceCoverage()
+        self.assertIsNone(covered.add(1, 10))
+        self.assertIsNone(covered.add(31, 10))
+        self.assertEqual(covered.add(1, 10), "exact_repeat")
+        self.assertEqual(covered.add(2, 4), "all_bytes_previously_seen")
+        self.assertEqual(covered.add(12, 5), "all_bytes_first_seen")
+        self.assertEqual(covered.add(8, 8), "partly_previously_seen")
+        self.assertIsNone(covered.add(40, 5))
+
+    def test_ingress_follows_wire_syn_source_when_interface_ip_differs(self):
+        segment = dict(
+            src="198.18.0.2",
+            sport=49152,
+            dst="198.19.12.5",
+            dport=5201,
+            ts_ns=6_000_000_000,
+        )
+        flow = [
+            SimpleNamespace(**segment, seq=seq, payload=size, flags=flags)
+            for seq, size, flags in [(11, 0, 2), (12, 10, 16), (12, 10, 16)]
+        ]
+        with (
+            patch.object(audit.diagnostics, "rows", return_value=[]),
+            patch.object(
+                audit.analyze,
+                "clock_of",
+                return_value=SimpleNamespace(realtime_ns=0, monotonic_ns=0),
+            ),
+            patch.object(audit.analyze, "tcp_segments", return_value=flow),
+        ):
+            row = replay_captures.flagged_ingress(
+                Path("."),
+                {"snd_ip": "198.19.10.2", "rcv_ip": segment["dst"]},
+                {"t0_ns": 0, "window_end_ns": 8_000_000_000},
+                1,
+            )
+        self.assertEqual(
+            (row["primary_exact_repeat"], row["lifetime_exact_repeat"]), (1, 1)
+        )
+
+    def test_relative_sequence_wrap_near_previous_high(self):
+        covered = SequenceCoverage()
+        covered.high = 2**32 - 8
+        self.assertIsNone(covered.add(2**32 - 8, 16))
+        self.assertEqual(covered.add(0, 8), "all_bytes_previously_seen")
+        self.assertIsNone(covered.add(8, 20))
+
+
+class PairedCaptureBoundaries(unittest.TestCase):
+    def test_only_second_of_exact_doublet_inside_primary_qualifies(self):
+        # The first pair crosses the lower bound; the triple and the pair
+        # crossing the upper bound are ineligible. Other packets are singletons.
+        times = [1, 3, 11, 12, 13, 20, 29, 31, 40]
+        lost = [False, True, False, True, False, False, False, True, False]
+        self.assertEqual(bbr_queue.eligible_doublets(times, lost, 3, 31, 2), (1, 1))
+        self.assertEqual(bbr_queue.eligible_doublets(times, lost, 4, 31, 2), (0, 0))
+
+    def test_interpolation_accepts_exact_edges_and_rejects_uncovered_windows(self):
+        self.assertEqual(bbr_queue.lerp([10, 20], [3, 7], 10), 3)
+        self.assertEqual(bbr_queue.lerp([10, 20], [3, 7], 20), 7)
+        self.assertEqual(bbr_queue.lerp([10, 20], [3, 7], 15), 5)
+        for t in (9, 21):
+            with self.assertRaisesRegex(ValueError, "not bracketed"):
+                bbr_queue.lerp([10, 20], [3, 7], t)
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            bbr_queue.lerp([10, 10], [3, 7], 10)
+
+    def test_standalone_report_requires_registered_campaign(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(FileNotFoundError):
+                bbr_queue.report(root, root / "out")
+            self.assertFalse((root / "out").exists())
+
+    def test_control_accounting_respects_kind_causality_and_exact_ingress_boundary(
+        self,
+    ):
+        a = [
+            (5, ("echo_request", 1)),
+            (10, ("echo_request", 2)),
+            (20, ("echo_request", 3)),
+            (11, ("tcp_control", 4)),
+        ]
+        b = [(6, ("echo_request", 1)), (14, ("tcp_control", 4))]
+        found = bbr_queue.control_accounting(a, b, 1, 10, 20)
+        self.assertEqual(
+            found["echo_request"],
+            dict(ingress=3, downstream=1, missing=2, primary_missing=1),
+        )
+        self.assertEqual(found["tcp_control"]["missing"], 0)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            bbr_queue.control_accounting(a + [(6, ("echo_request", 1))], b, 1, 10, 20)
+        with self.assertRaisesRegex(ValueError, "precedes"):
+            bbr_queue.control_accounting(a, [(4, ("echo_request", 1))], 1, 10, 20)
+
+    def test_capture_attribution_requires_filter_physical_and_kernel_accounting(self):
+        template = "{} packets captured\n{} packets received by filter\n{} packets dropped by kernel\n"
+        bbr_queue.validate_capture_accounting(template.format(3, 3, 0), 3, "r2-out")
+        for captured, received, drops, physical in (
+            (3, 4, 0, 3),
+            (3, 3, 1, 3),
+            (3, 3, 0, 2),
+        ):
+            with self.assertRaisesRegex(ValueError, "incomplete packet capture"):
+                bbr_queue.validate_capture_accounting(
+                    template.format(captured, received, drops), physical, "r2-out"
+                )
+        with self.assertRaisesRegex(ValueError, "missing or duplicate"):
+            bbr_queue.validate_capture_accounting(
+                "3 packets captured\n0 packets dropped by kernel\n", 3, "r2-out"
+            )
+
+    def test_causal_matching_each_occurrence_and_pcap_quantization(self):
+        inputs = [(100, "a"), (123, "a"), (150, "b")]
+        bbr_queue.validate_forward_times(
+            inputs, [(102, "a"), (125, "a"), (152, "b")], 1
+        )
+        with self.assertRaisesRegex(ValueError, "precedes matching ingress"):
+            bbr_queue.validate_forward_times(inputs, [(102, "a"), (121, "a")], 1)
+        with self.assertRaisesRegex(ValueError, "no matching"):
+            bbr_queue.validate_forward_times(inputs, [(152, "c")], 1)
+        bbr_queue.validate_forward_times([(1004, "f")], [(1000, "f")], 1000)
+        with self.assertRaisesRegex(ValueError, "precedes matching ingress"):
+            bbr_queue.validate_forward_times([(2000, "f")], [(1000, "f")], 1000)
+
+
+class LossWire(unittest.TestCase):
+    def test_half_open_measurement_mask(self):
+        self.assertEqual(
+            [loss.phase(t, 10, 20) for t in (9, 10, 19, 20)],
+            ["warmup", "measurement", "measurement", "drain"],
+        )
+
+    def test_sequence_high_wrap_overlap_and_repeat(self):
+        self.assertEqual(loss.advance(0xFFFFFFF0, 0xFFFFFFF0, 32), (16, 32))
+        self.assertEqual(loss.advance(16, 0xFFFFFFF0, 32), (16, 0))
+        self.assertEqual(loss.advance(16, 8, 16), (24, 8))
+
+    def test_transition_bounds_never_imply_continuous_loss(self):
+        records = [
+            dict(t=t, ca_state=state)
+            for t, state in (
+                (10, "open"),
+                (20, "loss"),
+                (30, "loss"),
+                (40, "open"),
+                (50, "loss"),
+                (60, "open"),
+            )
+        ]
+        spans = loss.sample_spans(records)
+        starts = [r["first_loss_ns"] for r in spans]
+        self.assertEqual(loss.locate(spans, starts, 12), (0, "leading boundary"))
+        self.assertEqual(loss.locate(spans, starts, 25), (0, "interior"))
+        self.assertEqual(loss.locate(spans, starts, 32), (0, "trailing boundary"))
+        self.assertEqual(loss.locate(spans, starts, 40), (None, None))
+        self.assertEqual(loss.locate(spans, starts, 50), (1, "isolated sample"))
+
+    def test_full_report_distinguishes_previous_data_and_phase(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            rd = root / "campaign/fixture"
+            rd.mkdir(parents=True)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            offset = 100 * 10**9
+            t0 = 10**9
+            lo = t0 + 5 * 10**9
+            sender = [dict(ev="clock", monotonic_ns=t0, realtime_ns=t0 + offset)]
+            for delta, state in (
+                (-20, "open"),
+                (-10, "loss"),
+                (0, "loss"),
+                (10, "loss"),
+                (20, "open"),
+            ):
+                sender.append(dict(ev="sample", t=lo + delta * 10**6, ca_state=state))
+            (rd / "snd.jsonl").write_text("".join(json.dumps(r) + "\n" for r in sender))
+            (rd / "summary.json").write_text(
+                json.dumps(dict(t0_ns=t0, window_end_ns=lo + 8 * 10**6))
+            )
+            source = dict(
+                run="fixture",
+                valid="1",
+                counted="1",
+                timeouts=2,
+                spurious_rtos=0,
+                capture_complete=1,
+                capture_sha256="test",
+                input="fixture.csv.gz",
+                segments=5,
+                status="captured",
+            )
+            audit.write_csv(inputs / "index.csv", loss.INDEX, [source])
+            with gzip.open(inputs / source["input"], "wt") as fh:
+                for dt, seq, length in (
+                    (-21, 1, 100),
+                    (-15, 101, 20),
+                    (-5, 1, 100),
+                    (5, 121, 25),
+                    (15, 146, 20),
+                ):
+                    fh.write(f"{offset + lo + dt * 10**6},{seq},{length}\n")
+            loss.report(root / "campaign", inputs, root / "result")
+            spans = loss.rows(root / "result/kernel-loss-spans.csv")
+            result = loss.rows(root / "result/kernel-rto-runs.csv")[0]
+            self.assertEqual(
+                (result["interior_new_segments"], result["boundary_new_segments"]),
+                ("1", "2"),
+            )
+            self.assertTrue(
+                any(
+                    r["phase"] == "measurement"
+                    and r["position"] == "interior"
+                    and r["new_sequence_bytes"] == "25"
+                    for r in spans
+                )
+            )
+            self.assertTrue(
+                any(
+                    r["phase"] == "drain" and r["position"] == "trailing boundary"
+                    for r in spans
+                )
+            )
+            for r in sender:
+                if r["ev"] == "sample":
+                    r["ca_state"] = "open"
+            (rd / "snd.jsonl").write_text("".join(json.dumps(r) + "\n" for r in sender))
+            loss.report(root / "campaign", inputs, root / "no-sample")
+            self.assertIn(
+                "no sampled Loss",
+                loss.rows(root / "no-sample/kernel-rto-runs.csv")[0]["summary"],
+            )
+
+
+class AttemptLedger(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.campaign = Path(scratch.name)
+        self.planned = {}
+        self.members = []
+        for index, impl in enumerate(("utcp", "linux")):
+            run = f"100-20-0.1-2-bbr-r0-{impl}"
+            self.planned[run] = dict(
+                run=run,
+                seed=33,
+                rep=0,
+                group=0,
+                in_group=index,
+                cell="100-20-0.1-2",
+                algo="bbr",
+                impl=impl,
+            )
+
+    def path(self, spec, retry, archive):
+        name = spec["run"] + (f"-rerun{retry}" if retry else "")
+        if archive is None:
+            return self.campaign / name
+        return self.campaign / "aside" / f"{name}.{archive:08d}" / "raw"
+
+    def pair(self, stamp, *, retry=0, archive=None, good=True, started=True):
+        for name, spec in self.planned.items():
+            side = spec["in_group"]
+            d = self.path(spec, retry, archive)
+            d.mkdir(parents=True)
+            member = dict(
+                spec, rerun=retry, run=name + (f"-rerun{retry}" if retry else "")
+            )
+            summary = dict(
+                valid=good or not side,
+                flags=["foreign_cpu"],
+                invalid=[] if good or not side else ["missing terminal"],
+            )
+            (d / "meta.json").write_text(json.dumps(member))
+            (d / "summary.json").write_text(json.dumps(summary))
+            if started:
+                t = stamp + side * 20
+                records = [
+                    dict(ev="start", t=t),
+                    dict(ev="sample", t=t + 1, bytes_sent=9),
+                ]
+                if summary["valid"]:
+                    records.append(dict(ev="summary", t=t + 2, bytes=9, ok=True))
+                (d / "snd.jsonl").write_text(
+                    "".join(json.dumps(x) + "\n" for x in records)
+                )
+            if archive is None:
+                self.members.append((member, summary))
+
+    def ledger(self):
+        history = audit.preserved_attempts(self.campaign, self.planned)
+        order = audit.attempts.timeline(
+            self.campaign, {("100-20-0.1-2", "bbr"): self.members}, history
+        )
+        _, ledger = audit.attempts.qualify(
+            self.members, history, audit.checkpoint.independently_count, order
+        )
+        return history, ledger
+
+    def test_preserved_failed_pairs_count_even_when_later_same_id_succeeds(self):
+        for i in range(3):
+            self.pair(100 * i, archive=i, good=False)
+        self.pair(500)
+        history, ledger = self.ledger()
+        self.assertEqual((len(ledger["bad_pairs"]), ledger["counted_pairs"]), (3, 1))
+        self.assertTrue(all("foreign_cpu" in h["flags"] for h in history))
+        self.pair(300, archive=3, good=False)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], len(ledger["bad_pairs"]), ledger["counted_pairs"]),
+            ("invalid (rerun cap)", 4, 0),
+        )
+
+    def test_shape_only_nested_raw_retains_decimal_cell_and_seed(self):
+        spec = next(iter(self.planned.values()))
+        d = self.path(spec, 0, 12)
+        d.mkdir(parents=True)
+        (d / "shape.txt").write_text("setup\n")
+        (d / "pre").mkdir()
+        (d / "pre/record.txt").touch()
+        (h,), ledger = self.ledger()
+        self.assertEqual((h["run"], h["group"], h["seed"]), (spec["run"], 0, 33))
+        self.assertEqual(h["physical"], "setup only; transfer unobserved")
+        self.assertIn("pre/record.txt", h["available_inputs"])
+        self.assertEqual(ledger["bad_pairs"], [])
+
+    def split(self, index):
+        meta, _ = self.members.pop(index)
+        source = self.campaign / meta["run"]
+        dest = self.path(meta, meta["rerun"], 12)
+        dest.parent.mkdir(parents=True)
+        source.rename(dest)
+
+    def test_split_valid_pair_is_one_observed_pair_and_zero_failures(self):
+        self.pair(100)
+        self.split(0)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (
+                len(ledger["split_pairs"]),
+                len(ledger["bad_pairs"]),
+                ledger["counted_pairs"],
+            ),
+            (1, 0, 0),
+        )
+        self.assertEqual(ledger["status"], "indeterminate (attempt association)")
+        self.assertTrue(
+            any("possibly valid" in msg for msg in ledger["association_issues"])
+        )
+
+    def test_split_failed_pair_counts_once_and_allows_supported_retry(self):
+        self.pair(100, good=False)
+        self.split(1)
+        self.pair(200, retry=1)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (
+                len(ledger["split_pairs"]),
+                len(ledger["bad_pairs"]),
+                ledger["counted_pairs"],
+            ),
+            (1, 1, 1),
+        )
+        self.assertEqual(ledger["bad_pairs"], ledger["split_pairs"])
+
+    def test_rerun_requires_supported_invalid_predecessors(self):
+        self.pair(200, retry=1)
+        _, ledger = self.ledger()
+        self.assertEqual(ledger["status"], "indeterminate (attempt association)")
+        self.pair(100, good=False)
+        _, ledger = self.ledger()
+        self.assertEqual((ledger["counted_pairs"], len(ledger["bad_pairs"])), (1, 1))
+        self.pair(300, retry=2)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], ledger["counted_pairs"]),
+            ("indeterminate (attempt association)", 0),
+        )
+
+    def test_hole_and_outside_cap(self):
+        self.pair(100, retry=4)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], ledger["counted_pairs"]), ("invalid (rerun cap)", 0)
+        )
+
+    def test_failed_summary_without_endpoint_activity_cannot_authorize_retry(self):
+        self.pair(100, good=False, started=False)
+        self.pair(200, retry=1)
+        _, ledger = self.ledger()
+        self.assertEqual(
+            (ledger["status"], len(ledger["bad_pairs"]), ledger["counted_pairs"]),
+            ("indeterminate (attempt association)", 0, 0),
+        )
+
+    def test_prior_completed_archived_pair_and_overlaps_are_unresolved(self):
+        self.pair(100, archive=1)
+        self.pair(200)
+        _, ledger = self.ledger()
+        self.assertEqual(ledger["counted_pairs"], 0)
+        self.assertTrue(
+            any("possibly valid" in msg for msg in ledger["association_issues"])
+        )
+        self.pair(101, archive=2, good=False)
+        _, ledger = self.ledger()
+        self.assertEqual(ledger["counted_pairs"], 0)
+        self.assertTrue(any("overlap" in msg for msg in ledger["association_issues"]))
+
+    def test_archive_rejects_path_meta_mismatch_and_survives_truncated_bytes(self):
+        spec = next(iter(self.planned.values()))
+        d = self.path(spec, 0, 1)
+        d.mkdir(parents=True)
+        (d / "snd.jsonl").write_bytes(b'{"ev":"sample","t":4,"bytes_sent":8}\n\xff{')
+        (h,), ledger = self.ledger()
+        self.assertTrue(h["malformed_endpoint"])
+        self.assertEqual(
+            (h["physical"], len(ledger["bad_pairs"])), ("payload observed", 1)
+        )
+        (d / "meta.json").write_text('{"run":"unregistered"}')
+        with self.assertRaises(ValueError):
+            self.ledger()
+
+
+class GapBoundaries(unittest.TestCase):
+    def test_touching_sets_do_not_qualify(self):
+        self.assertEqual(
+            report.verdict("goodput_bps", [2, 3, 4, 5, 6], [1, 1, 1, 1, 2], 0), "no gap"
+        )
+
+    def test_submillisecond_and_exactly_one_millisecond(self):
+        self.assertEqual(
+            report.verdict("qdelay_p99_ms", [0.75] * 5, [0.25] * 5, 0),
+            "gap (below resolution)",
+        )
+        self.assertEqual(
+            report.verdict("qdelay_p50_ms", [1.25] * 5, [0.25] * 5, 0), "gap"
+        )
+
+    def test_retransmission_increase_only_and_loss_cutoffs(self):
+        self.assertEqual(
+            report.verdict("retrans_pct", [0.05] * 5, [0] * 5, 0.1), "no gap"
+        )
+        self.assertEqual(
+            report.verdict("retrans_pct", [0.051] * 5, [0] * 5, 0.1), "gap"
+        )
+        self.assertEqual(
+            report.verdict("retrans_pct", [0.15] * 5, [0] * 5, 1), "no gap"
+        )
+        self.assertEqual(report.verdict("retrans_pct", [0] * 5, [1] * 5, 1), "no gap")
+
+
+if __name__ == "__main__":
+    unittest.main()
