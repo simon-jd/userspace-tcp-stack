@@ -54,3 +54,23 @@ stage directory. The first export attempt reached both completed archive
 restores and then failed on permissions while copying the original qualification
 receipts. The export retry read the manifest-verified copies from the compact
 restore while preserving the original receipt permissions and archive digests.
+
+## Rechecking loss and delivered share in scenarios 8 and 10
+
+The full restore regenerates the per-role data-segment counts from the r1-in
+and r2-out captures. For each run, join `flows.csv` to `network.csv` by `run`.
+Sum `r1-in_data_segments` minus `r2-out_data_segments` across the physical roles,
+then compare with `tbf.dropped` and `netem.dropped` in the network records.
+The independent raw comparison also matched packet identities by flow and
+checked for unmatched egress packets. Its code and per-scenario readback are in
+`~/Desktop/utcp-wt/m2d-multiflow-review-methodology` on the private host. Run
+`bash ~/Desktop/utcp-wt/m2d-multiflow-review-methodology/recovery.sh` there, and
+read `physical-gap-evidence/scenario-08.json` and `scenario-10.json` in that
+checkout. The raw capture comparison describes the observed forward path.
+Endpoint and capture retransmission counters have different observation points
+and their flagged discrepancies remain in `runs.csv`.
+
+The late role's delivery share uses its `fair_active_bps` divided by the sum of
+all roles' rates in that run. Calculate the median and range of these shares
+across the five runs on each side. Both endpoints of the rate window are common
+within a run, so the rate share is also the share of delivered bytes.

@@ -1242,7 +1242,12 @@ end and the conditional onset ranges.
 Scenario 8 (late BBR joining incumbent Linux CUBIC) had the only nominal Jain
 difference greater than 0.05 in magnitude. The medians were 0.878 test versus
 0.996 baseline, a difference of −0.119. Neither side converged in any of the five
-runs. The fully active Jain difference was also −0.119.
+runs. The fully active Jain difference was also −0.119. In that shared window,
+late flow f1 took a median 68.689% [45.838%, 71.138%] of delivered bytes with
+stack BBR and 49.808% [46.302%, 66.633%] with Linux BBR. Across the ten runs,
+the raw capture comparison found 10,718 TCP data packets on r1 ingress that
+were absent on r2 egress. The count matched the TBF drop delta in each run,
+with zero netem delta and no unmatched egress data packets.
 
 Scenario 10 (mixed CUBIC) had the two registered per-role goodput gaps. Stack
 incumbent f0 delivered 18.141 [17.678, 21.730] Mbit/s versus its Linux counterpart's
@@ -1252,15 +1257,23 @@ versus 24.517 [21.919, 28.265] Mbit/s in the all-Linux baseline. The
 shifts were already present before the fourth sender joined. In the incumbents-only
 window, the median sampled cwnd for f0 was 111 versus 221 packets, and f1's was
 196 versus 134, with median sampled RTT about 56 ms in all four series. Both
-goodput differences persisted after the join. These observations describe the
-change in bandwidth share. The measured comparisons leave the cause of the
-window difference unresolved. The test side converged in 0/5 and the baseline in
-1/5.
+goodput differences persisted after the join. The raw captures and endpoint
+samples show retransmission and recovery. Across the ten runs, all 1,397 ingress
+data packets absent at egress matched the per-run TBF drop counts. There were
+zero netem drops and no unmatched egress data packets. The two incumbent shifts
+and their differing congestion windows describe the redistribution. The exact
+cause of the window difference remains unresolved. The test side converged in
+0/5 and the baseline in 1/5.
 
 Every production run retained a `foreign_cpu` flag from the shared timing CPUs.
 Seven per-flow endpoint/capture retransmission-count discrepancies and one
-`stack_blocked` flag were retained in the run inventory. The
-[network records](results/m2-multiflow/measured/network.csv) include CPU, softirq,
+`stack_blocked` flag were retained in the run inventory. Observed incumbent
+spread was at most 11.513 ms and late accept was at most 369.056 ms from its
+registered offset. One internal receiver sampling interval reached 116.557 ms.
+All primary boundaries had sample coverage, and one convergence onset is
+bounded at 1.0–1.1 s. The largest nominal-to-active end difference was 100.466 ms.
+The largest absolute within-run difference between the two Jain indexes was
+0.000459. The [network records](results/m2-multiflow/measured/network.csv) include CPU, softirq,
 queue and shared-path observations. The eight-flow timer comparison uses the
 five same-key serial one-flow CUBIC controls. Median per-role p99 histogram
 bounds in the eight-flow case were 65.535–131.071 µs, versus 262.143 µs in the
