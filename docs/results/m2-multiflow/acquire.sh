@@ -20,7 +20,7 @@ docker run --rm --network none --name "utcp-m2-multiflow-bind-$$" --cpuset-cpus 
     cd /utcp
     test -s "/data/m2/m2d-multiflow/$label/qualified.json"
     dir=docs/results/m2-multiflow
-    inputs=("$dir"/{study.py,study_tables.py,capture_evidence.py,schedule.csv,protocol.md,qualify.py}
+    inputs=("$dir"/{study.py,study_tables.py,study_report.py,capture_evidence.py,schedule.csv,protocol.md,qualify.py}
             tools/m2/{multiflow,matrix,analyze}.py testbed/m2/multiflow.sh)
     checksum=$(sha256sum "${inputs[@]}")
     if [[ -e $rd/source.sha256 ]]; then
