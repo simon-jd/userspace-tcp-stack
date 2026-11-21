@@ -41,11 +41,13 @@ env LD_LIBRARY_PATH=/probe-libs UTCP_COPY_OUTPUT="$out/copies.json" timeout 90 \
   --args "${server[@]}" >"$out/debugger.log" 2>&1 &
 debugger=$!
 trap 'kill "$debugger" 2>/dev/null || true' EXIT
+ready=false
 for _ in {1..200}; do
   kill -0 "$debugger"
-  if [[ -s "$out/server.jsonl" ]] || ip -details link show utcp0 | grep -q LOWER_UP; then break; fi
+  if ip -details link show utcp0 | grep -q LOWER_UP; then ready=true; break; fi
   sleep .05
 done
+[[ $ready == true ]]
 timeout 60 "$bin" --backend kernel --connect 198.18.0.2:7304 "--$other" \
   "${common[@]}" "$out/linux.jsonl" >"$out/client.log" 2>&1
 wait "$debugger"
@@ -55,3 +57,7 @@ trap - EXIT
 INNER
   done
 done
+docker run --rm --network none --cpuset-cpus "$cpus" \
+  --mount "type=volume,src=utcp-data,dst=/out,volume-subpath=m4/$volume_dir,readonly" \
+  --mount "type=bind,src=$root,dst=/src,readonly" "$image" nice -n 10 \
+  python3 -I /src/testbed/m4/core_copy_check.py wire /out

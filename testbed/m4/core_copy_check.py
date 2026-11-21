@@ -28,6 +28,19 @@ def coverage(rows, kinds, start, end):
     require(cursor == end, (kinds, cursor, end))
 
 
+def fixture_bytes(name, path, offset, length):
+    if name.startswith("OutOfOrderGro"):
+        return bytes((i + 42 if i < 1460 else i - 1460 + 21) & 255
+                     for i in range(offset, offset + length))
+    if name.startswith("PartialSend"):
+        seed = 171 if path in ("app_to_send_ring", "tx_packet") else 57
+    else:
+        seeds = {"VnetGroFrame": 129, "ReadShutdownWith": 91, "ShutdownBoth": 121,
+                 "ReadShutdownStill": 19, "InOrderGroFallsBack": 21}
+        seed = next((value for prefix, value in seeds.items() if name.startswith(prefix)), 0)
+    return bytes((i + seed) & 255 for i in range(offset, offset + length))
+
+
 def check_units(path, xml, baseline):
     records = json.loads(path.read_text())
     tests = ET.parse(xml).getroot()
@@ -65,6 +78,9 @@ def check_units(path, xml, baseline):
     result = {}
     for name, counts in cases.items():
         rows = [r for r in records if r["case"] == "TcpOffload_" + name]
+        for r in rows:
+            content = fixture_bytes(name, r["path"], r["offset"], r["bytes"])
+            require(hashlib.sha256(content).hexdigest() == r["sha256"], (name, r))
         totals = summarize(rows)
         observed = {k: (v["bytes"], v["calls"]) for k, v in totals.items()}
         require(observed == counts, (name, observed, counts))
