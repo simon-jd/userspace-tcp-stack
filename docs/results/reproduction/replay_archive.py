@@ -10,7 +10,8 @@ import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 
-RESULTS = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+RESULTS = HERE.parent
 CAMPAIGNS = {
     "checkpoint": ("m2-checkpoint", "m2-checkpoint", "", 1600),
     "bbr": (
@@ -60,7 +61,11 @@ def safe_path(name):
 
 
 def capture_path(name):
-    return any(suffix.lower() in {".pcap", ".pcapng", ".cap"} for suffix in PurePosixPath(name).suffixes)
+    suffixes = [suffix.lower() for suffix in PurePosixPath(name).suffixes]
+    compressed = {".gz", ".zst", ".xz", ".bz2", ".zip", ".lz4"}
+    if suffixes and suffixes[-1] in compressed:
+        suffixes.pop()
+    return bool(suffixes) and suffixes[-1] in {".pcap", ".pcapng", ".cap"}
 
 
 def extract(archive, output, campaign, allowed_manifests=()):
@@ -108,6 +113,16 @@ def copy_plan(source, target, checksum):
     verify(target, checksum)
 
 
+def check_source_bindings(compact, full, derived=()):
+    if compact.keys() - full.keys() != set(derived):
+        raise ValueError("compact archive contains an unexpected set of derived entries")
+    sources = compact.keys() & full.keys()
+    for name in sorted(sources):
+        if compact[name] != full[name]:
+            raise ValueError(f"compact and full source hashes differ: {name}")
+    return len(sources)
+
+
 def restore_paired(choice, data, work, archive_dir, result, name, count, plans):
     manifest_file = "ARCHIVES.sha256" if choice == "bbr" else "archives.sha256"
     archives = read_manifest(result / manifest_file)
@@ -126,7 +141,15 @@ def restore_paired(choice, data, work, archive_dir, result, name, count, plans):
     observed = {member.removeprefix(name + "/") for member in members}
     observed.remove("MANIFEST.sha256")
     check_files(campaign, manifest, observed, count)
+    derived = (
+        (HERE / "m2-matrix-derived-inputs.txt").read_text().splitlines()
+        if choice == "matrix"
+        else ()
+    )
+    common = check_source_bindings(manifest, raw, derived)
+    print(f"{common} compact inputs bound to the original full-source manifest")
     if choice == "matrix":
+        verify(campaign / "source-manifest.sha256", archives[raw_manifest])
         verify(campaign / "plan.json", raw["plan.json"])
     else:
         # Bind the omitted plan to the Git-pinned full manifest without

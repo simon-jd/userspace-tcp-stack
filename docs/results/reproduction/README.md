@@ -65,7 +65,7 @@ In the analysis shell, use the tracked replay entry points.
 ```bash
 set -euo pipefail
 repro=/utcp/docs/results/reproduction
-python3 -B "$repro/replay_qualification.py" /data
+python3 -B "$repro/replay_qualification.py" /data /work
 for campaign in checkpoint bbr ablation matrix multiflow; do
     "$repro/replay_m2.sh" "$campaign" /data /work
 done
@@ -82,7 +82,11 @@ checksum-bound `plan-supplement/<campaign>/` in the new scratch directory.
 A previously saved supplement can be supplied as the fourth argument to
 `replay_m2.sh`; the same authenticated hash check applies. A missing or changed
 plan causes a failure. The matrix's compact already contains the plan. Its
-hash is also checked against the full-source manifest.
+hash is also checked against the full-source manifest. Each compact member
+shared with the full-source index must match its original file hash. The
+matrix adds [27 identified derived inputs](m2-matrix-derived-inputs.txt),
+including the embedded full-source manifest and packet projections. Older
+compacts may omit original files from their retained sets.
 
 | Campaign | Expanded `plan.json` SHA-256 |
 | --- | --- |
@@ -93,7 +97,8 @@ hash is also checked against the full-source manifest.
 
 The [qualification manifest](m2-qualification-inputs.sha256) anchors the
 original freeze, gate, and proof receipts for both older runtime families.
-Its checker verifies the archived files, each original gate's 67 criteria
+Its checker restores the six capture-free gate/proof compacts in fresh
+scratch and verifies the archived files, each original gate's 67 criteria
 and 62 source fingerprints, and 15 same-runtime proof transfers with five
 overlapping pairs per family.
 
@@ -112,6 +117,12 @@ overlapping pairs per family.
   [qualification](../m2-multiflow/measured/qualified.json), and
   [terminal receipt](../m2-multiflow/measured/production-status.json)
   bind the schedule, deployed runtime, and accepted calibrations.
+
+[M5 output bundle digests](m2-replayed-output.tsv) bind the sorted
+individual SHA-256 entries for the regenerated comparison files. The
+bundles include native tables, checked endpoint and report outputs, and
+figures. Multiflow includes the endpoint census. Diagnostic transcripts
+and previously archived physical-replay receipts are outside these bundles.
 
 The replay reads saved endpoint telemetry, packet projections, and prior
 capture receipts where applicable. Independent decoding, capture lengths,

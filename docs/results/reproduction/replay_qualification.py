@@ -3,9 +3,10 @@
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 
-from replay_archive import capture_path, read_manifest, safe_path, sha256, verify
+from replay_archive import capture_path, extract, read_manifest, safe_path, sha256, verify
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2] / "tools/m2"))
@@ -91,8 +92,18 @@ def check_proof(path, freeze, key):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path, help="read-only volume mount")
-    data = parser.parse_args().data.resolve(strict=True)
-    for name, expected in read_manifest(HERE / "m2-qualification-inputs.sha256").items():
+    parser.add_argument("scratch", type=Path, help="separate writable scratch parent")
+    args = parser.parse_args()
+    data, scratch = args.data.resolve(strict=True), args.scratch.resolve(strict=True)
+    for root in (data, HERE.parents[2]):
+        if root == scratch or root in scratch.parents or scratch in root.parents:
+            parser.error("scratch parent must be separate from the evidence and checkout mounts")
+    work = Path(tempfile.mkdtemp(prefix="qualification.", dir=scratch))
+    print(f"WORK={work}", flush=True)
+    inputs = read_manifest(HERE / "m2-qualification-inputs.sha256")
+    for name, expected in inputs.items():
+        if not name.startswith("m2/archive/"):
+            continue
         path = data / name
         verify(path, expected)
         if path.name == "MANIFEST.sha256":
@@ -101,19 +112,8 @@ def main():
             print(f"{len(members)} manifest members verified in {path.parent.name}")
 
     archives = data / "m2/archive"
-    for stage in ("calib-a1-s0", "calib-a1-s1", "proof-a1-cubic"):
-        integrate = f"m2-integrate-{INTEGRATE}-{stage}"
-        closure = archives / f"m2-integrate-{INTEGRATE}-final-closure-a1"
-        row = load(closure / "raw-index.json")["campaigns"][stage]
-        for filename, checksum in row["sha256"].items():
-            if filename == "physical-replay.json":
-                root = archives / f"{integrate}-physical-a1"
-            elif filename in ("gate.json", "proof.json"):
-                root = data / "m2/m2-integrate" / f"{INTEGRATE}-{stage}"
-            else:
-                root = archives / f"{integrate}-audit-1"
-            verify(root / filename, checksum)
-
+    closure = archives / f"m2-integrate-{INTEGRATE}-final-closure-a1"
+    integrated_receipts = load(closure / "raw-index.json")["campaigns"]
     for directory, namespace, commit, short, key in (
         (f"m2-integrate-{INTEGRATE}-final-freeze-a1", "m2-integrate", INTEGRATE, INTEGRATE, INTEGRATE_KEY),
         ("m2c-bbr-769311e-topology-a1", "m2c-bbr", BBR, "769311e", BBR_KEY),
@@ -125,9 +125,35 @@ def main():
             or any(entry["reuse_key"] != key for entry in frozen["slots"].values())
         ):
             raise ValueError(f"unexpected runtime freeze: {directory}")
-        for slot in (0, 1):
-            check_gate(data / "m2" / namespace / f"{short}-calib-a1-s{slot}/gate.json", frozen, slot, key)
-        check_proof(data / "m2" / namespace / f"{short}-proof-a1-cubic/proof.json", frozen, key)
+        for stage in ("calib-a1-s0", "calib-a1-s1", "proof-a1-cubic"):
+            campaign = f"{short}-{stage}"
+            package = f"{namespace}-{campaign}"
+            is_integrated = namespace == "m2-integrate"
+            compact = (
+                archives / f"{package}-audit-1/analysis-inputs.tar.gz"
+                if is_integrated
+                else archives / f"{package}-audit-a1/analysis/analysis-inputs.tar.gz"
+            )
+            # Every archive was hashed above, directly or as a member of
+            # a separately authenticated manifest.
+            restored = work / package
+            extract(compact, restored, campaign, ("audit/audit.json", "audit/source-index.json"))
+            leaf = "gate.json" if stage.startswith("calib-") else "proof.json"
+            receipt = restored / campaign / leaf
+            verify(receipt, inputs[f"m2/{namespace}/{campaign}/{leaf}"])
+            if is_integrated:
+                for filename, checksum in integrated_receipts[stage]["sha256"].items():
+                    if filename == "physical-replay.json":
+                        path = archives / f"{package}-physical-a1" / filename
+                    elif filename == leaf:
+                        path = receipt
+                    else:
+                        path = compact.parent / filename
+                    verify(path, checksum)
+            if leaf == "gate.json":
+                check_gate(receipt, frozen, int(stage[-1]), key)
+            else:
+                check_proof(receipt, frozen, key)
 
 
 if __name__ == "__main__":

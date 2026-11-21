@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from replay_archive import copy_plan, extract, read_manifest, sha256, verify
+from replay_archive import check_source_bindings, copy_plan, extract, read_manifest, sha256, verify
 
 
 class RestoreTests(unittest.TestCase):
@@ -69,6 +69,16 @@ class RestoreTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             copy_plan(source, target, sha256(source))
         self.assertEqual(target.read_text(), "keep")
+
+    def test_compact_sources_must_bind_to_the_full_manifest(self):
+        full = {"source": "1", "excluded": "2"}
+        compact = {"source": "1", "projection": "3"}
+        self.assertEqual(check_source_bindings(compact, full, ["projection"]), 1)
+        with self.assertRaisesRegex(ValueError, "derived entries"):
+            check_source_bindings(compact, full)
+        compact["source"] = "4"
+        with self.assertRaisesRegex(ValueError, "source hashes differ"):
+            check_source_bindings(compact, full, ["projection"])
 
     def test_manifest_rejects_ambiguous_entries(self):
         source = self.root / "MANIFEST.sha256"
