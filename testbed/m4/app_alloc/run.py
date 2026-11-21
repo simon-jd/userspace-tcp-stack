@@ -16,9 +16,10 @@ class AppTrial(BulkTrial):
         self.manifest["counter_scope"] = "public glibc allocation functions and replacement C++ new"
     def launch(self,role,*argv):
         if role == "server":
-            argv += ("--tun-offload", self.args.offload)
+            if "--tun-offload" not in argv:
+                argv += ("--tun-offload", self.args.offload)
             if self.args.trace:
-                argv += ("--trace",self.out+"/server/events.trace","--trace-kinds","tx")
+                argv += ("--set=test_fixed_pacing_rate=800Mbit","--trace",self.out+"/server/events.trace","--trace-kinds","tx")
         super().launch(role,*argv)
         if role == "server":
             self.docker(role,"sh","-ec",'''
