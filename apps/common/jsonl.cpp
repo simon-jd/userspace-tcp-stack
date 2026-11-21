@@ -10,11 +10,9 @@
 
 namespace utcp::app {
 
-std::string json_quote(std::string_view s) {
+namespace {
+void append_escaped(std::string& out, std::string_view s) {
   static constexpr char hex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(s.size() + 2);
-  out += '"';
   for (const char c : s) {
     switch (c) {
       case '"': out += "\\\""; break;
@@ -34,19 +32,63 @@ std::string json_quote(std::string_view s) {
         }
     }
   }
+}
+
+void append_quoted(std::string& out, std::string_view s) {
   out += '"';
+  append_escaped(out, s);
+  out += '"';
+}
+}  // namespace
+
+std::string json_quote(std::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  append_quoted(out, s);
   return out;
 }
 
-void JsonLine::key_(std::string_view key) {
+void JsonLine::key_(std::string_view key, std::string_view suffix) {
   buf_ += buf_.empty() ? '{' : ',';
-  buf_ += json_quote(key);
+  buf_ += '"';
+  append_escaped(buf_, key);
+  buf_ += suffix;
+  buf_ += '"';
   buf_ += ':';
+}
+
+void JsonLine::add_microseconds(std::string_view key, std::int64_t value) {
+  key_(key, "_us");
+  integer_(value);
+}
+
+bool JsonLine::write_to(std::FILE* f) const {
+  const std::string_view prefix = buf_.empty() ? std::string_view{"{"} : std::string_view{buf_};
+  return std::fwrite(prefix.data(), 1, prefix.size(), f) == prefix.size() &&
+         std::fwrite("}\n", 1, 2, f) == 2;
 }
 
 JsonLine& JsonLine::add(std::string_view key, std::string_view value) {
   key_(key);
-  buf_ += json_quote(value);
+  append_quoted(buf_, value);
+  return *this;
+}
+
+JsonLine& JsonLine::add(std::string_view key, const FourTuple& tuple) {
+  key_(key);
+  buf_ += '"';
+  const auto endpoint = [&](Endpoint ep) {
+    for (int i = 0; i < 4; ++i) {
+      if (i != 0) buf_ += '.';
+      integer_(ep.addr.octet(i));
+    }
+    buf_ += ':';
+    integer_(ep.port);
+  };
+  endpoint(tuple.local);
+  buf_ += '>';
+  endpoint(tuple.remote);
+  buf_ += '"';
   return *this;
 }
 
@@ -81,11 +123,9 @@ std::int64_t to_us(Duration d) { return d.count() / 1000; }
 template <class T>
 void add_value(JsonLine& line, std::string_view key, const T& v) {
   if constexpr (std::is_same_v<T, Duration>) {
-    line.add(std::string(key) + "_us", to_us(v));
+    line.add_microseconds(key, to_us(v));
   } else if constexpr (std::is_same_v<T, Time>) {
     line.add(key, v.ns);
-  } else if constexpr (std::is_same_v<T, FourTuple>) {
-    line.add(key, to_string(v.local) + '>' + to_string(v.remote));
   } else if constexpr (std::is_enum_v<T>) {
     line.add(key, to_string(v));
   } else if constexpr (std::is_same_v<T, std::array<char, 16>>) {
@@ -110,7 +150,7 @@ void add_fields(JsonLine& line, const TraceEvent& e) {
       add_value(line, "ev", v);
     } else if constexpr (std::is_same_v<T, std::int64_t>) {
       if (name.ends_with("_ns")) {
-        line.add(std::string(name.substr(0, name.size() - 3)) + "_us", v / 1000);
+        line.add_microseconds(name.substr(0, name.size() - 3), v / 1000);
       } else {
         line.add(name, v);
       }
@@ -163,8 +203,7 @@ bool JsonlWriter::write(const JsonLine& line) {
   if (f_ == nullptr) {
     return false;
   }
-  const std::string s = line.str();
-  if (std::fwrite(s.data(), 1, s.size(), f_) != s.size() || std::fputc('\n', f_) == EOF) {
+  if (!line.write_to(f_)) {
     return false;
   }
   ++lines_;

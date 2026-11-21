@@ -109,9 +109,7 @@ std::expected<void, std::string> TraceRecorder::write(const std::string& path) c
     for (const TraceEvent& e : b) {
       line.clear();
       add_fields(line, e);
-      std::string text = line.str();
-      text += '\n';
-      ok = ok && std::fwrite(text.data(), 1, text.size(), f) == text.size();
+      ok = ok && line.write_to(f);
     }
   }
   if (std::fclose(f) != 0 || !ok) {
@@ -922,24 +920,26 @@ std::expected<UdpRecv, Error> UtcpTransport::recv_from(ConnId id, std::span<std:
 TimerToken UtcpTransport::add_timer(Duration period, std::function<void()> cb) {
   UTCP_CHECK(period > Duration::zero());
   const TimerToken t = next_timer_++;
-  timers_.emplace(t, Timer{mono_now() + period, period,
-                           std::make_shared<std::function<void()>>(std::move(cb))});
+  timers_.push_back(Timer{t, mono_now() + period, period, {},
+                          std::make_shared<std::function<void()>>(std::move(cb))});
   return t;
 }
 
 TimerToken UtcpTransport::add_oneshot(Duration delay, std::function<void()> cb) {
   const TimerToken t = next_timer_++;
-  timers_.emplace(t, Timer{mono_now() + std::max(delay, Duration::zero()), Duration::zero(),
-                           std::make_shared<std::function<void()>>(std::move(cb))});
+  timers_.push_back(Timer{t, mono_now() + std::max(delay, Duration::zero()), Duration::zero(),
+                          std::move(cb), {}});
   return t;
 }
 
-void UtcpTransport::cancel_timer(TimerToken t) { timers_.erase(t); }
+void UtcpTransport::cancel_timer(TimerToken token) {
+  std::erase_if(timers_, [token](const Timer& timer) { return timer.token == token; });
+}
 
 Time UtcpTransport::timer_deadline() const {
   Time d = Time::never();
-  for (const auto& kv : timers_) {
-    d = std::min(d, kv.second.deadline);
+  for (const Timer& timer : timers_) {
+    d = std::min(d, timer.deadline);
   }
   return d;
 }
@@ -950,25 +950,27 @@ void UtcpTransport::fire_timers(Time now) {
   while (!stop_requested_) {
     auto due = timers_.end();
     for (auto it = timers_.begin(); it != timers_.end(); ++it) {
-      if (it->second.deadline <= now &&
-          (due == timers_.end() || it->second.deadline < due->second.deadline)) {
+      if (it->deadline <= now &&
+          (due == timers_.end() || it->deadline < due->deadline)) {
         due = it;
       }
     }
     if (due == timers_.end()) {
       return;
     }
-    const std::shared_ptr<std::function<void()>> cb = due->second.cb;
-    if (due->second.period > Duration::zero()) {
-      Timer& t = due->second;
+    if (due->period > Duration::zero()) {
+      const auto cb = due->periodic;
+      Timer& t = *due;
       t.deadline = t.deadline + t.period;  // drift-free
       if (t.deadline <= now) {
         t.deadline = now + t.period;  // fell behind: no catch-up burst
       }
+      (*cb)();
     } else {
+      auto cb = std::move(due->once);
       timers_.erase(due);
+      cb();
     }
-    (*cb)();
   }
 }
 

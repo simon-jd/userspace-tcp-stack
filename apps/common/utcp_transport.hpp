@@ -208,9 +208,11 @@ private:
     bool errored = false;  // on_error was delivered: no on_closed
   };
   struct Timer {
+    TimerToken token;
     Time deadline{};
     Duration period{};  // 0: one-shot
-    std::shared_ptr<std::function<void()>> cb{};  // shared: survives a cancel inside the call
+    std::function<void()> once;
+    std::shared_ptr<std::function<void()>> periodic;  // shared: survives a cancel inside the call
   };
 
   struct DeviceQueue {
@@ -267,7 +269,7 @@ private:
   std::map<ConnId, Sock> socks_;
   std::map<Handle, ConnId> by_handle_;
   ConnId next_id_ = 1;
-  std::map<TimerToken, Timer> timers_;
+  std::vector<Timer> timers_;  // creation order; capacity reused by continuation timers
   TimerToken next_timer_ = 1;
   Handler* handler_ = nullptr;  // non-null inside run()
   bool in_run_ = false;

@@ -613,7 +613,7 @@ std::expected<std::uint64_t, std::string> get_u64(const CliArgs& a, const char* 
 
 // The process remains responsive while the controller reads /proc. Only
 // benchmark invocations pay for these snapshots.
-bool report_load(Transport& t, JsonLine line) {
+bool report_load(Transport& t, JsonLine& line) {
   line.add("ev", "load").add("monotonic_ns", t.now().ns);
   if (const auto* u = dynamic_cast<const UtcpTransport*>(&t)) {
     const StackUsage usage = u->stack().debug_usage();
@@ -631,7 +631,7 @@ bool report_load(Transport& t, JsonLine line) {
         .add("tx_queued", usage.tx_queued)
         .add("conn_timers_armed", usage.conn_timers_armed);
   }
-  return std::printf("%s\n", line.str().c_str()) >= 0 && std::fflush(stdout) == 0;
+  return line.write_to(stdout) && std::fflush(stdout) == 0;
 }
 
 }  // namespace
@@ -707,16 +707,17 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     std::fprintf(stderr, "utcp-echo: %s echo on %s\n", so.udp ? "UDP" : "TCP",
                  to_string(so.local).c_str());
     bool report_ok = true;
+    JsonLine line;
     const auto emit = [&] {
       const ServerStats& stats = server.stats();
-      JsonLine line;
+      line.clear();
       line.add("role", "server").add("open", server.open_connections())
           .add("accepted", stats.accepted).add("closed", stats.closed)
           .add("errors", stats.errors).add("bytes", stats.bytes)
           .add("staged_bytes", stats.staged_bytes).add("stage_appends", stats.stage_appends)
           .add("compacted_bytes", stats.compacted_bytes).add("relocated_bytes", stats.relocated_bytes)
           .add("requested_backlog", so.backlog);
-      if (!(report_ok = report_load(t, std::move(line)))) {
+      if (!(report_ok = report_load(t, line))) {
         t.stop();
       }
     };
@@ -728,7 +729,7 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
       t.run(server);  // until a signal
     }
     const ServerStats& st = server.stats();
-    JsonLine line;
+    line.clear();
     line.add("ev", "summary").add("role", "server").add("udp", so.udp)
         .add("accepted", st.accepted).add("closed", st.closed).add("errors", st.errors)
         .add("bytes", st.bytes).add("datagrams", st.datagrams).add("udp_dropped", st.udp_dropped);
@@ -790,7 +791,8 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     return 1;
   }
   const auto emit = [&] {
-    if (!report_load(t, client.load_report())) {
+    auto line = client.load_report();
+    if (!report_load(t, line)) {
       client.abort("cannot write load report");
     }
   };

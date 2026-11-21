@@ -10,7 +10,10 @@
 // lines: every field of §10.1 under its own name, Durations as <name>_us.
 #pragma once
 
+#include <array>
+#include <charconv>
 #include <concepts>
+#include <limits>
 #include <cstdint>
 #include <cstdio>
 #include <expected>
@@ -33,12 +36,13 @@ public:
   JsonLine& add(std::string_view key, const std::string& value) {
     return add(key, std::string_view{value});
   }
+  JsonLine& add(std::string_view key, const FourTuple& tuple);
   JsonLine& add(std::string_view key, bool value);
   template <std::integral T>
     requires(!std::same_as<T, bool> && !std::same_as<T, char>)
   JsonLine& add(std::string_view key, T value) {
     key_(key);
-    buf_ += std::to_string(value);
+    integer_(value);
     return *this;
   }
   // Shortest representation that reads back as the same value; NaN and the
@@ -50,9 +54,18 @@ public:
   [[nodiscard]] std::string str() const { return buf_.empty() ? "{}" : buf_ + '}'; }
   [[nodiscard]] bool empty() const { return buf_.empty(); }
   void clear() { buf_.clear(); }
+  // Append "_us" to a visited field name without creating a temporary key.
+  void add_microseconds(std::string_view key, std::int64_t value);
+  // Writes the closed object and newline without copying the reusable buffer.
+  bool write_to(std::FILE* file) const;
 
 private:
-  void key_(std::string_view key);
+  template <std::integral T> void integer_(T value) {
+    std::array<char, std::numeric_limits<T>::digits10 + 3> text;
+    const auto end = std::to_chars(text.data(), text.data() + text.size(), value).ptr;
+    buf_.append(text.data(), end);
+  }
+  void key_(std::string_view key, std::string_view suffix = {});
   std::string buf_;  // "{" and the members so far, without the closing brace
 };
 

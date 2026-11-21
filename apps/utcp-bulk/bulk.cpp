@@ -358,7 +358,8 @@ void BulkApp::take_sample() {
   if (jsonl_ == nullptr) {
     return;
   }
-  JsonLine line;
+  JsonLine& line = sample_line_;
+  line.clear();
   line.add("t", t_.now().ns).add("ev", "sample").add("role", role());
   add_fields(line, s);
   // DESIGN §9: inflight = unacked - sacked - lost + retrans (Linux

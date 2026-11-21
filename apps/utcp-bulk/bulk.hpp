@@ -121,6 +121,7 @@ private:
   Transport& t_;
   Options o_;
   JsonlWriter* jsonl_;
+  JsonLine sample_line_;
   ConnId listener_ = no_conn;
   ConnId conn_ = no_conn;
   Time start_{};
