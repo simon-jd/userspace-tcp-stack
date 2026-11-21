@@ -31,5 +31,12 @@ assert sum(x[0] for x in sites.values()) == calls
 assert sum(x[1] for x in sites.values()) == nbytes
 out = dict(start_ns=start, end_ns=end, calls=calls, bytes=nbytes, sites=sites, packets_before=before,
            packets_after=after, trace_open=[tc,tb],trace_close=[fc,fb],peak_kib=hwm,final=final)
+wire=folder / "cpp-new-count.wire"
+if wire.exists():
+    with wire.open("rb") as stream:
+        record=stream.read()
+    out["wire_ns"]=time.monotonic_ns()
+    out["wire_counts"]=struct.unpack_from("4Q",record)
+    out["outstanding_max_by_second"]={str(second):maximum for second,maximum in struct.iter_unpack("2Q",record[32:]) if second}
 (folder / (phase+".alloc.json")).write_text(json.dumps(out)+"\n")
 print(json.dumps({k:v for k,v in out.items() if k!="sites"}))

@@ -22,6 +22,8 @@ class AppTrial(BulkTrial):
                 argv += ("--tun-queues",str(self.args.queues))
             if self.args.trace:
                 argv += ("--set=test_fixed_pacing_rate=800Mbit","--trace",self.out+"/server/events.trace","--trace-kinds","tx")
+        if role == "client" and getattr(self.args,"paused_peer",False):
+            argv += ("--recv-pause","120ms:1Mi","--rcv-buf","128Ki")
         super().launch(role,*argv)
         if role == "server":
             self.docker(role,"sh","-ec",'''
@@ -34,6 +36,9 @@ class AppTrial(BulkTrial):
             done
             exit 1''',"sh",self.out+"/server")
             self.count("startup")
+            if getattr(self.args,"series",False):
+                self.observer=subprocess.Popen(["docker","exec",self.container(role),"taskset","-c","12","nice","-n","10","python3",
+                    "/utcp/testbed/m4/app_alloc/series.py",self.out+"/server"])
     def count(self,phase):
         return json.loads(self.docker("server","taskset","-c",str(self.affinity["collector"]),
             "nice","-n","10","python3","/utcp/testbed/m4/app_alloc/snapshot.py",
@@ -61,6 +66,8 @@ class AppTrial(BulkTrial):
         return summary
     def setup(self):
         super().setup()
+        if getattr(self.args,"series",False):
+            self.allocation_counter += ":/utcp/build/app-wire.so"
         if getattr(self.args,"pressure",False):
             self.allocation_counter += ":/utcp/build/app-pressure.so"
             self.docker("server","tc","qdisc","replace","dev","eth0","root","netem","delay","3ms","limit","50000")
@@ -112,6 +119,8 @@ def main():
     p.add_argument("arm",choices=["send","receive","staged","direct"])
     p.add_argument("--source",required=True)
     p.add_argument("--offload",choices=["legacy","tcpv4"],default="legacy")
+    p.add_argument("--series",action="store_true")
+    p.add_argument("--paused-peer",action="store_true")
     p.add_argument("--pressure",action="store_true")
     p.add_argument("--queues",choices=(1,2),type=int,default=1)
     p.add_argument("--trace",action="store_true")
@@ -133,6 +142,9 @@ def main():
         first,end=("steady-start","steady-end") if bulk else ("active-1","active-3")
         res["production_allocation"] = totals(t,first,end)
         res["production_allocation"]["final"]=last
+        if a.series:
+            from series_summary import summarize
+            res["consecutive_windows"]=summarize(t,res,read,totals)
         if not bulk:
             rows=[json.loads(x) for x in read(t,"events.jsonl").splitlines()]
             samples=[row for row in rows if row.get("ev")=="load"]
