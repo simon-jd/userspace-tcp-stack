@@ -37,6 +37,7 @@ struct AckContext {
   // The ACK's rate sample; AckOutcome::rs points here, so it is valid while
   // this context lives.
   RateSample sample{};
+  RecoveryTransition on_transition{};
 };
 
 // Runs Linux tcp_ack order: the D-SACK block (tcp_dsack_seen: ignored if

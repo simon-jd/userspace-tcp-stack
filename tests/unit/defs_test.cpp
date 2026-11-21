@@ -270,9 +270,9 @@ TEST(Defs, TraceEventFields) {
   std::vector<std::string> got;
   utcp::for_each_field(TraceEvent{}, [&](std::string_view name, const auto&) { got.emplace_back(name); });
   EXPECT_EQ(got, want);
-  // The default trace omits both optional members. The populated BBR
+  // The default trace omits five dedicated fields and both optional members. The populated BBR
   // diagnostic serializes its six scalars without inserting an object.
-  EXPECT_EQ(utcp::test::field_count<TraceEvent>(), want.size() + 2);
+  EXPECT_EQ(utcp::test::field_count<TraceEvent>(), want.size() + 7);
   TraceEvent selected;
   selected.cc_override = utcp::CcAlgo::bbr;
   selected.bbr = utcp::BbrInfo{};
@@ -282,7 +282,7 @@ TEST(Defs, TraceEventFields) {
   all.insert(all.end() - 1, {"cc_override", "bbr_mode", "bbr_lt_use_bw", "bbr_bandwidth_q24",
                          "bbr_min_rtt_us", "bbr_pacing_gain_q8", "bbr_cwnd_gain_q8"});
   EXPECT_EQ(got, all);
-  EXPECT_EQ(got.size(), utcp::test::field_count<TraceEvent>() - 1 +
+  EXPECT_EQ(got.size(), utcp::test::field_count<TraceEvent>() - 6 +
                             utcp::test::field_count<utcp::BbrInfo>());
   static_assert(std::is_trivially_copyable_v<TraceEvent>);
 }

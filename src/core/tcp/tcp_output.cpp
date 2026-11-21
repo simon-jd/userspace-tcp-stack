@@ -172,7 +172,9 @@ void TcpEngine::record_segment(Tcb& t, Time now, const SegOut& o, Seq32 ack_seq,
     if (o.data_len > 0) {
       if (packets_in_flight(k) == 0) {
         refresh_cc(t, now);
-        t.algo().cwnd_event(t.stream->cc_conn, CaEvent::tx_start);
+        observe_cc(t, TraceTrigger::tx_start, nullptr, [&](RecoveryTransition) {
+          t.algo().cwnd_event(t.stream->cc_conn, CaEvent::tx_start);
+        });
         t.rate.app_limited = t.stream->cc_conn.app_limited;
         // tcp_event_data_sent precedes tcp_update_skb_after_send. An idle
         // BBR sender can select a new rate for the very burst now leaving.

@@ -68,9 +68,11 @@ void LossRecovery::refresh(RecoveryCtx& c) const {
 
 void LossRecovery::set_state(RecoveryCtx& c, CaState s) {
   // Linux tcp_set_ca_state: the CC hook sees the new state first.
+  const CaState previous = state_;
   c.algo.set_state(c.cc, s);
   state_ = s;
   c.cc.ca_state = s;
+  if (previous != s && c.on_transition) (*c.on_transition)(previous);
 }
 
 void LossRecovery::arm(XmitTimer kind, Time deadline) {

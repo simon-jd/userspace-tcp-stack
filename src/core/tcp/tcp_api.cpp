@@ -156,8 +156,7 @@ std::expected<std::size_t, Error> TcpEngine::tcp_send(Handle h, std::span<const 
     // RFC 5681 §4.1 (Linux tcp_slow_start_after_idle_check from tcp_skb_entail).
     if (k.packets_out == 0 && stream.sndq.end() == stream.sndq.nxt()) {
       refresh_cc(t, now);
-      cwnd_restart(stream.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
-                   t.rtt.rto_backed_off(t.backoff), initial_window(t));
+      restart_window(t, now, nullptr);
     }
   }
   const std::uint64_t space = stream.sndq.free_space();

@@ -27,6 +27,10 @@
 
 namespace utcp {
 
+// Synchronous observer of committed CaState changes. Its callable is borrowed
+// only for the operation using this context.
+using RecoveryTransition = std::optional<FunctionRef<void(CaState previous)>>;
+
 // What recovery works on, built by the engine for each call (TcpEngine::rctx)
 // and by process_ack for the calls of one ACK.
 struct RecoveryCtx {
@@ -62,6 +66,8 @@ struct RecoveryCtx {
   // pacing_next is ahead, else 0. Recovery truncates it to whole ms where
   // Linux adds it to a timer (§1.7).
   Duration pacing_delay{0};
+
+  RecoveryTransition on_transition{};
 
   // The TS clock value (TSval) of time `t`: 1 ms ticks plus the offset, as the
   // engine's ts_now (DESIGN §3.1).

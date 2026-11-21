@@ -101,6 +101,21 @@ enum class BbrMode : std::uint8_t { startup, drain, probe_bw, probe_rtt };
   return "unknown";
 }
 
+// Operation that supplied a dedicated sender event.
+enum class TraceTrigger : std::uint8_t { handshake, ack, rto, reo, pmtu, idle_restart, tx_start };
+[[nodiscard]] constexpr std::string_view to_string(TraceTrigger trigger) noexcept {
+  switch (trigger) {
+    case TraceTrigger::handshake: return "handshake";
+    case TraceTrigger::ack: return "ack";
+    case TraceTrigger::rto: return "rto";
+    case TraceTrigger::reo: return "reo";
+    case TraceTrigger::pmtu: return "pmtu";
+    case TraceTrigger::idle_restart: return "idle_restart";
+    case TraceTrigger::tx_start: return "tx_start";
+  }
+  return "?";
+}
+
 struct BbrInfo {
   BbrMode mode;
   bool lt_use_bw;
@@ -147,6 +162,11 @@ struct TraceEvent {
 
   // Local sender's unique payload without cumulative or selective acknowledgement.
   std::uint32_t in_flight_bytes = 0;
+  // Only serialized for the corresponding dedicated event kinds.
+  TraceTrigger trigger = TraceTrigger::ack;
+  std::uint32_t prior_cwnd = 0, prior_ssthresh = 0;  // packets, cwnd events
+  CaState prior_ca = CaState::open;                  // recovery events
+  std::int64_t sample_rtt_ns = 0;                    // estimator input, rtt events
   bool operator==(const TraceEvent&) const = default;
 };
 
@@ -290,6 +310,14 @@ void for_each_field(const TraceEvent& e, F&& f) {
     f(std::string_view{"bbr_cwnd_gain_q8"}, e.bbr->cwnd_gain_q8);
   }
   f(std::string_view{"in_flight_bytes"}, e.in_flight_bytes);
+  if (e.kind == TraceKind::cwnd || e.kind == TraceKind::recovery || e.kind == TraceKind::rtt)
+    f(std::string_view{"trigger"}, e.trigger);
+  if (e.kind == TraceKind::cwnd) {
+    f(std::string_view{"prior_cwnd"}, e.prior_cwnd);
+    f(std::string_view{"prior_ssthresh"}, e.prior_ssthresh);
+  }
+  if (e.kind == TraceKind::recovery) f(std::string_view{"prior_ca"}, e.prior_ca);
+  if (e.kind == TraceKind::rtt) f(std::string_view{"sample_rtt_ns"}, e.sample_rtt_ns);
 }
 
 }  // namespace utcp

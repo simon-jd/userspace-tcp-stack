@@ -290,6 +290,7 @@ void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
   t.probes_out = 0;
   core_.timers().cancel(t.t_xmit);
   t.xmit_kind = XmitTimer::none;
+  if (sample) trace_rtt(t, s, TraceTrigger::handshake, *sample);
   set_state(t, TcpState::established);
   if (t.passive) {
     if (t.listener) {
@@ -804,7 +805,11 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   c.max_snd_wnd = t.max_snd_wnd;
   c.ts_offset = t.ts_offset;
   c.pacing_delay = t.pacing_delay(now);
-  const AckOutcome out = process_ack(c, in);
+  AckOutcome out;
+  observe_cc(t, TraceTrigger::ack, &s, [&](RecoveryTransition observe) {
+    c.on_transition = observe;
+    out = process_ack(c, in);
+  });
   if (old_ack) {
     return true;
   }
@@ -818,6 +823,7 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   }
   if (out.seq_rtt >= Duration::zero()) {
     t.backoff = 0;  // RFC 6298 §5.7
+    trace_rtt(t, s, TraceTrigger::ack, out.seq_rtt);
   }
   if (advanced) {
     t.rto_count = 0;
@@ -869,8 +875,7 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   // stall would collapse cwnd to IW.
   if (cfg_.idle_restart == IdleRestart::rfc5681 && window_update &&
       t.counters().packets_out == 0 && stream.sndq.end() > stream.sndq.nxt()) {
-    cwnd_restart(stream.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
-                 t.rtt.rto_backed_off(t.backoff), initial_window(t));
+    restart_window(t, now, &s);
   }
   return true;
 }

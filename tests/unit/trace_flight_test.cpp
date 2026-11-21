@@ -24,6 +24,57 @@ struct FlightLog : TraceSink {
   }
 };
 
+TEST(DedicatedTrace, HandshakeAndSegmentAckHaveIndependentRttEvents) {
+  auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
+  cfg.trace_mask = trace_bit(TraceKind::rtt);
+  FlightLog log;
+  Scripted s(cfg);
+  s.stack().set_trace_sink(&log);
+  ASSERT_TRUE(s.accept());
+  ASSERT_EQ(log.events.size(), 1u);
+  EXPECT_EQ(log.events.front().kind, TraceKind::rtt);
+  ASSERT_EQ(s.stack().tcp_send(s.h, t::pattern(113)).value(), 113u);
+  ASSERT_EQ(s.out().size(), 1u);
+  s.d().run_for(std::chrono::milliseconds{7});
+  auto a = s.spec(wire::tcp_ack);
+  a.ack = s.their + 11;
+  s.send(a);  // partial cumulative ACK supplies no completed segment
+  EXPECT_EQ(log.events.size(), 1u);
+  a.ack = s.their + 113;
+  s.send(a);
+  s.send(a);  // repeated ACK, no fresh timing information
+  ASSERT_EQ(log.events.size(), 2u);
+  EXPECT_EQ(log.events.back().kind, TraceKind::rtt);
+  EXPECT_EQ(log.events.back().ack, a.ack.raw());
+  EXPECT_EQ(log.events.back().in_flight_bytes, 0u);
+}
+
+TEST(DedicatedTrace, TimeoutThenAmbiguousAckWithoutTimestamps) {
+  auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
+  cfg.trace_mask = trace_mask_all;
+  FlightLog log;
+  Scripted s(cfg);
+  s.stack().set_trace_sink(&log);
+  ASSERT_TRUE(s.accept());
+  log.events.clear();
+  ASSERT_EQ(s.stack().tcp_send(s.h, t::pattern(113)).value(), 113u);
+  ASSERT_EQ(s.out().size(), 1u);
+  s.d().run_for(std::chrono::seconds{1});
+  ASSERT_EQ(s.out().size(), 1u);
+  const auto loss = log.of(TraceKind::recovery);
+  ASSERT_EQ(loss.size(), 1u);
+  EXPECT_EQ(loss.front().ca, CaState::loss);
+  EXPECT_EQ(loss.front().in_flight_bytes, 113u);
+  ASSERT_EQ(log.of(TraceKind::cwnd).size(), 1u);
+  auto a = s.spec(wire::tcp_ack);
+  a.ack = s.their + 113;
+  s.send(a);
+  EXPECT_TRUE(log.of(TraceKind::rtt).empty());
+  const auto transitions = log.of(TraceKind::recovery);
+  ASSERT_EQ(transitions.size(), 2u);
+  EXPECT_EQ(transitions.back().ca, CaState::open);
+}
+
 TEST(TraceFlight, WirePayloadAcrossWrapAndLateTraceAttach) {
   auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
   cfg.tcp.test_isn = 0xffff'ffefu;
