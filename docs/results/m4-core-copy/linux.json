@@ -1,0 +1,74 @@
+{
+  "legacy-recv": {
+    "aggregate_datagrams": 0,
+    "bytes": 65549,
+    "paths": {
+      "recv_ring_to_app": {
+        "bytes": 65549,
+        "calls": 19
+      },
+      "rx_packet": {
+        "bytes": 65549,
+        "calls": 62
+      }
+    },
+    "sha256": "1e76f01beaa38c9fe81c1647403b441f35f5695fbfc0bd8bc666bf354753e602"
+  },
+  "legacy-send": {
+    "aggregate_datagrams": 0,
+    "bytes": 65549,
+    "paths": {
+      "app_to_send_ring": {
+        "bytes": 65549,
+        "calls": 17
+      },
+      "tx_packet": {
+        "bytes": 65549,
+        "calls": 61
+      }
+    },
+    "sha256": "1e76f01beaa38c9fe81c1647403b441f35f5695fbfc0bd8bc666bf354753e602"
+  },
+  "tcpv4-recv": {
+    "aggregate_datagrams": 6,
+    "bytes": 65549,
+    "paths": {
+      "recv_ring_to_app": {
+        "bytes": 65549,
+        "calls": 19
+      },
+      "rx_gro": {
+        "bytes": 44888,
+        "calls": 16
+      },
+      "rx_gro_fallback": {
+        "bytes": 19213,
+        "calls": 19
+      },
+      "rx_packet": {
+        "bytes": 1448,
+        "calls": 1
+      }
+    },
+    "sha256": "1e76f01beaa38c9fe81c1647403b441f35f5695fbfc0bd8bc666bf354753e602"
+  },
+  "tcpv4-send": {
+    "aggregate_datagrams": 5,
+    "bytes": 65549,
+    "paths": {
+      "app_to_send_ring": {
+        "bytes": 65549,
+        "calls": 17
+      },
+      "tx_gso": {
+        "bytes": 62264,
+        "calls": 19
+      },
+      "tx_packet": {
+        "bytes": 3285,
+        "calls": 4
+      }
+    },
+    "sha256": "1e76f01beaa38c9fe81c1647403b441f35f5695fbfc0bd8bc666bf354753e602"
+  }
+}

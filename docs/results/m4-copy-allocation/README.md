@@ -10,7 +10,9 @@ The counters track logical app-level byte movements. A staging append
 covers scratch-to-pending writes. Compaction moves the remaining vector
 tail after dropping a sent prefix. Relocation covers existing vector bytes
 moved when capacity grows. This scope excludes transport and packet buffer
-copies. Both measured binaries carry the same counter definitions.
+copies. Both measured binaries carry the same counter definitions. The later
+[core payload study](../m4-core-copy/README.md) measures the ring and packet
+boundaries independently on ordinary Linux TCP streams.
 
 ## Five paired timing runs
 
