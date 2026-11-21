@@ -12,6 +12,36 @@ stored input files in place and regenerates the numerical reports in a fresh
 directory. The [historical inventory](historical.md) covers M0, M1, M2
 integration, and M3, with their commands and surviving receipts.
 
+## Central capture-free archive
+
+On the private Ubuntu host the complete offline analysis entry point is
+`utcp-data:/m5/analysis/README.md`. The archive contains the accepted source
+snapshot, five M2 compacts and authenticated plans, the qualification inputs,
+M4 source records, historical projections, checksums and a portable Linux
+amd64 analysis runtime. Historical paths below identify original acquisition
+and verification records. The archive includes a searchable source mapping
+for historical, diagnostic and superseded results.
+
+Run the full verification and replay on Ubuntu. Docker mounts only the
+published analysis directory and a fresh output volume. The command prints
+the output volume and the newly created results directory.
+
+```bash
+set -euo pipefail
+image=sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66
+output=$(docker volume create)
+printf 'Fresh replay output volume %s\n' "$output"
+docker run --pull never --rm --read-only --network none --cpuset-cpus 20-27 \
+    --cap-drop all --cap-add dac_override --tmpfs /tmp:rw,nosuid \
+    --mount type=volume,src=utcp-data,dst=/archive,volume-subpath=m5/analysis,readonly \
+    --mount "type=volume,src=$output,dst=/work" --entrypoint bash "$image" \
+    -ec 'cd /archive && sha256sum --quiet -c SHA256SUMS && nice -n 10 bash ./restore.sh'
+```
+
+The central README also covers offline import of the packaged runtime, recovery
+of individual historical records, the complete source inventories and original
+capture conservation checks.
+
 ## Start an offline analysis shell
 
 Run on Ubuntu from the repository root. This example creates a fresh scratch
