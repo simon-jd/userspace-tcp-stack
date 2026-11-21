@@ -23,16 +23,28 @@ bool SentFifo::entry_live(const SendQueue& q, const Entry& e) {
 }
 
 void SentFifo::pop_dead_front(const SendQueue& q) {
-  while (!fifo_.empty() && !entry_live(q, fifo_.front())) {
-    fifo_.pop_front();
+  while (head_ < fifo_.size() && !entry_live(q, fifo_[head_])) {
+    ++head_;
+  }
+  if (head_ && head_ >= size()) {
+    fifo_.erase(fifo_.begin(), fifo_.begin() + static_cast<std::ptrdiff_t>(head_));
+    head_ = 0;
   }
 }
 
 void SentFifo::filter(const SendQueue& q) {
-  std::erase_if(fifo_, [&](const Entry& e) { return !entry_live(q, e); });
+  auto keep = fifo_.begin();
+  for (const Entry& e : entries()) {
+    if (entry_live(q, e)) *keep++ = e;
+  }
+  fifo_.erase(keep, fifo_.end());
+  head_ = 0;
 }
 
 void SentFifo::on_transmit(const SendQueue& q, const TxSeg& seg) {
+  // ACK processing need not walk RACK when all data has drained. Before
+  // growing, reclaim stale transmissions left by those ACKs.
+  if (fifo_.size() == fifo_.capacity()) pop_dead_front(q);
   const Entry e{seg.off, seg.len, seg.tx_count, seg.last_tx};
   const auto span_of = [](const Entry& x) -> std::uint64_t { return x.len == 0 ? 1u : x.len; };
   // Times only grow, so the entries of this instant are at the tail; they are
@@ -40,10 +52,10 @@ void SentFifo::on_transmit(const SendQueue& q, const TxSeg& seg) {
   // time, then end offset, tcp_skb_sent_after). Usually the new entry goes
   // last; a retransmission in the same instant at a lower offset goes before.
   std::size_t pos = fifo_.size();
-  while (pos > 0 && fifo_[pos - 1].t == e.t && fifo_[pos - 1].off > e.off) {
+  while (pos > head_ && fifo_[pos - 1].t == e.t && fifo_[pos - 1].off > e.off) {
     --pos;
   }
-  if (pos > 0 && fifo_[pos - 1].t == e.t) {
+  if (pos > head_ && fifo_[pos - 1].t == e.t) {
     // A part of a transmission of this same instant is resent: that entry's
     // range holds e's; split it around e.
     const Entry prev = fifo_[pos - 1];
@@ -68,19 +80,20 @@ void SentFifo::on_transmit(const SendQueue& q, const TxSeg& seg) {
   fifo_.insert(fifo_.begin() + static_cast<std::ptrdiff_t>(pos), e);
   // M2-DESIGN §1.5: at most 2 * packets_out + 64 entries after each append.
   const std::size_t bound = 2 * std::size_t{q.counters().packets_out} + 64;
-  if (fifo_.size() > bound) {
+  if (size() > bound) {
     filter(q);
   }
 }
 
 void SentFifo::rebuild(const SendQueue& q) {
-  fifo_.clear();
+  clear();
   for (const TxSeg& s : q.segs()) {
     if (live(s)) {
       fifo_.push_back(Entry{s.off, s.len, s.tx_count, s.last_tx});
     }
   }
-  std::stable_sort(fifo_.begin(), fifo_.end(), [](const Entry& a, const Entry& b) {
+  // The live TxSeg offsets are unique, including a bare FIN at end().
+  std::sort(fifo_.begin(), fifo_.end(), [](const Entry& a, const Entry& b) {
     return a.t < b.t || (a.t == b.t && a.off < b.off);
   });
 }
@@ -88,7 +101,7 @@ void SentFifo::rebuild(const SendQueue& q) {
 std::vector<std::uint64_t> SentFifo::live_offsets(const SendQueue& q) const {
   std::vector<std::uint64_t> out;
   const std::span<const TxSeg> segs = q.segs();
-  for (const Entry& e : fifo_) {
+  for (const Entry& e : entries()) {
     for (std::size_t i = first_in(segs, e.off); i < segs.size() && in_range(e, segs[i]); ++i) {
       if (segs[i].tx_count == e.tx_count && live(segs[i])) {
         out.push_back(segs[i].off);

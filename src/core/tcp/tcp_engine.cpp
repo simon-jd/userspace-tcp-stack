@@ -570,9 +570,8 @@ void TcpEngine::wake_chunk_waiters() {
   if (pool.in_use() >= pool.limit()) {
     return;
   }
-  std::vector<Handle> waiters;
-  waiters.swap(chunk_waiters_);
-  for (const Handle h : waiters) {
+  // Raising an event only marks it pending; the host polls after this call.
+  for (const Handle h : chunk_waiters_) {
     Tcb* t = find(h);
     if (t == nullptr || !t->send_blocked || t->app_write_shut || t->fin_queued ||
         t->state == TcpState::closed || t->state == TcpState::time_wait ||
@@ -582,6 +581,7 @@ void TcpEngine::wake_chunk_waiters() {
     t->send_blocked = false;
     raise(*t, ev_writable);
   }
+  chunk_waiters_.clear();
 }
 
 // --- Checks.

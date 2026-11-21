@@ -190,7 +190,7 @@ AckedSummary SendQueue::on_cumulative_ack(std::uint64_t new_una, bool fin_acked,
   ring_.consume(new_una - old_una);
   if (partial_sacks_ && old_una < new_una) {
     if (new_una == nxt_) {
-      partial_sacks_.reset();
+      partial_sacks_->clear();
     } else {
       partial_sacks_->exclude({old_una, new_una});
     }
@@ -211,18 +211,22 @@ void SendQueue::PartialSacks::put(Ranges::iterator hint, Range block) {
   if (spare.empty()) {
     ranges.emplace_hint(hint, block.end, block.begin);
   } else {
-    spare.key() = block.end;
-    spare.mapped() = block.begin;
-    ranges.insert(hint, std::move(spare));
+    auto node = spare.extract(std::prev(spare.end()));
+    node.key() = block.end;
+    node.mapped() = block.begin;
+    ranges.insert(hint, std::move(node));
   }
 }
 
 void SendQueue::PartialSacks::discard(Ranges::iterator it) {
-  if (spare.empty()) {
-    spare = ranges.extract(it);
-  } else {
-    ranges.erase(it);
-  }
+  auto node = ranges.extract(it);
+  node.key() = spare.size();
+  spare.insert(spare.end(), std::move(node));
+}
+
+void SendQueue::PartialSacks::clear() {
+  while (!ranges.empty()) discard(ranges.begin());
+  bytes = 0;
 }
 
 void SendQueue::PartialSacks::include(Range block) {
@@ -357,7 +361,7 @@ void SendQueue::clear_all_sacked() {
   ctr_.sacked_out = 0;
   high_sacked_ = 0;
   tagged_bytes_ = 0;
-  partial_sacks_.reset();
+  if (partial_sacks_) partial_sacks_->clear();
 }
 
 // tcp_limit_reno_sacked: sacked_out + max(lost_out, 1) <= packets_out.
@@ -381,42 +385,43 @@ void SendQueue::set_sack_ok(bool sack_ok) { sack_ok_ = sack_ok; }
 
 void SendQueue::split_to_mss(std::uint16_t mss) {
   UTCP_CHECK(mss > 0);
-  bool any = false;
-  for (std::size_t i = head_; i < segs_.size(); ++i) {
-    any = any || segs_[i].len > mss;
+  std::size_t extra = 0;
+  for (const TxSeg& seg : segs()) {
+    if (seg.len > mss) extra += (seg.len - 1) / mss;
   }
-  if (!any) {
-    return;
-  }
-  std::vector<TxSeg> out;
-  out.reserve(segs_.size() - head_ + 16);
-  for (std::size_t i = head_; i < segs_.size(); ++i) {
-    const TxSeg& seg = segs_[i];
-    if (seg.len <= mss) {
-      out.push_back(seg);
-      continue;
-    }
-    std::uint32_t done = 0;
-    bool first = true;
-    while (done < seg.len) {
-      TxSeg part = seg;
-      part.off = seg.off + done;
-      part.len = std::min<std::uint32_t>(mss, seg.len - done);
-      done += part.len;
-      part.fin = seg.fin && done == seg.len;
-      if (!first) {
-        part.id = next_id_++;
-        ++ctr_.packets_out;
-        ctr_.sacked_out += part.sacked ? 1u : 0u;
-        ctr_.lost_out += part.lost ? 1u : 0u;
-        ctr_.retrans_out += part.retrans_inflight ? 1u : 0u;
-      }
-      first = false;
-      out.push_back(part);
-    }
-  }
-  segs_ = std::move(out);
+  if (extra == 0) return;
+
+  // Expand from the end so writing split parts cannot overwrite unread
+  // source segments. Allocate IDs in their original forward-stream order.
+  segs_.erase(segs_.begin(), segs_.begin() + static_cast<std::ptrdiff_t>(head_));
   head_ = 0;
+  const auto original = segs_.size();
+  segs_.resize(original + extra);
+  auto out = segs_.size();
+  next_id_ += extra;
+  auto id_end = next_id_;
+  for (auto i = original; i > 0; --i) {
+    const TxSeg seg = segs_[i - 1];
+    auto remaining = seg.len;
+    while (remaining > mss) {
+      const auto offset = (remaining - 1) / mss * mss;
+      TxSeg part = seg;
+      part.off += offset;
+      part.len = remaining - offset;
+      part.fin = seg.fin && remaining == seg.len;
+      part.id = --id_end;
+      ++ctr_.packets_out;
+      ctr_.sacked_out += part.sacked ? 1u : 0u;
+      ctr_.lost_out += part.lost ? 1u : 0u;
+      ctr_.retrans_out += part.retrans_inflight ? 1u : 0u;
+      segs_[--out] = part;
+      remaining = offset;
+    }
+    TxSeg first = seg;
+    first.len = remaining;
+    first.fin = seg.fin && remaining == seg.len;
+    segs_[--out] = first;
+  }
 }
 
 void SendQueue::split(std::uint64_t off, std::uint32_t len) {
