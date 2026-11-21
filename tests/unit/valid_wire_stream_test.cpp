@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <span>
 #include <string>
 #include <string_view>
@@ -249,17 +251,17 @@ void check_udp_and_icmp(Rng& rng, std::uint32_t trial) {
   }
 }
 
-TEST_P(ValidWireStream, ValidDatagrams) {
-  const auto seed = Seed::from_u64(GetParam());
+void check_datagrams(std::uint64_t seed_value, std::uint32_t scale) {
+  const auto seed = Seed::from_u64(seed_value);
   auto tcp = Rng::derive(seed, "valid-wire/tcp");
   auto udp_icmp = Rng::derive(seed, "valid-wire/udp-icmp");
-  const auto cases = scale_ * wire_cases_per_scale;
+  const auto cases = scale * wire_cases_per_scale;
   for (std::uint32_t trial = 0; trial < cases; ++trial) {
     SCOPED_TRACE(trial);
     ASSERT_NO_FATAL_FAILURE(check_tcp(tcp, trial));
     ASSERT_NO_FATAL_FAILURE(check_udp_and_icmp(udp_icmp, trial));
   }
-  count("seed", GetParam());
+  count("seed", seed_value);
   count("ipv4_datagrams", cases * 3u);
   count("tcp_segments", cases);
   count("tcp_syn", cases / 4);
@@ -272,11 +274,19 @@ TEST_P(ValidWireStream, ValidDatagrams) {
   count("icmp_port_unreachable", cases / 4);
 }
 
+TEST_P(ValidWireStream, ValidDatagrams) {
+  ASSERT_NO_FATAL_FAILURE(check_datagrams(GetParam(), scale_));
+}
+
 struct StreamCounts {
   std::uint64_t inserts = 0;
   std::uint64_t repeats = 0;
   std::uint64_t reordered = 0;
   std::uint64_t hole_fills = 0;
+  std::uint64_t ordered_windows = 0;
+  std::uint64_t reordered_windows = 0;
+  std::uint64_t drained_windows = 0;
+  std::uint64_t reached_fin = 0;
   std::uint64_t reads = 0;
   std::uint64_t bytes_read = 0;
 };
@@ -287,16 +297,25 @@ void check_state(const utcp::RecvBuffer& recv, const t::NaiveReassembler& ref) {
   ASSERT_EQ(recv.right_edge(), ref.right_edge());
   ASSERT_EQ(recv.contiguous_end(), ref.contiguous_end());
   ASSERT_EQ(recv.readable(), ref.readable());
+  ASSERT_EQ(recv.fin_offset(), ref.fin_offset());
+  ASSERT_EQ(recv.fin_reached(), ref.fin_reached());
   ASSERT_TRUE(std::ranges::equal(recv.ooo_ranges(), ref.ooo_ranges()));
 }
 
-void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts) {
-  const auto capacity = 4096 + rng.below(4096);
+enum class StreamProfile { historical, soak };
+
+void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts, StreamProfile profile) {
+  const bool soak = profile == StreamProfile::soak;
+  constexpr auto chunk = utcp::ChunkPool::chunk_size;
+  const auto capacity = soak ? chunk + 1 + rng.below(chunk - 1) : 4096 + rng.below(4096);
   utcp::RecvBuffer recv(capacity, pool);
   t::NaiveReassembler ref(capacity);
   for (std::uint32_t window = 0; window < windows_per_stream; ++window) {
     const auto base = recv.read_offset();
-    const auto window_size = capacity - rng.below(capacity / 3 + 1);
+    const bool ordered = soak && window == 0;
+    const bool final_window = soak && window + 1 == windows_per_stream;
+    const auto window_size =
+        soak ? capacity - rng.below(capacity - chunk) : capacity - rng.below(capacity / 3 + 1);
     const auto data = payload_bytes(rng, window_size);
     std::vector<Range> segments;
     for (std::size_t off = 0; off < data.size();) {
@@ -304,16 +323,21 @@ void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts) {
       segments.push_back(Range{off, off + length});
       off += length;
     }
-    // Release the final segment first, then shuffle the remaining segments.
-    // A single exact repeat of the first delivery stays inside the window.
-    std::swap(segments.front(), segments.back());
-    for (auto n = segments.size() - 1; n > 1; --n) {
-      std::swap(segments[n], segments[1 + rng.below(static_cast<std::uint32_t>(n))]);
+    ASSERT_GE(segments.size(), 2u);
+    if (soak) {
+      ASSERT_GT(data.size(), chunk);
+    }
+    if (!ordered) {
+      // Release the tail first, then shuffle the remaining segments.
+      std::swap(segments.front(), segments.back());
+      for (auto n = segments.size() - 1; n > 1; --n) {
+        std::swap(segments[n], segments[1 + rng.below(static_cast<std::uint32_t>(n))]);
+      }
     }
     const auto limit = recv.right_edge();
     const auto insert = [&](Range segment, bool repeated) {
-      const auto payload = std::span<const std::byte>(data).subspan(segment.begin,
-                                                                   segment.end - segment.begin);
+      const auto payload =
+          std::span<const std::byte>(data).subspan(segment.begin, segment.end - segment.begin);
       const auto actual = recv.insert(base + segment.begin, payload, limit);
       const auto expected = ref.insert(base + segment.begin, payload, limit);
       ASSERT_EQ(actual.contiguous_end, expected.contiguous_end);
@@ -324,6 +348,12 @@ void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts) {
       ASSERT_EQ(actual.duplicate, expected.duplicate);
       ASSERT_EQ(actual.duplicate.has_value(), repeated);
       ASSERT_EQ(actual.stored, expected.stored);
+      if (ordered) {
+        ASSERT_EQ(actual.contiguous_end, base + segment.end);
+        ASSERT_TRUE(actual.advanced);
+        ASSERT_FALSE(actual.out_of_order);
+        ASSERT_FALSE(actual.ooo_held);
+      }
       ASSERT_EQ(actual.dropped, 0u);
       ASSERT_EQ(actual.pruned, 0u);
       ASSERT_FALSE(actual.range_limit);
@@ -354,7 +384,20 @@ void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts) {
     };
 
     ASSERT_NO_FATAL_FAILURE(insert(segments.front(), false));
-    ASSERT_NO_FATAL_FAILURE(insert(segments.front(), true));
+    if (!ordered) {
+      ASSERT_EQ(recv.ooo_ranges().size(), 1u);
+      ASSERT_EQ(recv.readable(), 0u);
+      ASSERT_NO_FATAL_FAILURE(insert(segments.front(), true));
+    }
+    if (final_window) {
+      // The last segment (delivered first) is immediately followed by FIN.
+      const auto fin = base + data.size();
+      recv.set_fin(fin);
+      ref.set_fin(fin);
+      ASSERT_EQ(recv.fin_offset(), fin);
+      ASSERT_FALSE(recv.fin_reached());
+      ASSERT_NO_FATAL_FAILURE(check_state(recv, ref));
+    }
     for (const auto& segment : std::span(segments).subspan(1)) {
       ASSERT_NO_FATAL_FAILURE(insert(segment, false));
       ASSERT_NO_FATAL_FAILURE(read());
@@ -364,24 +407,51 @@ void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts) {
       ASSERT_NO_FATAL_FAILURE(read());
     }
     ASSERT_EQ(recv.read_offset(), base + data.size());
+    ASSERT_TRUE(recv.ooo_ranges().empty());
+    if (soak) {
+      ASSERT_EQ(recv.readable(), 0u);
+      ASSERT_EQ(recv.read(actual), 0u);
+      ASSERT_EQ(ref.read(expected), 0u);
+      ++counts.drained_windows;
+      counts.ordered_windows += ordered;
+      counts.reordered_windows += !ordered;
+    }
+    if (final_window) {
+      ASSERT_TRUE(recv.fin_reached());
+      ASSERT_EQ(recv.fin_offset(), recv.read_offset());
+      ASSERT_NO_FATAL_FAILURE(check_state(recv, ref));
+      ++counts.reached_fin;
+    }
   }
 }
 
-TEST_P(ValidWireStream, CompleteStreams) {
-  auto rng = Rng::derive(Seed::from_u64(GetParam()), "valid-stream/delivery");
+void check_streams(std::uint64_t seed_value, std::uint32_t scale, StreamProfile profile) {
+  auto rng = Rng::derive(Seed::from_u64(seed_value), "valid-stream/delivery");
   utcp::ChunkPool pool(8);  // a window of at most 8191 bytes needs at most three chunks
-  const auto streams = scale_ * streams_per_scale;
+  const auto streams = scale * streams_per_scale;
   StreamCounts counts;
   for (std::uint32_t trial = 0; trial < streams; ++trial) {
     SCOPED_TRACE(trial);
-    ASSERT_NO_FATAL_FAILURE(check_stream(rng, pool, counts));
+    ASSERT_NO_FATAL_FAILURE(check_stream(rng, pool, counts, profile));
     ASSERT_EQ(pool.in_use(), 0u);
   }
   ASSERT_EQ(pool.failures(), 0u);
-  ASSERT_EQ(counts.repeats, streams * windows_per_stream);
+  if (profile == StreamProfile::soak) {
+    ASSERT_EQ(counts.repeats, streams);
+    ASSERT_EQ(counts.ordered_windows, streams);
+    ASSERT_EQ(counts.reordered_windows, streams);
+    ASSERT_EQ(counts.drained_windows, streams * windows_per_stream);
+    ASSERT_EQ(counts.reached_fin, streams);
+    count("ordered_windows", counts.ordered_windows);
+    count("reordered_windows", counts.reordered_windows);
+    count("drained_windows", counts.drained_windows);
+    count("fin_reached", counts.reached_fin);
+  } else {
+    ASSERT_EQ(counts.repeats, streams * windows_per_stream);
+  }
   ASSERT_GE(counts.reordered, counts.repeats);
   ASSERT_GE(counts.hole_fills, counts.repeats);
-  count("seed", GetParam());
+  count("seed", seed_value);
   count("streams", streams);
   count("delivery_windows", streams * windows_per_stream);
   count("inserts", counts.inserts);
@@ -391,6 +461,65 @@ TEST_P(ValidWireStream, CompleteStreams) {
   count("reads", counts.reads);
   count("bytes_read", counts.bytes_read);
 }
+
+TEST_P(ValidWireStream, CompleteStreams) {
+  ASSERT_NO_FATAL_FAILURE(check_streams(GetParam(), scale_, StreamProfile::historical));
+}
+
+void read_setting(const char* name, std::uint32_t lo, std::uint32_t hi, std::uint32_t& out) {
+  const char* env = std::getenv(name);
+  ASSERT_NE(env, nullptr) << name;
+  const std::string_view value(env);
+  const auto end = value.data() + value.size();
+  const auto [ptr, ec] = std::from_chars(value.data(), end, out);
+  ASSERT_TRUE(ec == std::errc{} && ptr == end && out >= lo && out <= hi) << name;
+}
+
+enum class SoakLane { wire, stream };
+
+void run_soak(SoakLane lane) {
+  using Clock = std::chrono::steady_clock;
+  using Ns = std::chrono::nanoseconds;
+  static_assert(Clock::is_steady);
+  constexpr std::uint32_t max_index = 0x7fffffff;
+  std::uint32_t seconds{}, run{}, scale{}, batch{};
+  ASSERT_NO_FATAL_FAILURE(read_setting("UTCP_VALID_SOAK_SECONDS", 1, 86400, seconds));
+  ASSERT_NO_FATAL_FAILURE(read_setting("UTCP_VALID_SOAK_RUN", 1, max_index, run));
+  ASSERT_NO_FATAL_FAILURE(read_setting("UTCP_VALID_SOAK_SCALE", 1, 1024, scale));
+  ASSERT_NO_FATAL_FAILURE(read_setting("UTCP_VALID_SOAK_FIRST_BATCH", 0, max_index, batch));
+  const bool stream = lane == SoakLane::stream;
+  const auto prefix = (std::uint64_t{1} << 63) | (std::uint64_t{run} << 32) |
+                      (static_cast<std::uint64_t>(stream) << 31);
+  Ns active{};
+  while (active < std::chrono::seconds(seconds)) {
+    ASSERT_LE(batch, max_index);
+    const auto seed = prefix | batch;
+    SCOPED_TRACE(seed);
+    const auto begin = Clock::now();
+    if (stream) {
+      ASSERT_NO_FATAL_FAILURE(check_streams(seed, scale, StreamProfile::soak));
+    } else {
+      ASSERT_NO_FATAL_FAILURE(check_datagrams(seed, scale));
+    }
+    const auto end = Clock::now();
+    const auto begin_ns = std::chrono::duration_cast<Ns>(begin.time_since_epoch());
+    const auto end_ns = std::chrono::duration_cast<Ns>(end.time_since_epoch());
+    ASSERT_GT(end_ns, begin_ns);
+    active += end_ns - begin_ns;
+    // Export counters only after all reference and byte checks for this batch pass.
+    const auto* result = testing::UnitTest::GetInstance()->current_test_info()->result();
+    std::cout << "UTCP_VALID_BATCH " << batch << ' ' << begin_ns.count() << ' ' << end_ns.count();
+    for (int i = 0; i < result->test_property_count(); ++i) {
+      const auto& p = result->GetTestProperty(i);
+      std::cout << ' ' << p.key() << '=' << p.value();
+    }
+    std::cout << std::endl;
+    ++batch;
+  }
+}
+
+TEST(ValidWireStreamSoak, DISABLED_Wire) { ASSERT_NO_FATAL_FAILURE(run_soak(SoakLane::wire)); }
+TEST(ValidWireStreamSoak, DISABLED_Stream) { ASSERT_NO_FATAL_FAILURE(run_soak(SoakLane::stream)); }
 
 INSTANTIATE_TEST_SUITE_P(Seeds, ValidWireStream, testing::Values(101u, 202u, 303u, 404u),
                          testing::PrintToStringParamName());
