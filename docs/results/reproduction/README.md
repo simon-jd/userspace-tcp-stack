@@ -15,16 +15,21 @@ integration, and M3, with their commands and surviving receipts.
 ## Central capture-free archive
 
 On the private Ubuntu host the complete offline analysis entry point is
-`utcp-data:/m5/analysis/README.md`. The archive contains the accepted source
-snapshot, five M2 compacts and authenticated plans, the qualification inputs,
+`utcp-data:/m5/analysis/README.md`. Its accepted source snapshot is commit
+`4624f51bc62f484bc0614f97bfa8c3c833624bfd`, tree
+`0a4cf8257b80175b7e13aea68423dee7f93ee195`. The archive contains
+five M2 compacts and authenticated plans, the qualification inputs,
 M4 source records, historical projections, checksums and a portable Linux
 amd64 analysis runtime. Historical paths below identify original acquisition
 and verification records. The archive includes a searchable source mapping
-for historical, diagnostic and superseded results.
+for historical, diagnostic and superseded results. In the historical index, the
+`workdirs/source-inventory-accept.mmq9hxom/` entry groups the 12 source-inventory
+files from the pre-publication audit.
 
-Run the full verification and replay on Ubuntu. Docker mounts only the
-published analysis directory and a fresh output volume. The command prints
-the output volume and the newly created results directory.
+On Ubuntu, the command verifies the published `SHA256SUMS` against the digest
+pinned here before it checks the archive files and starts the offline replay.
+Docker mounts the published analysis directory and a fresh output volume.
+The command prints the output volume and the newly created results directory.
 
 ```bash
 set -euo pipefail
@@ -35,7 +40,10 @@ docker run --pull never --rm --read-only --network none --cpuset-cpus 20-27 \
     --cap-drop all --cap-add dac_override --tmpfs /tmp:rw,nosuid \
     --mount type=volume,src=utcp-data,dst=/archive,volume-subpath=m5/analysis,readonly \
     --mount "type=volume,src=$output,dst=/work" --entrypoint bash "$image" \
-    -ec 'cd /archive && sha256sum --quiet -c SHA256SUMS && nice -n 10 bash ./restore.sh'
+    -ec 'cd /archive
+         echo "b21ed9841282f0c538b4b1f7565db7c90dc6a69170662967175e0f5f634a34e9  SHA256SUMS" | sha256sum --quiet -c -
+         sha256sum --quiet -c SHA256SUMS
+         nice -n 10 bash ./restore.sh'
 ```
 
 The central README also covers offline import of the packaged runtime, recovery
