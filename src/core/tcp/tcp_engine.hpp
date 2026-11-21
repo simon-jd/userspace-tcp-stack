@@ -162,6 +162,7 @@ private:
   // Compare committed sender windows at each recovery edge and operation end.
   void observe_cc(const Tcb& t, TraceTrigger trigger, const InSeg* packet,
                   FunctionRef<void(RecoveryTransition)> run);
+  void init_sender(Tcb& t, Time now);
   void restart_window(Tcb& t, Time now, const InSeg* packet);
   void trace_tx(const Tcb& t, TxKind kind, Seq32 seq, Seq32 ack, std::uint32_t len,
                 std::uint32_t wnd, std::uint16_t flags);

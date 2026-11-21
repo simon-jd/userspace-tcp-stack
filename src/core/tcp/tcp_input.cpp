@@ -229,29 +229,8 @@ std::uint32_t TcpEngine::initial_window(const Tcb& t) const {
   return t.mss_cache > 2190 ? 2u : t.mss_cache > 1095 ? 3u : 4u;
 }
 
-// Our SYN (or SYN-ACK) was acknowledged: ESTABLISHED (§4.8 handshake RTT,
-// IW after SYN loss).
-void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
-  const Time now = s.now;
-  t.syn_acked = true;
-  // Handshake RTT sample: the SYN is not a TxSeg (§3.2), so the engine takes
-  // it (Karn: only from a SYN sent once, else from TSecr).
-  std::optional<Duration> sample;
-  if (t.syn_tries == 1) {
-    sample = now - t.syn_last_tx;
-  } else if (t.ts_ok && s.v->opt.ts && s.v->opt.ts->ecr != 0) {
-    const std::uint32_t d = ts_now(t, now) - s.v->opt.ts->ecr;
-    if (d < 2'147'483u) {
-      sample = std::chrono::milliseconds{std::max(d, 1u)};
-    }
-  }
-  if (sample) {
-    t.rtt.on_srtt_sample(*sample, 0, 0);
-    t.rtt.on_min_rtt_sample(*sample, false, now);
-    t.ackp.set_srtt(t.rtt.srtt());
-  } else if (t.syn_tries > 1) {
-    t.rtt.reset_after_syn_rexmit();  // RFC 6298 §5.7
-  }
+// Install the negotiated sender model, including for a lazy passive socket.
+void TcpEngine::init_sender(Tcb& t, Time now) {
   // IW (RFC 5681 §3.1; Linux tcp_init_transfer).
   const bool syn_loss = cfg_.iw_after_syn_loss == IwAfterSynLoss::after_any ? t.syn_tries > 1
                                                                              : t.syn_tries > 2;
@@ -281,6 +260,34 @@ void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
   t.backoff = 0;
   t.rto_count = 0;
   if (t.stream) t.stream->retrans_stamp.reset();
+}
+
+// Our SYN (or SYN-ACK) was acknowledged: ESTABLISHED (§4.8 handshake RTT,
+// IW after SYN loss).
+void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
+  const Time now = s.now;
+  t.syn_acked = true;
+  // Handshake RTT sample: the SYN is not a TxSeg (§3.2), so the engine takes
+  // it (Karn: only from a SYN sent once, else from TSecr).
+  std::optional<Duration> sample;
+  if (t.syn_tries == 1) {
+    sample = now - t.syn_last_tx;
+  } else if (t.ts_ok && s.v->opt.ts && s.v->opt.ts->ecr != 0) {
+    const std::uint32_t d = ts_now(t, now) - s.v->opt.ts->ecr;
+    if (d < 2'147'483u) {
+      sample = std::chrono::milliseconds{std::max(d, 1u)};
+    }
+  }
+  if (sample) {
+    t.rtt.on_srtt_sample(*sample, 0, 0);
+    t.rtt.on_min_rtt_sample(*sample, false, now);
+    t.ackp.set_srtt(t.rtt.srtt());
+  } else if (t.syn_tries > 1) {
+    t.rtt.reset_after_syn_rexmit();  // RFC 6298 §5.7
+  }
+  observe_cc(t, TraceTrigger::handshake, &s, [&](RecoveryTransition) {
+    init_sender(t, now);
+  });
   // The handshake's ACK is an acceptable ACK (§4.7): the peer answered, so a
   // soft error stored in a SYN state (an ICMP unreachable for an earlier
   // SYN) is no longer the connection's error (Linux tcp_ack, reached from

@@ -24,6 +24,60 @@ struct FlightLog : TraceSink {
   }
 };
 
+TEST(DedicatedTrace, HandshakePublishesInstalledWindowForBothPeers) {
+  using namespace std::chrono_literals;
+  for (bool drop_first_syn : {false, true}) {
+    auto active = t::tcpt::config(t::Side::a, ProfileId::rfc);
+    auto passive = t::tcpt::config(t::Side::b, ProfileId::rfc);
+    active.trace_mask = passive.trace_mask = trace_mask_all;
+    active.tcp.timestamps = passive.tcp.timestamps = false;
+    FlightLog client, server;
+    t::TcpHarness pair(active, passive);
+    pair.a().set_trace_sink(&client);
+    pair.b().set_trace_sink(&server);
+    pair.set_delay(t::Side::a, 2ms);
+    pair.set_delay(t::Side::b, 3ms);
+    bool dropped = false;
+    pair.set_hook([&](t::Side from, t::Bytes& bytes) {
+      const auto p = t::tcpt::parse(bytes);
+      if (drop_first_syn && !dropped && from == t::Side::a && p && t::tcpt::is_syn(p->v)) {
+        dropped = true;
+        return t::Verdict::drop;
+      }
+      return t::Verdict::deliver;
+    });
+    const auto l = pair.b().tcp_listen(Endpoint{{}, t::tcpt::port}, 4, {});
+    ASSERT_TRUE(l);
+    const auto c = pair.a().tcp_connect(Endpoint{pair.addr(t::Side::b), t::tcpt::port}, {});
+    ASSERT_TRUE(c);
+    // Active sender already has a stream. The passive handshake stays lazy.
+    ASSERT_TRUE(pair.a().tcp_send(*c, t::pattern(31)));
+    pair.run_for(2s);
+    ASSERT_TRUE(pair.b().tcp_accept(*l));
+    EXPECT_EQ(dropped, drop_first_syn);
+    for (const auto* log : {&client, &server}) {
+      std::vector<TraceKind> order;
+      for (const auto& e : log->events) {
+        if (e.kind == TraceKind::cwnd && e.trigger == TraceTrigger::handshake) {
+          EXPECT_EQ(e.prior_cwnd, 0u);
+          EXPECT_EQ(e.prior_ssthresh, 0u);
+          EXPECT_EQ(e.cwnd, log == &client && dropped ? 1u : 3u);
+          EXPECT_EQ(e.ssthresh, active.tcp.initial_ssthresh);
+          EXPECT_NE(e.ack, 0u);
+          order.push_back(e.kind);
+        } else if ((e.kind == TraceKind::rtt && e.trigger == TraceTrigger::handshake) ||
+                   (e.kind == TraceKind::state && e.state == TcpState::established)) {
+          order.push_back(e.kind);
+        }
+      }
+      std::vector<TraceKind> expected{TraceKind::cwnd};
+      if (log != &client || !dropped) expected.push_back(TraceKind::rtt);
+      expected.push_back(TraceKind::state);
+      EXPECT_EQ(order, expected);
+    }
+  }
+}
+
 TEST(DedicatedTrace, HandshakeAndSegmentAckHaveIndependentRttEvents) {
   auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
   cfg.trace_mask = trace_bit(TraceKind::rtt);
@@ -32,6 +86,8 @@ TEST(DedicatedTrace, HandshakeAndSegmentAckHaveIndependentRttEvents) {
   s.stack().set_trace_sink(&log);
   ASSERT_TRUE(s.accept());
   ASSERT_EQ(log.events.size(), 1u);
+  EXPECT_EQ(log.events.front().trigger, TraceTrigger::handshake);
+  EXPECT_EQ(log.events.front().sample_rtt_ns, 0);
   EXPECT_EQ(log.events.front().kind, TraceKind::rtt);
   ASSERT_EQ(s.stack().tcp_send(s.h, t::pattern(113)).value(), 113u);
   ASSERT_EQ(s.out().size(), 1u);
@@ -46,6 +102,8 @@ TEST(DedicatedTrace, HandshakeAndSegmentAckHaveIndependentRttEvents) {
   ASSERT_EQ(log.events.size(), 2u);
   EXPECT_EQ(log.events.back().kind, TraceKind::rtt);
   EXPECT_EQ(log.events.back().ack, a.ack.raw());
+  EXPECT_EQ(log.events.back().sample_rtt_ns, 7'000'000);
+  EXPECT_EQ(log.events.back().srtt_ns, s.stack().tcp_info(s.h)->srtt.count());
   EXPECT_EQ(log.events.back().in_flight_bytes, 0u);
 }
 
@@ -63,6 +121,8 @@ TEST(DedicatedTrace, TimeoutThenAmbiguousAckWithoutTimestamps) {
   ASSERT_EQ(s.out().size(), 1u);
   const auto loss = log.of(TraceKind::recovery);
   ASSERT_EQ(loss.size(), 1u);
+  EXPECT_EQ(loss.front().trigger, TraceTrigger::rto);
+  EXPECT_EQ(loss.front().prior_ca, CaState::open);
   EXPECT_EQ(loss.front().ca, CaState::loss);
   EXPECT_EQ(loss.front().in_flight_bytes, 113u);
   ASSERT_EQ(log.of(TraceKind::cwnd).size(), 1u);
@@ -72,7 +132,76 @@ TEST(DedicatedTrace, TimeoutThenAmbiguousAckWithoutTimestamps) {
   EXPECT_TRUE(log.of(TraceKind::rtt).empty());
   const auto transitions = log.of(TraceKind::recovery);
   ASSERT_EQ(transitions.size(), 2u);
+  EXPECT_EQ(transitions.back().prior_ca, CaState::loss);
+  EXPECT_EQ(transitions.back().trigger, TraceTrigger::ack);
   EXPECT_EQ(transitions.back().ca, CaState::open);
+}
+
+TEST(DedicatedTrace, EchoTimestampSuppliesUnambiguousRttAfterRto) {
+  auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
+  cfg.trace_mask = trace_bit(TraceKind::rtt);
+  FlightLog log;
+  Scripted s(cfg);
+  s.po.ts = true;
+  s.stack().set_trace_sink(&log);
+  ASSERT_TRUE(s.accept());
+  ASSERT_TRUE(s.stack().tcp_send(s.h, t::pattern(113)));
+  ASSERT_EQ(s.out().size(), 1u);
+  s.d().run_for(s.stack().next_deadline() - s.d().now());
+  ASSERT_EQ(s.out().size(), 1u);  // saves the retransmitted segment's timestamp
+  s.d().run_for(std::chrono::milliseconds{9});
+  auto a = s.spec(wire::tcp_ack);
+  a.ack = s.their + 113;
+  s.send(a);
+  ASSERT_EQ(log.events.size(), 2u);
+  EXPECT_EQ(log.events.back().sample_rtt_ns, 9'000'000);
+  EXPECT_EQ(log.events.back().rto_ns, s.stack().tcp_info(s.h)->rto.count());
+}
+
+TEST(DedicatedTrace, TailProbeRepairPublishesBothTransitionsOnOneAck) {
+  auto cfg = t::tcpt::config(t::Side::b);
+  cfg.tcp.cc = CcAlgo::cubic;
+  cfg.tcp.pacing = Pacing::never;
+  cfg.tcp.nodelay = true;
+  cfg.trace_mask = trace_mask_all;
+  FlightLog log;
+  Scripted s(cfg);
+  s.stack().set_trace_sink(&log);
+  ASSERT_TRUE(s.accept());
+  ASSERT_EQ(log.of(TraceKind::cwnd).size(), 1u);
+  EXPECT_TRUE(log.of(TraceKind::recovery).empty());
+  ASSERT_TRUE(s.stack().tcp_send(s.h, t::pattern(3 * 1460)));
+  ASSERT_EQ(s.out().size(), 3u);
+  s.d().run_for(s.stack().next_deadline() - s.d().now());
+  ASSERT_EQ(s.out().size(), 1u);
+  ASSERT_EQ(log.of(TraceKind::tx).back().tx, TxKind::tlp);
+  ASSERT_TRUE(s.stack().tcp_send(s.h, t::pattern(1460)));
+  ASSERT_EQ(s.out().size(), 1u);
+  auto a = s.spec(wire::tcp_ack);
+  a.ack = s.their + 4 * 1460;
+  log.events.clear();
+  s.send(a);
+  const auto changes = log.of(TraceKind::recovery);
+  ASSERT_EQ(changes.size(), 2u);
+  EXPECT_EQ(changes[0].prior_ca, CaState::open);
+  EXPECT_EQ(changes[0].ca, CaState::cwr);
+  EXPECT_EQ(changes[1].prior_ca, CaState::cwr);
+  EXPECT_EQ(changes[1].ca, CaState::open);
+  for (const auto& e : changes) {
+    EXPECT_EQ(e.t, s.d().now());
+    EXPECT_EQ(e.ack, a.ack.raw());
+    EXPECT_EQ(e.in_flight_bytes, 0u);
+  }
+  const auto windows = log.of(TraceKind::cwnd);
+  ASSERT_GE(windows.size(), 2u);
+  EXPECT_EQ(windows.front().cwnd, windows.front().prior_cwnd);
+  EXPECT_NE(windows.front().ssthresh, windows.front().prior_ssthresh);
+  EXPECT_NE(windows.back().cwnd, windows.back().prior_cwnd);
+  log.events.clear();
+  s.send(a);
+  EXPECT_TRUE(log.of(TraceKind::cwnd).empty());
+  EXPECT_TRUE(log.of(TraceKind::recovery).empty());
+  EXPECT_TRUE(log.of(TraceKind::rtt).empty());
 }
 
 TEST(TraceFlight, WirePayloadAcrossWrapAndLateTraceAttach) {
