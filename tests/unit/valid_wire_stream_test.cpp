@@ -306,8 +306,10 @@ enum class StreamProfile { historical, soak };
 
 void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts, StreamProfile profile) {
   const bool soak = profile == StreamProfile::soak;
-  constexpr auto chunk = utcp::ChunkPool::chunk_size;
-  const auto capacity = soak ? chunk + 1 + rng.below(chunk - 1) : 4096 + rng.below(4096);
+  // Preserve the 4 KiB build's seeded application input at every storage geometry.
+  constexpr std::uint32_t workload_unit = 4096;
+  const auto capacity = soak ? workload_unit + 1 + rng.below(workload_unit - 1)
+                             : workload_unit + rng.below(workload_unit);
   utcp::RecvBuffer recv(capacity, pool);
   t::NaiveReassembler ref(capacity);
   for (std::uint32_t window = 0; window < windows_per_stream; ++window) {
@@ -315,7 +317,7 @@ void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts, StreamP
     const bool ordered = soak && window == 0;
     const bool final_window = soak && window + 1 == windows_per_stream;
     const auto window_size =
-        soak ? capacity - rng.below(capacity - chunk) : capacity - rng.below(capacity / 3 + 1);
+        soak ? capacity - rng.below(capacity - workload_unit) : capacity - rng.below(capacity / 3 + 1);
     const auto data = payload_bytes(rng, window_size);
     std::vector<Range> segments;
     for (std::size_t off = 0; off < data.size();) {
@@ -325,7 +327,7 @@ void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts, StreamP
     }
     ASSERT_GE(segments.size(), 2u);
     if (soak) {
-      ASSERT_GT(data.size(), chunk);
+      ASSERT_GT(data.size(), workload_unit);
     }
     if (!ordered) {
       // Release the tail first, then shuffle the remaining segments.
@@ -427,7 +429,7 @@ void check_stream(Rng& rng, utcp::ChunkPool& pool, StreamCounts& counts, StreamP
 
 void check_streams(std::uint64_t seed_value, std::uint32_t scale, StreamProfile profile) {
   auto rng = Rng::derive(Seed::from_u64(seed_value), "valid-stream/delivery");
-  utcp::ChunkPool pool(8);  // a window of at most 8191 bytes needs at most three chunks
+  utcp::ChunkPool pool(8);  // even an unaligned 8191-byte window spans at most five 2 KiB chunks
   const auto streams = scale * streams_per_scale;
   StreamCounts counts;
   for (std::uint32_t trial = 0; trial < streams; ++trial) {
