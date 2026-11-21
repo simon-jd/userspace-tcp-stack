@@ -124,6 +124,7 @@ AckOutcome process_ack(AckContext& c, const AckInput& in, DeliveredFn observe) {
   RecoveryCtx rctx{q,       c.cc,     c.algo,  c.rtt,   c.cfg,      now,
                    c.snd_wnd, c.stats, c.sack_ok, c.backoff, c.rto_count};
   rctx.in = &in;
+  rctx.on_transition = c.on_transition;
   rctx.ts_offset = c.ts_offset;
   rctx.max_snd_wnd = c.max_snd_wnd;
   rctx.total_retrans = c.ctr.total_retrans;

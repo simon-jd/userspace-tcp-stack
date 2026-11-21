@@ -152,8 +152,11 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
     case XmitTimer::reo: {
       // tcp_rack_reo_timeout (M2-DESIGN §1.6): recovery marks and re-arms;
       // the engine retransmits.
-      RecoveryCtx c = rctx(t, now);
-      t.stream->recovery.on_xmit_timer(c, kind);
+      observe_cc(t, TraceTrigger::reo, nullptr, [&](RecoveryTransition observe) {
+        RecoveryCtx c = rctx(t, now);
+        c.on_transition = observe;
+        t.stream->recovery.on_xmit_timer(c, kind);
+      });
       transmit(t, now);
       return;
     }
@@ -302,8 +305,11 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
     abort_timed_out(t, now);
     return;
   }
-  RecoveryCtx c = rctx(t, now);
-  stream.recovery.on_rto(c);
+  observe_cc(t, TraceTrigger::rto, nullptr, [&](RecoveryTransition observe) {
+    RecoveryCtx c = rctx(t, now);
+    c.on_transition = observe;
+    stream.recovery.on_rto(c);
+  });
   stream.pmtu_rexmit_end.reset();
   if (t.backoff < 31) {
     ++t.backoff;

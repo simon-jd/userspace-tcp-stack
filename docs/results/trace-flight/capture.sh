@@ -2,6 +2,14 @@
 # Run inside the disposable network namespace described in README.md.
 set -euo pipefail
 case "${1:-}" in clean|loss) ;; *) echo "usage: capture.sh clean|loss" >&2; exit 2 ;; esac
+# Optional second argument selects a controller and the dedicated sender events.
+trace_kinds=state,tx,rx,ack,timer,rto
+cc=()
+if [[ $# -ge 2 ]]; then
+  case "$2" in newreno|cubic|bbr) ;; *) exit 2 ;; esac
+  cc=(--cc "$2")
+  trace_kinds+=,cwnd,rtt,recovery
+fi
 cd /out
 ip tuntap add dev flt0 mode tun
 ip addr add 198.18.0.1/30 dev flt0
@@ -19,7 +27,7 @@ cap_pid=$!
 timeout 30 utcp-bulk --backend kernel --listen 198.18.0.1:7301 --recv --bytes 1048613 --jsonl peer.jsonl >peer.out 2>peer.err &
 peer_pid=$!
 for i in {1..100}; do ss -ntl | grep -q ':7301' && grep -q 'listening on' tcpdump.err && break; sleep .02; done
-timeout 30 utcp-bulk --backend utcp --tun flt0 --addr 198.18.0.2 --connect 198.18.0.1:7301 --send --bytes 1048613 --nodelay --set test_isn=4294967200 --pcap stack.pcap --trace trace.jsonl --trace-kinds state,tx,rx,ack,timer,rto --jsonl stack.jsonl >stack.out 2>stack.err
+timeout 30 utcp-bulk --backend utcp --tun flt0 --addr 198.18.0.2 --connect 198.18.0.1:7301 --send --bytes 1048613 --nodelay --set test_isn=4294967200 --pcap stack.pcap --trace trace.jsonl --trace-kinds "$trace_kinds" "${cc[@]}" --jsonl stack.jsonl >stack.out 2>stack.err
 wait "$peer_pid"
 sleep 1
 kill -INT "$cap_pid"

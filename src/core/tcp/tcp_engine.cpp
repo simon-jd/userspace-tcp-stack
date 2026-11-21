@@ -443,6 +443,63 @@ TraceEvent TcpEngine::trace_base(const Tcb& t, TraceKind k) const {
   return e;
 }
 
+TraceEvent TcpEngine::sender_event(const Tcb& t, TraceKind kind, TraceTrigger trigger,
+                                   const InSeg* packet) const {
+  auto event = trace_base(t, kind);
+  event.trigger = trigger;
+  if (packet) {
+    event.seq = packet->seq.raw();
+    event.ack = packet->ack.raw();
+  }
+  return event;
+}
+
+void TcpEngine::trace_rtt(const Tcb& t, const InSeg& packet, TraceTrigger trigger, Duration sample) {
+  if (core_.tracing(TraceKind::rtt)) {
+    auto event = sender_event(t, TraceKind::rtt, trigger, &packet);
+    event.sample_rtt_ns = sample.count();
+    core_.trace(event);
+  }
+}
+
+void TcpEngine::observe_cc(const Tcb& t, TraceTrigger trigger, const InSeg* packet,
+                           FunctionRef<void(RecoveryTransition)> run) {
+  const bool windows = core_.tracing(TraceKind::cwnd);
+  const bool recovery = core_.tracing(TraceKind::recovery);
+  if (!windows && !recovery) {
+    run(std::nullopt);
+    return;
+  }
+  auto cwnd = t.cwnd();
+  auto ssthresh = t.ssthresh();
+  auto publish_window = [&] {
+    if (!windows || (cwnd == t.cwnd() && ssthresh == t.ssthresh())) return;
+    auto event = sender_event(t, TraceKind::cwnd, trigger, packet);
+    event.prior_cwnd = cwnd;
+    event.prior_ssthresh = ssthresh;
+    cwnd = event.cwnd;
+    ssthresh = event.ssthresh;
+    core_.trace(event);
+  };
+  auto transition = [&](CaState previous) {
+    publish_window();
+    if (recovery) {
+      auto event = sender_event(t, TraceKind::recovery, trigger, packet);
+      event.prior_ca = previous;
+      core_.trace(event);
+    }
+  };
+  run(RecoveryTransition{transition});
+  publish_window();
+}
+
+void TcpEngine::restart_window(Tcb& t, Time now, const InSeg* packet) {
+  observe_cc(t, TraceTrigger::idle_restart, packet, [&](RecoveryTransition) {
+    cwnd_restart(t.stream->cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
+                 t.rtt.rto_backed_off(t.backoff), initial_window(t));
+  });
+}
+
 void TcpEngine::trace_tx(const Tcb& t, TxKind kind, Seq32 seq, Seq32 ack, std::uint32_t len,
                          std::uint32_t wnd, std::uint16_t flags) {
   if (!core_.tracing(TraceKind::tx)) {

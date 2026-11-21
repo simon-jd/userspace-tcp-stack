@@ -98,7 +98,7 @@ TEST(Jsonl, TraceEventKeys) {
   l.add("node", "a");
   add_fields(l, e);
   const std::string s = l.str();
-  EXPECT_EQ(member_count(s), 1 + utcp::test::field_count<TraceEvent>() - 2);  // node; two absent optionals
+  EXPECT_EQ(member_count(s), 1 + utcp::test::field_count<TraceEvent>() - 7);  // node, two optionals and five event-specific fields
   EXPECT_TRUE(s.starts_with("{\"node\":\"a\",\"t\":1234567,\"conn\":3,"
                             "\"tuple\":\"198.18.0.2:40000>198.19.1.2:5001\",\"ev\":\"ack\","
                             "\"tx\":\"fast_rexmit\",\"state\":\"closed\",\"ca\":\"open\","
@@ -117,11 +117,33 @@ TEST(Jsonl, BbrTraceAndSocketOverrideFields) {
   e.bbr = utcp::BbrInfo{utcp::BbrMode::probe_bw, true, 8388, 20000, 256, 512};
   JsonLine l;
   add_fields(l, e);
-  EXPECT_EQ(member_count(l.str()), utcp::test::field_count<TraceEvent>() - 1 +
+  EXPECT_EQ(member_count(l.str()), utcp::test::field_count<TraceEvent>() - 6 +
                                       utcp::test::field_count<utcp::BbrInfo>());
   EXPECT_TRUE(l.str().ends_with(R"("cc_override":"bbr","bbr_mode":"PROBE_BW","bbr_lt_use_bw":true,)"
                                 R"("bbr_bandwidth_q24":8388,"bbr_min_rtt_us":20000,)"
                                 R"("bbr_pacing_gain_q8":256,"bbr_cwnd_gain_q8":512,"in_flight_bytes":0})"));
+}
+
+TEST(Jsonl, SenderEventFieldsAndUnits) {
+  TraceEvent e;
+  JsonLine line;
+  e.kind = TraceKind::cwnd;
+  e.trigger = TraceTrigger::rto;
+  e.prior_cwnd = 11;
+  e.prior_ssthresh = 33;
+  add_fields(line, e);
+  EXPECT_TRUE(line.str().ends_with(R"("trigger":"rto","prior_cwnd":11,"prior_ssthresh":33})"));
+  line.clear();
+  e.kind = TraceKind::recovery;
+  e.prior_ca = CaState::disorder;
+  add_fields(line, e);
+  EXPECT_TRUE(line.str().ends_with(R"("trigger":"rto","prior_ca":"disorder"})"));
+  line.clear();
+  e.kind = TraceKind::rtt;
+  e.trigger = TraceTrigger::ack;
+  e.sample_rtt_ns = 123'999;
+  add_fields(line, e);
+  EXPECT_TRUE(line.str().ends_with(R"("trigger":"ack","sample_rtt_us":123})"));
 }
 
 TEST(Jsonl, WriterWritesOneLinePerCall) {
