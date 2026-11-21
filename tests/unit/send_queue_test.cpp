@@ -108,8 +108,9 @@ TEST(SendQueue, WriteAndCopyOutAcrossRingWrap) {
   std::vector<std::byte> out(9000);
   q.copy_out(7000, out);
   EXPECT_EQ(out, pattern(9000, 7000));
-  // Chunks below una were returned: 16000 - 6000 bytes span 3 chunks.
-  EXPECT_LE(pool.in_use(), 4u);
+  // Only chunks intersecting [6000, 16000) remain.
+  constexpr auto cs = ChunkPool::chunk_size;
+  EXPECT_EQ(pool.in_use(), 15'999 / cs - 6000 / cs + 1);
   send_all(q, 1000, at(2));
   q.on_cumulative_ack(16'000, at(3), d.fn());
   EXPECT_EQ(pool.in_use(), 0u);
@@ -119,7 +120,8 @@ TEST(SendQueue, WriteAndCopyOutAcrossRingWrap) {
 TEST(SendQueue, WriteStopsWhenTheChunkPoolIsExhausted) {
   ChunkPool pool(2);
   SendQueue q(pool, 64 * 1024);
-  EXPECT_EQ(q.write(pattern(10'000, 0)), 2u * ChunkPool::chunk_size);
+  const auto pool_bytes = 2u * ChunkPool::chunk_size;
+  EXPECT_EQ(q.write(pattern(pool_bytes + 1, 0)), pool_bytes);
   EXPECT_EQ(q.write(pattern(10, 0)), 0u);
 }
 
