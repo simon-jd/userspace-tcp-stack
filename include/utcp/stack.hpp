@@ -114,6 +114,8 @@ struct StackUsage {
   std::uint32_t conn_timers_armed = 0;   // per-connection and TIME_WAIT timers
   std::uint32_t stack_timers_armed = 0;  // stack-wide timers (pmtu_expiry)
 
+  std::uint32_t tcp_stream_states = 0;   // live TCBs that have needed stream queues/recovery
+
   bool operator==(const StackUsage&) const = default;
 };
 

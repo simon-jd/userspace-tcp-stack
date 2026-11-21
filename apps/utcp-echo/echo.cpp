@@ -618,6 +618,8 @@ bool report_load(Transport& t, JsonLine line) {
   if (const auto* u = dynamic_cast<const UtcpTransport*>(&t)) {
     const StackUsage usage = u->stack().debug_usage();
     line.add("tcb_bytes", sizeof(Tcb))
+        .add("stream_state_bytes", sizeof(StreamState))
+        .add("tcp_stream_states", usage.tcp_stream_states)
         .add("tcp_slots", usage.tcp_slots)
         .add("time_wait_entries", usage.time_wait_entries)
         .add("packet_buffer_bytes", packet_buf_size)

@@ -58,6 +58,7 @@ struct TcpUsage {
   std::uint32_t slots = 0;              // live sockets and connections, listeners included
   std::uint32_t time_wait_entries = 0;
   std::uint32_t timers_armed = 0;       // connection and TIME_WAIT timers
+  std::uint32_t stream_states = 0;     // connections with materialized stream queues
   std::uint32_t chunks_held = 0;        // in send and receive buffers
 };
 
@@ -164,7 +165,9 @@ private:
   void chrono_start(Tcb& t, ChronoType type, Time now);
   void chrono_stop(Tcb& t, ChronoType type, Time now);
   [[nodiscard]] RecoveryCtx rctx(Tcb& t, Time now);
+  void activate_stream(Tcb& t);
   void refresh_cc(Tcb& t, Time now);
+  void refresh_cc(Tcb& t, Time now, CcConn& c);
 
   // --- tcp_input.cpp (§4.4). Functions returning bool return false when
   // the connection left the input path (freed, closed or in TIME-WAIT): the

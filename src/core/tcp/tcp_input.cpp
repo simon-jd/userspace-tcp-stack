@@ -44,8 +44,10 @@ void TcpEngine::on_segment(Time now, const wire::Ipv4Header& ip, const wire::Tcp
     // a chunk-limited queue. Keep the existing RFC 9293 processing in that case.
     if (t == nullptr || t->state != TcpState::established || t->app_read_shut ||
         seg.h.seq != t->rcv_nxt() || seg.payload.size() > t->rcv_window() ||
-        (seg.h.flags & tcp_fin) != 0 || !t->rcvq.ooo_ranges().empty() ||
-        !t->rcvq.can_insert_in_order(seg.payload.size())) {
+        (seg.h.flags & tcp_fin) != 0 ||
+        (t->stream ? !t->stream->rcvq.ooo_ranges().empty() ||
+                     !t->stream->rcvq.can_insert_in_order(seg.payload.size())
+                   : !RecvBuffer(t->rwin.rcv_buf(), core_.chunks()).can_insert_in_order(seg.payload.size()))) {
       const std::uint16_t stride = meta.gso_size;
       meta.gso_size = 0;
       wire::TcpView slice = seg;
@@ -215,7 +217,7 @@ void TcpEngine::negotiate(Tcb& t, const wire::TcpOptions& peer) {
   t.rcv_wscale = t.ws_ok ? t.offered_wscale : 0;
   t.ts_ok = cfg_.timestamps && peer.ts.has_value();
   t.sack_ok = cfg_.sack && peer.sack_permitted;
-  t.sndq.set_sack_ok(t.sack_ok);
+  if (t.stream) t.stream->sndq.set_sack_ok(t.sack_ok);
   update_mss(t);
 }
 
@@ -253,7 +255,8 @@ void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
   // IW (RFC 5681 §3.1; Linux tcp_init_transfer).
   const bool syn_loss = cfg_.iw_after_syn_loss == IwAfterSynLoss::after_any ? t.syn_tries > 1
                                                                              : t.syn_tries > 2;
-  CcConn& c = t.cc_conn;
+  CcConn initial;
+  CcConn& c = t.stream ? t.stream->cc_conn : initial;
   c.cwnd = syn_loss ? 1u : initial_window(t);
   c.ssthresh = cfg_.initial_ssthresh;
   // Linux counts the SYN via tcp_ack/tcp_rate_gen on active open. The
@@ -263,7 +266,7 @@ void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
   if (!t.passive) {
     (void)rate_gen(t.rate, {}, 1, 0, 1, false, t.rtt.min_rtt(), Duration{-1}, false, now);
   }
-  refresh_cc(t, now);
+  refresh_cc(t, now, c);
   c.delivered = t.rate.delivered;
   c.delivered_time = t.rate.delivered_time;
   t.algo().init(c);
@@ -271,10 +274,13 @@ void TcpEngine::handshake_done(Tcb& t, const InSeg& s) {
   if (!t.algo().has_cong_control()) {
     c.pacing_rate = pacing_rate_for(c, c.packets_out, cfg_);
   }
+  if (!t.stream) {
+    t.initial_cc = {c.cwnd, c.ssthresh, c.pacing_rate, c.pacing_needed};
+  }
   t.lsndtime = now;
   t.backoff = 0;
   t.rto_count = 0;
-  t.retrans_stamp.reset();
+  if (t.stream) t.stream->retrans_stamp.reset();
   // The handshake's ACK is an acceptable ACK (§4.7): the peer answered, so a
   // soft error stored in a SYN state (an ICMP unreachable for an earlier
   // SYN) is no longer the connection's error (Linux tcp_ack, reached from
@@ -446,7 +452,8 @@ void TcpEngine::dup_ack(Tcb& t, const InSeg& s, std::uint64_t& skipped) {
     if (off < nxt && end > 0) {
       const Range dup{static_cast<std::uint64_t>(std::max<std::int64_t>(off, 0)),
                       static_cast<std::uint64_t>(std::min(end, nxt))};
-      t.sackgen.on_duplicate(dup, t.rcvq);
+      activate_stream(t);
+      t.stream->sackgen.on_duplicate(dup, t.stream->rcvq);
       ++core_.stats().TcpExtTCPDSACKOldSent;
     }
   }
@@ -626,7 +633,8 @@ bool TcpEngine::rst_exact(const Tcb& t, const InSeg& s) const {
                                t.state == TcpState::last_ack)) {
     return true;
   }
-  const auto ooo = t.rcvq.ooo_ranges();
+  if (!t.stream) return false;
+  const auto ooo = t.stream->rcvq.ooo_ranges();
   return t.sack_ok && !ooo.empty() && s.seq == seq_at(t.rcv_base(), ooo.back().end);
 }
 
@@ -722,8 +730,10 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   }
   const bool advanced = after(s.ack, una);
   // SACK blocks to offsets (§3.2), validated as Linux tcp_sacktag_write_queue.
-  const std::uint64_t prior_una = t.sndq.una();
-  const std::uint64_t nxt_off = t.sndq.nxt_with_fin();
+  activate_stream(t);
+  auto& stream = *t.stream;
+  const std::uint64_t prior_una = stream.sndq.una();
+  const std::uint64_t nxt_off = stream.sndq.nxt_with_fin();
   std::array<Range, wire::max_sack_blocks> blocks{};
   std::size_t nblocks = 0;
   std::optional<Range> dsack;
@@ -788,8 +798,8 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   in.dupack = !old_ack && !advanced && s.len == 0 && !window_update;
   in.old_ack = old_ack;
   refresh_cc(t, now);
-  const std::uint32_t prior_packets = t.sndq.counters().packets_out;
-  AckContext c{t.sndq,  t.recovery, t.rtt,     t.cc_conn, t.algo(),  t.rate,      cfg_,
+  const std::uint32_t prior_packets = t.counters().packets_out;
+  AckContext c{stream.sndq,  stream.recovery, t.rtt,     stream.cc_conn, t.algo(),  t.rate,      cfg_,
                st,      t.ctr,      t.snd_wnd, t.sack_ok, t.backoff, t.rto_count};
   c.max_snd_wnd = t.max_snd_wnd;
   c.ts_offset = t.ts_offset;
@@ -802,8 +812,8 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   // next segment, so the backoff that zero-window probing built up ends
   // (else the first segment after the window opens would wait for the
   // backed-off RTO).
-  if (prior_packets == 0 && t.sndq.end() > t.sndq.nxt() &&
-      t.snd_wnd >= std::min<std::uint64_t>(t.sndq.end() - t.sndq.nxt(), t.mss_cache)) {
+  if (prior_packets == 0 && stream.sndq.end() > stream.sndq.nxt() &&
+      t.snd_wnd >= std::min<std::uint64_t>(stream.sndq.end() - stream.sndq.nxt(), t.mss_cache)) {
     t.backoff = 0;
   }
   if (out.seq_rtt >= Duration::zero()) {
@@ -811,11 +821,11 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   }
   if (advanced) {
     t.rto_count = 0;
-    if (t.sndq.counters().retrans_out == 0) {
-      t.retrans_stamp.reset();
+    if (t.counters().retrans_out == 0) {
+      stream.retrans_stamp.reset();
     }
-    if (t.pmtu_rexmit_end && t.sndq.una() >= *t.pmtu_rexmit_end) {
-      t.pmtu_rexmit_end.reset();
+    if (stream.pmtu_rexmit_end && stream.sndq.una() >= *stream.pmtu_rexmit_end) {
+      stream.pmtu_rexmit_end.reset();
     }
   }
   t.ackp.set_srtt(t.rtt.srtt());
@@ -825,11 +835,11 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
     e.ack = s.ack.raw();
     core_.trace(e);
   }
-  if (t.sndq.segs().empty()) {
+  if (stream.sndq.segs().empty()) {
     chrono_stop(t, ChronoType::busy, now);
   }
   // Our FIN acknowledged (§3.2: SendQueue::fin_acked is the state).
-  if (t.sndq.fin_acked()) {
+  if (stream.sndq.fin_acked()) {
     switch (t.state) {
       case TcpState::fin_wait_1:
         set_state(t, TcpState::fin_wait_2);
@@ -858,8 +868,8 @@ bool TcpEngine::process_ack_input(Tcb& t, const InSeg& s) {
   // zero-window probes do not move lsndtime, and a halving per RTO of the
   // stall would collapse cwnd to IW.
   if (cfg_.idle_restart == IdleRestart::rfc5681 && window_update &&
-      t.sndq.counters().packets_out == 0 && t.sndq.end() > t.sndq.nxt()) {
-    cwnd_restart(t.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
+      t.counters().packets_out == 0 && stream.sndq.end() > stream.sndq.nxt()) {
+    cwnd_restart(stream.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
                  t.rtt.rto_backed_off(t.backoff), initial_window(t));
   }
   return true;
@@ -870,25 +880,25 @@ void TcpEngine::sndbuf_expand(Tcb& t) {
   if (t.opts.snd_buf || cfg_.snd_buf_init >= cfg_.snd_buf_max) {
     return;
   }
-  const Counters& k = t.sndq.counters();
-  if (packets_in_flight(k) >= t.cc_conn.cwnd) {
+  const Counters& k = t.counters();
+  if (packets_in_flight(k) >= t.stream->cc_conn.cwnd) {
     return;  // tcp_should_expand_sndbuf
   }
   const std::uint64_t segs =
-      std::max<std::uint64_t>({10, t.cc_conn.cwnd, std::uint64_t{cfg_.dupthresh} + 1});
+      std::max<std::uint64_t>({10, t.stream->cc_conn.cwnd, std::uint64_t{cfg_.dupthresh} + 1});
   const std::uint64_t want =
       std::uint64_t{t.algo().sndbuf_expand()} * segs * std::uint64_t{t.mss_cache};
   const auto cap = static_cast<std::uint32_t>(std::min<std::uint64_t>(want, cfg_.snd_buf_max));
-  if (cap > t.sndq.capacity()) {
-    t.sndq.set_capacity(cap);
+  if (cap > t.stream->sndq.capacity()) {
+    t.stream->sndq.set_capacity(cap);
   }
 }
 
 // ev_writable once free send space is at least half the space in use (Linux
 // sk_stream_is_writeable).
 void TcpEngine::window_writable(Tcb& t, Time now) {
-  const std::uint64_t queued = t.sndq.held();
-  if (t.sndq.free_space() > 0 && t.sndq.free_space() >= queued / 2) {
+  const std::uint64_t queued = t.stream->sndq.held();
+  if (t.stream->sndq.free_space() > 0 && t.stream->sndq.free_space() >= queued / 2) {
     chrono_stop(t, ChronoType::sndbuf_limited, now);
     if (t.send_blocked) {
       t.send_blocked = false;
@@ -914,7 +924,9 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
     off += static_cast<std::int64_t>(skip);
   }
   const auto uoff = static_cast<std::uint64_t>(off);
-  const std::uint64_t old_nxt = t.rcvq.contiguous_end();
+  activate_stream(t);
+  auto& stream = *t.stream;
+  const std::uint64_t old_nxt = stream.rcvq.contiguous_end();
   // The ACK decision's reader (RcvWindow::on_in_order_data, ack_view): a
   // Linux reader runs alongside the softirq, while the host's application
   // reads only after the host's receive batch. In-order data that arrived
@@ -922,13 +934,13 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
   // the batch size (DESIGN §3; M2 coordinator decision on the ACK
   // frequency); data left unread from earlier batches still fills the buffer
   // (a slow or stopped reader, Linux tcp_space).
-  if (t.rx_batch_id != core_.host_batch()) {
-    t.rx_batch_id = core_.host_batch();
-    t.rx_batch_nxt = old_nxt;
+  if (stream.rx_batch_id != core_.host_batch()) {
+    stream.rx_batch_id = core_.host_batch();
+    stream.rx_batch_nxt = old_nxt;
   }
-  const std::uint64_t batch_from = std::max(t.rx_batch_nxt, t.rcvq.read_offset());
+  const std::uint64_t batch_from = std::max(stream.rx_batch_nxt, stream.rcvq.read_offset());
   const std::uint64_t read_upto =
-      t.rcvq.read_offset() + (old_nxt > batch_from ? old_nxt - batch_from : 0);
+      stream.rcvq.read_offset() + (old_nxt > batch_from ? old_nxt - batch_from : 0);
   // Linux tcp_rcv_state_process: new data after the application closed (or
   // shut down reading) in FIN-WAIT-1/2 aborts (RFC 1122 §4.2.2.13). In
   // ESTABLISHED, shutdown(read) alone acknowledges and discards it (§3.5).
@@ -942,7 +954,7 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
   }
   if (!payload.empty()) {
     const std::uint32_t ssthresh_before = t.rwin.rcv_ssthresh();
-    const InsertResult r = t.rcvq.insert(uoff, payload, t.rwin.rcv_adv());
+    const InsertResult r = stream.rcvq.insert(uoff, payload, t.rwin.rcv_adv());
     const std::uint64_t new_nxt = r.contiguous_end;
     t.ctr.bytes_received += new_nxt - old_nxt;
     if (r.out_of_order && !r.stored.empty()) {
@@ -963,9 +975,9 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
         t.rcv_window() == 0) {
       ++st.TcpExtTCPZeroWindowDrop;
     }
-    t.sackgen.on_arrival(r.stored, t.rcvq);
+    stream.sackgen.on_arrival(r.stored, stream.rcvq);
     if (r.duplicate && t.sack_ok && cfg_.dsack) {
-      t.sackgen.on_duplicate(*r.duplicate, t.rcvq);
+      stream.sackgen.on_duplicate(*r.duplicate, stream.rcvq);
       t.ackp.ack_now();
       if (r.duplicate->end <= old_nxt) {
         ++st.TcpExtTCPDSACKOldSent;
@@ -977,15 +989,15 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
                    t.rcv_wnd, t.rtt.rto_backed_off(t.backoff));
     if (r.advanced) {
       t.rwin.on_in_order_data(static_cast<std::uint32_t>(payload.size()), t.ackp.rcv_mss(),
-                              t.rcvq, read_upto);
+                              stream.rcvq, read_upto);
       if (t.rwin.rcv_ssthresh() > ssthresh_before) {
         t.ackp.on_rcv_ssthresh_grew();
       }
     }
     // Receiver RTT (Linux tcp_rcv_rtt_measure_ts): a new TSecr.
     std::optional<Duration> ts_rtt;
-    if (t.ts_ok && s.v->opt.ts && s.v->opt.ts->ecr != 0 && t.last_tsecr != s.v->opt.ts->ecr) {
-      t.last_tsecr = s.v->opt.ts->ecr;
+    if (t.ts_ok && s.v->opt.ts && s.v->opt.ts->ecr != 0 && stream.last_tsecr != s.v->opt.ts->ecr) {
+      stream.last_tsecr = s.v->opt.ts->ecr;
       if (payload.size() >= t.ackp.rcv_mss()) {
         const std::uint32_t d = ts_now(t, now) - s.v->opt.ts->ecr;
         if (d < 2'147'483u) {
@@ -993,17 +1005,17 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
         }
       }
     }
-    t.rwin.on_data_rtt(now, t.rcvq.contiguous_end(), ts_rtt);
+    t.rwin.on_data_rtt(now, stream.rcvq.contiguous_end(), ts_rtt);
     // §7.2 test knob: reneging.
-    if (cfg_.test_renege_ppm > 0 && !t.rcvq.ooo_ranges().empty() &&
+    if (cfg_.test_renege_ppm > 0 && !stream.rcvq.ooo_ranges().empty() &&
         core_.rng().chance_ppm(cfg_.test_renege_ppm)) {
-      t.rcvq.drop_out_of_order();
+      stream.rcvq.drop_out_of_order();
     }
     if (r.advanced) {
-      t.last_data_recv = now;
+      stream.last_data_recv = now;
       if (t.app_read_shut) {
         std::array<std::byte, 4096> sink{};
-        while (t.rcvq.read(sink) > 0) {
+        while (stream.rcvq.read(sink) > 0) {
         }
       } else {
         raise(t, ev_readable);
@@ -1013,14 +1025,14 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
     // this host batch taken by the reader (RcvWindow::ack_view): one ACK per
     // two full segments whether the host hands the stack 1 or 64 segments
     // per batch.
-    t.ackp.on_window(now, t.rwin.ack_view(t.rcvq, t.ackp.rcv_mss(), read_upto));
+    t.ackp.on_window(now, t.rwin.ack_view(stream.rcvq, t.ackp.rcv_mss(), read_upto));
   }
   if (s.has(tcp_fin)) {
     const std::uint64_t fin_off = uoff + payload.size();
     if (fin_off <= t.rwin.rcv_adv()) {
-      t.rcvq.set_fin(fin_off);
+      stream.rcvq.set_fin(fin_off);
     }
-    if (!t.rcvq.fin_reached()) {
+    if (!stream.rcvq.fin_reached()) {
       t.ackp.ack_now();  // out-of-order FIN: a duplicate ACK
     }
   }
@@ -1029,7 +1041,7 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
 
 // Step 9: the FIN once RCV.NXT reaches it.
 bool TcpEngine::fin_check(Tcb& t, Time now) {
-  if (t.fin_rcvd || !t.rcvq.fin_reached()) {
+  if (t.fin_rcvd || !t.stream->rcvq.fin_reached()) {
     return true;
   }
   t.fin_rcvd = true;
@@ -1041,7 +1053,7 @@ bool TcpEngine::fin_check(Tcb& t, Time now) {
       set_state(t, TcpState::close_wait);
       return true;
     case TcpState::fin_wait_1:
-      if (!t.sndq.fin_acked()) {
+      if (!t.stream->sndq.fin_acked()) {
         set_state(t, TcpState::closing);
         return true;
       }

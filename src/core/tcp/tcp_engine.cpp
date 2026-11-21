@@ -60,17 +60,18 @@ Tcb* TcpEngine::alloc_tcb(const SockOpts& opts, std::uint32_t /*rcv_buf_hint*/) 
     slot = static_cast<std::uint32_t>(slots_.size());
     slots_.emplace_back();
   }
-  const std::uint32_t snd_buf = opts.snd_buf.value_or(cfg_.snd_buf_init);
   const std::uint32_t rcv_buf = std::max(opts.rcv_buf.value_or(cfg_.rcv_buf_init), 1u);
   const bool rcv_autotune = !opts.rcv_buf && cfg_.rcv_buf_init < cfg_.rcv_buf_max;
   Slot& s = slots_[slot];
-  s.tcb = std::make_unique<Tcb>(cfg_, core_.chunks(), snd_buf, rcv_buf, rcv_autotune);
+  s.tcb = std::make_unique<Tcb>(cfg_, rcv_buf, rcv_autotune);
   Tcb& t = *s.tcb;
   t.self = Handle{slot, s.gen, Proto::tcp};
   t.conn_id = next_conn_id_++;
   t.opts = opts;
   cc_select(t.cc, opts.cc);
-  t.recovery.set_script(core_.config().test_recovery_script);  // tests only (null otherwise)
+  if (core_.config().test_recovery_script) {
+    activate_stream(t);  // a test script may arm a timer without outstanding data
+  }
   // §4.5, rcv_wscale row of §3.9: the configured shift, but never one the
   // buffer cannot serve (RcvWindow needs rcv_buf >= min_rcv_buf(shift)).
   t.offered_wscale =
@@ -210,8 +211,10 @@ void TcpEngine::close_conn(Tcb& t, CloseCause cause, std::optional<Error> err) {
   }
   t.xmit_kind = XmitTimer::none;
   core_.unblock_tx(t.self.slot);
-  chrono_stop(t, t.chrono.type, core_.now());
-  t.chrono.type = ChronoType::none;
+  if (t.stream) {
+    chrono_stop(t, t.stream->chrono.type, core_.now());
+    t.stream->chrono.type = ChronoType::none;
+  }
   if (!t.app_holds) {
     free_tcb(t);
     return;
@@ -221,7 +224,7 @@ void TcpEngine::close_conn(Tcb& t, CloseCause cause, std::optional<Error> err) {
   // side is released now, as Linux tcp_reset / tcp_done_with_error purge the
   // write queue: the ChunkPool is shared, and a dead connection whose
   // application is slow to close must not hold up to snd_buf_max of it.
-  t.sndq.purge();
+  if (t.stream) t.stream->sndq.purge();
   wake_chunk_waiters();
   std::uint16_t ev = 0;
   if (!t.closed_event_sent) {
@@ -263,8 +266,10 @@ void TcpEngine::enter_time_wait(Tcb& t) {
   }
   t.xmit_kind = XmitTimer::none;
   core_.unblock_tx(t.self.slot);
-  chrono_stop(t, t.chrono.type, core_.now());
-  t.chrono.type = ChronoType::none;
+  if (t.stream) {
+    chrono_stop(t, t.stream->chrono.type, core_.now());
+    t.stream->chrono.type = ChronoType::none;
+  }
   if (!t.app_holds) {
     free_tcb(t);
     return;
@@ -305,13 +310,31 @@ void TcpEngine::update_mss(Tcb& t) {
     m -= 12;
   }
   t.mss_cache = static_cast<std::uint16_t>(std::min<std::uint32_t>(m, 0xffff));
-  t.cc_conn.mss = t.mss_cache;
-  // §4.11: the TxSegs held take at least mss_cache / 2 each of the send buffer.
-  t.sndq.set_seg_charge(t.mss_cache / 2u);
+  if (t.stream) {
+    t.stream->cc_conn.mss = t.mss_cache;
+    t.stream->sndq.set_seg_charge(t.mss_cache / 2u);
+  }
+}
+
+void TcpEngine::activate_stream(Tcb& t) {
+  if (t.stream) return;
+  t.stream = std::make_unique<StreamState>(core_.chunks(), t.opts.snd_buf.value_or(cfg_.snd_buf_init),
+                                            t.rwin.rcv_buf());
+  auto& s = *t.stream;
+  s.sndq.set_sack_ok(t.have_irs ? t.sack_ok : true);
+  s.sndq.set_seg_charge(t.mss_cache / 2u);
+  s.recovery.set_script(core_.config().test_recovery_script);
+  s.cc_conn.cwnd = t.initial_cc.cwnd;
+  s.cc_conn.ssthresh = t.initial_cc.ssthresh;
+  s.cc_conn.pacing_rate = t.initial_cc.pacing_rate;
+  s.cc_conn.pacing_needed = t.initial_cc.pacing_needed;
+  s.cc_conn.delivered = t.rate.delivered;
+  s.cc_conn.delivered_time = t.rate.delivered_time;
+  refresh_cc(t, core_.now());
 }
 
 RecoveryCtx TcpEngine::rctx(Tcb& t, Time now) {
-  RecoveryCtx c{t.sndq,    t.cc_conn,     t.algo(),  t.rtt,     cfg_,        now,
+  RecoveryCtx c{t.stream->sndq, t.stream->cc_conn, t.algo(), t.rtt, cfg_, now,
                 t.snd_wnd, core_.stats(), t.sack_ok, t.backoff, t.rto_count};
   // M2-DESIGN §1.6 inputs; no ACK and no rate snapshot outside process_ack.
   c.ts_offset = t.ts_offset;
@@ -324,19 +347,22 @@ RecoveryCtx TcpEngine::rctx(Tcb& t, Time now) {
 }
 
 void TcpEngine::refresh_cc(Tcb& t, Time now) {
-  CcConn& c = t.cc_conn;
+  refresh_cc(t, now, t.stream->cc_conn);
+}
+
+void TcpEngine::refresh_cc(Tcb& t, Time now, CcConn& c) {
   c.mss = t.mss_cache;
   c.gso_max_size = cfg_.gso_max_size;
   c.rng = &core_.rng();
   c.lsndtime = t.lsndtime;
-  c.wstamp = t.pacing_next;
+  c.wstamp = t.stream ? t.stream->pacing_next : Time{};
   c.now = now;
-  const Counters& k = t.sndq.counters();
+  const Counters& k = t.counters();
   c.in_flight = packets_in_flight(k);
   c.packets_out = k.packets_out;
-  c.ca_state = t.recovery.state();
-  c.snd_una = t.sndq.una();
-  c.snd_nxt = t.sndq.nxt();
+  c.ca_state = t.ca_state();
+  c.snd_una = t.stream ? t.stream->sndq.una() : 0;
+  c.snd_nxt = t.stream ? t.stream->sndq.nxt() : 0;
   c.srtt = t.rtt.srtt();
   c.min_rtt = t.rtt.min_rtt();
   c.app_limited = t.rate.app_limited;  // one value (M2-DESIGN §2.1 item 7)
@@ -352,32 +378,32 @@ void TcpEngine::refresh_cc(Tcb& t, Time now) {
 
 // §10.1, Linux tcp_chrono_start/tcp_chrono_stop.
 void TcpEngine::chrono_start(Tcb& t, ChronoType type, Time now) {
-  if (type <= t.chrono.type) {
+  if (type <= t.stream->chrono.type) {
     return;
   }
-  if (t.chrono.type != ChronoType::none) {
-    t.chrono.total[static_cast<std::size_t>(t.chrono.type)] += now - t.chrono.start;
+  if (t.stream->chrono.type != ChronoType::none) {
+    t.stream->chrono.total[static_cast<std::size_t>(t.stream->chrono.type)] += now - t.stream->chrono.start;
   }
-  t.chrono.type = type;
-  t.chrono.start = now;
+  t.stream->chrono.type = type;
+  t.stream->chrono.start = now;
 }
 
 void TcpEngine::chrono_stop(Tcb& t, ChronoType type, Time now) {
-  const bool queues_empty = t.sndq.end() == t.sndq.una() && t.sndq.segs().empty();
-  ChronoType next = t.chrono.type;
+  const bool queues_empty = t.stream->sndq.end() == t.stream->sndq.una() && t.stream->sndq.segs().empty();
+  ChronoType next = t.stream->chrono.type;
   if (queues_empty) {
     next = ChronoType::none;
-  } else if (type == t.chrono.type) {
+  } else if (type == t.stream->chrono.type) {
     next = ChronoType::busy;
   }
-  if (next == t.chrono.type) {
+  if (next == t.stream->chrono.type) {
     return;
   }
-  if (t.chrono.type != ChronoType::none) {
-    t.chrono.total[static_cast<std::size_t>(t.chrono.type)] += now - t.chrono.start;
+  if (t.stream->chrono.type != ChronoType::none) {
+    t.stream->chrono.total[static_cast<std::size_t>(t.stream->chrono.type)] += now - t.stream->chrono.start;
   }
-  t.chrono.type = next;
-  t.chrono.start = now;
+  t.stream->chrono.type = next;
+  t.stream->chrono.start = now;
 }
 
 // --- Traces (§10.2).
@@ -389,11 +415,11 @@ TraceEvent TcpEngine::trace_base(const Tcb& t, TraceKind k) const {
   e.tuple = t.tuple;
   e.kind = k;
   e.state = t.state;
-  e.ca = t.recovery.state();
+  e.ca = t.ca_state();
   e.mss = t.mss_cache;
-  e.cwnd = t.cc_conn.cwnd;
-  e.ssthresh = t.cc_conn.ssthresh;
-  const Counters& c = t.sndq.counters();
+  e.cwnd = t.cwnd();
+  e.ssthresh = t.ssthresh();
+  const Counters& c = t.counters();
   e.in_flight = packets_in_flight(c);
   e.snd_wnd = t.snd_wnd;
   e.sacked_out = c.sacked_out;
@@ -403,14 +429,14 @@ TraceEvent TcpEngine::trace_base(const Tcb& t, TraceKind k) const {
   e.rttvar_ns = t.rtt.rttvar().count();
   e.rto_ns = t.rtt.rto_backed_off(t.backoff).count();
   e.delivered = t.rate.delivered;
-  e.pacing_rate = t.cc_conn.pacing_rate;
+  e.pacing_rate = t.pacing_rate();
   if (t.opts.cc != cfg_.cc) e.cc_override = t.opts.cc;
   if (const auto* bbr = std::get_if<Bbr>(&t.cc)) {
     e.bbr = bbr->info();
     e.delivery_rate = rate_delivery_rate(t.rate, t.mss_cache);
   }
-  e.snd_una_off = t.sndq.una();
-  e.snd_nxt_off = t.sndq.nxt();
+  e.snd_una_off = t.stream ? t.stream->sndq.una() : 0;
+  e.snd_nxt_off = t.stream ? t.stream->sndq.nxt() : 0;
   return e;
 }
 
@@ -490,7 +516,7 @@ void TcpEngine::wake_chunk_waiters() {
     Tcb* t = find(h);
     if (t == nullptr || !t->send_blocked || t->app_write_shut || t->fin_queued ||
         t->state == TcpState::closed || t->state == TcpState::time_wait ||
-        t->sndq.free_space() == 0) {
+        t->stream->sndq.free_space() == 0) {
       continue;
     }
     t->send_blocked = false;
@@ -501,13 +527,15 @@ void TcpEngine::wake_chunk_waiters() {
 // --- Checks.
 
 void Tcb::check_invariants() const {
-  sndq.check_invariants();
-  rcvq.check_invariants();
+  if (stream) {
+    stream->sndq.check_invariants();
+    stream->rcvq.check_invariants();
+  }
   if (syn_acked) {
     UTCP_CHECK(!after(snd_una(), snd_nxt()));
   }
-  UTCP_CHECK(rwin.rcv_adv() >= rcvq.contiguous_end() || !have_irs);
-  UTCP_CHECK(!fin_rcvd || rcvq.fin_reached());
+  UTCP_CHECK(rwin.rcv_adv() >= rcv_nxt_off() || !have_irs);
+  UTCP_CHECK(!fin_rcvd || (stream && stream->rcvq.fin_reached()));
 }
 
 TcpUsage TcpEngine::usage() const {
@@ -524,7 +552,10 @@ TcpUsage TcpEngine::usage() const {
     for (const TimerId id : {t.t_xmit, t.t_delack, t.t_pace, t.t_fin_wait2}) {
       u.timers_armed += th.armed(id) ? 1u : 0u;
     }
-    u.chunks_held += t.rcvq.chunks_held() + t.sndq.chunks_held();
+    if (t.stream) {
+      ++u.stream_states;
+      u.chunks_held += t.stream->rcvq.chunks_held() + t.stream->sndq.chunks_held();
+    }
   }
   return u;
 }
@@ -559,7 +590,7 @@ void TcpEngine::check_invariants() const {
         UTCP_CHECK(!core_.timers().armed(id));
       }
       UTCP_CHECK(!core_.blocked().contains(static_cast<std::uint32_t>(i)));
-      UTCP_CHECK(t.sndq.segs().empty() && t.sndq.chunks_held() == 0);
+      UTCP_CHECK(!t.stream || (t.stream->sndq.segs().empty() && t.stream->sndq.chunks_held() == 0));
     }
     t.check_invariants();
   }

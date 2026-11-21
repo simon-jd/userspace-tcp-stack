@@ -145,21 +145,21 @@ private:
   std::uint32_t quickack_max_;
   bool adaptive_ato_;
   bool linux_quickack_;
+  bool pushed_ = false;
+  bool seen_data_ = false;
+  bool pending_ = false;             // data arrived since the last ACK (ICSK_ACK_SCHED)
+  bool now_ = false;                 // ICSK_ACK_NOW
+  bool timer_ = false;               // delack timer armed (ICSK_ACK_TIMER)
 
   std::uint16_t adv_mss_ = 536;
   std::uint16_t rcv_mss_ = 536;      // TCP_MSS_DEFAULT until init()
   std::uint32_t last_seg_size_ = 0;  // icsk_ack.last_seg_size
   // A segment below rcv_mss arrived since the last ACK (ICSK_ACK_PUSHED).
-  bool pushed_ = false;
   Duration ato_{0};
   Duration rto_{0};
   Duration srtt_{0};
   Time lrcvtime_;                    // last in-order data arrival
-  bool seen_data_ = false;
   std::uint32_t quick_ = 0;          // icsk_ack.quick
-  bool pending_ = false;             // data arrived since the last ACK (ICSK_ACK_SCHED)
-  bool now_ = false;                 // ICSK_ACK_NOW
-  bool timer_ = false;               // delack timer armed (ICSK_ACK_TIMER)
   Time deadline_ = Time::never();
   std::uint64_t rcv_nxt_ = 0;        // offsets, from InsertResult::contiguous_end
   std::uint64_t rcv_wup_ = 0;        // RCV.NXT when the last ACK was sent

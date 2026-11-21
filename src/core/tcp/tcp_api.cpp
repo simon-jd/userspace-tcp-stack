@@ -44,7 +44,7 @@ std::expected<Handle, Error> TcpEngine::tcp_listen(Endpoint local, std::uint32_t
   }
   Tcb& t = *p;
   t.tuple = FourTuple{Endpoint{core_.local_addr(), local.port}, Endpoint{}};
-  t.listen = ListenState{};
+  t.listen = std::make_unique<ListenState>();
   t.listen->backlog = backlog;
   t.app_holds = true;
   listener_add(local.port, t.self.slot);
@@ -145,21 +145,23 @@ std::expected<std::size_t, Error> TcpEngine::tcp_send(Handle h, std::span<const 
     return 0;
   }
   const Time now = core_.now();
-  const Counters& k = t.sndq.counters();
+  activate_stream(t);
+  auto& stream = *t.stream;
+  const Counters& k = t.counters();
   if (t.syn_acked) {
     // §5.4: the application-limited marker (Linux tcp_sendmsg_locked).
-    rate_check_app_limited(t.rate, t.sndq.end() - t.sndq.nxt(), t.mss_cache,
+    rate_check_app_limited(t.rate, stream.sndq.end() - stream.sndq.nxt(), t.mss_cache,
                            core_.queued_for(t.self.slot) > 0, packets_in_flight(k),
-                           t.cc_conn.cwnd, k.lost_out, k.retrans_out);
+                           stream.cc_conn.cwnd, k.lost_out, k.retrans_out);
     // RFC 5681 §4.1 (Linux tcp_slow_start_after_idle_check from tcp_skb_entail).
-    if (k.packets_out == 0 && t.sndq.end() == t.sndq.nxt()) {
+    if (k.packets_out == 0 && stream.sndq.end() == stream.sndq.nxt()) {
       refresh_cc(t, now);
-      cwnd_restart(t.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
+      cwnd_restart(stream.cc_conn, t.algo(), cfg_.idle_restart, now - t.lsndtime,
                    t.rtt.rto_backed_off(t.backoff), initial_window(t));
     }
   }
-  const std::uint64_t space = t.sndq.free_space();
-  const std::size_t n = t.sndq.write(data);
+  const std::uint64_t space = stream.sndq.free_space();
+  const std::size_t n = stream.sndq.write(data);
   if (n < data.size()) {
     t.send_blocked = true;  // sndbuf_limited is transmit's (tcp_cwnd_validate)
     if (n < space) {
@@ -188,16 +190,16 @@ std::expected<std::size_t, Error> TcpEngine::tcp_recv(Handle h, std::span<std::b
   if (t.app_read_shut || out.empty()) {
     return 0;
   }
-  const std::size_t n = t.rcvq.read(out);
+  const std::size_t n = t.stream ? t.stream->rcvq.read(out) : 0;
   if (n > 0) {
     const Time now = core_.now();
     // Linux tcp_recvmsg: tcp_rcv_space_adjust, then tcp_cleanup_rbuf.
-    if (const auto grown = t.rwin.on_read(now, t.rcvq.read_offset())) {
-      t.rcvq.grow(*grown);
+    if (const auto grown = t.rwin.on_read(now, t.stream->rcvq.read_offset())) {
+      t.stream->rcvq.grow(*grown);
     }
     if (t.synchronized() && t.state != TcpState::time_wait) {
-      t.ackp.on_read(t.rwin.ack_view(t.rcvq, t.ackp.rcv_mss()));
-      if (t.rwin.update_after_read(t.rcvq, t.ackp.rcv_mss())) {
+      t.ackp.on_read(t.rwin.ack_view(t.stream->rcvq, t.ackp.rcv_mss()));
+      if (t.rwin.update_after_read(t.stream->rcvq, t.ackp.rcv_mss())) {
         t.ackp.ack_now();
       }
       flush_ack(t, now);
@@ -231,7 +233,7 @@ std::expected<void, Error> TcpEngine::tcp_shutdown(Handle h, Shutdown how) {
   if (how == Shutdown::read || how == Shutdown::both) {
     t.app_read_shut = true;
     std::array<std::byte, 4096> sink{};
-    while (t.rcvq.read(sink) > 0) {
+    while (t.stream && t.stream->rcvq.read(sink) > 0) {
     }
     wake_chunk_waiters();
   }
@@ -291,7 +293,7 @@ std::expected<void, Error> TcpEngine::tcp_close(Handle h) {
   }
   t.orphan = true;
   // RFC 9293 §3.10.4, RFC 2525 §2.17 (Linux tcp_close): unread data resets.
-  if (t.rcvq.readable() > 0 && !t.app_read_shut) {
+  if (t.stream && t.stream->rcvq.readable() > 0 && !t.app_read_shut) {
     ++core_.stats().TcpExtTCPAbortOnClose;
     send_rst(t, now);
     close_conn(t, CloseCause::aborted);
@@ -365,14 +367,15 @@ Readiness TcpEngine::tcp_readiness(Handle h) const {
   const bool ended = t.state == TcpState::closed || t.state == TcpState::time_wait;
   r.has_error = t.error.has_value();
   r.read_closed = t.fin_rcvd || t.app_read_shut || ended;
-  r.readable = t.rcvq.readable() > 0 || r.read_closed || r.has_error;
+  r.readable = (t.stream && t.stream->rcvq.readable() > 0) || r.read_closed || r.has_error;
   r.write_closed = t.app_write_shut || t.fin_queued || ended;
-  const std::uint64_t queued = t.sndq.held();
+  const std::uint64_t queued = t.stream ? t.stream->sndq.held() : 0;
+  const auto space = t.stream ? t.stream->sndq.free_space() : t.opts.snd_buf.value_or(cfg_.snd_buf_init);
   const bool open = t.state == TcpState::established || t.state == TcpState::close_wait;
   // Not writable while the ChunkPool is exhausted, as tcp_send would refuse.
   const ChunkPool& pool = core_.chunks();
-  r.writable = (open && !r.write_closed && t.sndq.free_space() > 0 &&
-                t.sndq.free_space() >= queued / 2 && pool.in_use() < pool.limit()) ||
+  r.writable = (open && !r.write_closed && space > 0 &&
+                space >= queued / 2 && pool.in_use() < pool.limit()) ||
                r.write_closed || r.has_error;
   return r;
 }
@@ -388,7 +391,7 @@ std::expected<TcpInfo, Error> TcpEngine::tcp_info(Handle h) const {
   i.cc_name.fill('\0');
   i.set_cc_name(const_cast<Tcb&>(t).algo().name());  // NOLINT: name() is const
   i.state = t.state;
-  i.ca_state = t.recovery.state();
+  i.ca_state = t.ca_state();
   i.snd_wscale = t.snd_wscale;
   i.rcv_wscale = t.rcv_wscale;
   i.rto = t.rtt.rto_backed_off(t.backoff);
@@ -396,13 +399,13 @@ std::expected<TcpInfo, Error> TcpEngine::tcp_info(Handle h) const {
   i.srtt = t.rtt.srtt();
   i.rttvar = t.rtt.rttvar();
   i.min_rtt = t.rtt.min_rtt() == Duration::max() ? Duration::zero() : t.rtt.min_rtt();
-  i.cwnd = t.cc_conn.cwnd;
-  i.ssthresh = t.cc_conn.ssthresh;
+  i.cwnd = t.cwnd();
+  i.ssthresh = t.ssthresh();
   i.snd_mss = t.mss_cache;
   i.rcv_mss = t.ackp.rcv_mss();
   i.adv_mss = t.adv_mss;
   i.pmtu = t.pmtu;
-  const Counters& k = t.sndq.counters();
+  const Counters& k = t.counters();
   i.bytes_sent = k.bytes_sent;
   i.bytes_retrans = k.bytes_retrans;
   i.bytes_acked = k.bytes_acked;
@@ -411,7 +414,7 @@ std::expected<TcpInfo, Error> TcpEngine::tcp_info(Handle h) const {
   i.segs_in = t.ctr.segs_in;
   i.data_segs_out = t.ctr.data_segs_out;
   i.data_segs_in = t.ctr.data_segs_in;
-  i.pacing_rate = t.cc_conn.pacing_rate;
+  i.pacing_rate = t.pacing_rate();
   i.delivered = t.rate.delivered;
   // tcpi_delivery_rate and tcpi_delivery_rate_app_limited come from the
   // record tcp_rate_gen keeps (M2-DESIGN §2.6; tcp_get_info,
@@ -419,9 +422,10 @@ std::expected<TcpInfo, Error> TcpEngine::tcp_info(Handle h) const {
   i.delivery_rate = rate_delivery_rate(t.rate, t.mss_cache);
   i.app_limited = t.rate.rate_app_limited;
   // Linux tcp_get_info_chrono_stats: the running interval counts too.
-  std::array<Duration, 4> total = t.chrono.total;
-  if (t.chrono.type != ChronoType::none) {
-    total[static_cast<std::size_t>(t.chrono.type)] += now - t.chrono.start;
+  std::array<Duration, 4> total{};
+  if (t.stream) total = t.stream->chrono.total;
+  if (t.stream && t.stream->chrono.type != ChronoType::none) {
+    total[static_cast<std::size_t>(t.stream->chrono.type)] += now - t.stream->chrono.start;
   }
   i.busy_time = total[1] + total[2] + total[3];
   i.rwnd_limited = total[2];
@@ -433,16 +437,16 @@ std::expected<TcpInfo, Error> TcpEngine::tcp_info(Handle h) const {
   i.total_retrans = static_cast<std::uint32_t>(t.ctr.total_retrans);
   i.dsack_dups = static_cast<std::uint32_t>(t.ctr.dsack_dups);
   // Adaptive reordering is recovery's (M2-DESIGN §1.9).
-  i.reordering = t.recovery.reordering(cfg_);
-  i.reord_seen = t.recovery.reord_seen();
+  i.reordering = t.stream ? t.stream->recovery.reordering(cfg_) : cfg_.dupthresh;
+  i.reord_seen = t.stream ? t.stream->recovery.reord_seen() : 0;
   i.rcv_rtt = t.rwin.rcv_rtt();
   i.rcv_space = t.rwin.rcv_space();
   i.rcv_ssthresh = t.rwin.rcv_ssthresh();
   i.snd_wnd = t.snd_wnd;
   i.rcv_wnd = t.rcv_wnd;
-  i.notsent_bytes = static_cast<std::uint32_t>(t.sndq.end() - t.sndq.nxt());
+  i.notsent_bytes = t.stream ? static_cast<std::uint32_t>(t.stream->sndq.end() - t.stream->sndq.nxt()) : 0;
   i.last_data_sent = now - t.lsndtime;
-  i.last_data_recv = now - t.last_data_recv;
+  i.last_data_recv = now - (t.stream ? t.stream->last_data_recv : Time{});
   i.last_ack_recv = now - t.last_ack_recv;
   i.conn_id = t.conn_id;
   return i;
@@ -471,7 +475,7 @@ std::expected<void, Error> TcpEngine::tcp_set_options(Handle h, const TcpSocketO
   }
   if (opts.snd_buf) {
     t.opts.snd_buf = opts.snd_buf;
-    t.sndq.set_capacity(*opts.snd_buf);
+    if (t.stream) t.stream->sndq.set_capacity(*opts.snd_buf);
   }
   if (opts.mss_clamp) {
     t.opts.mss_clamp = opts.mss_clamp;

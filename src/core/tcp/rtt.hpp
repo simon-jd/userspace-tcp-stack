@@ -55,8 +55,9 @@ private:
   void update_rto();
 
   RttEstimatorKind kind_;
-  Duration rto_min_, rto_max_, rto_after_syn_, rto_;
   bool has_sample_ = false;
+  bool has_min_ = false;
+  Duration rto_min_, rto_max_, rto_after_syn_, rto_;
   // rfc6298: srtt_ and rttvar_ are SRTT and RTTVAR. linux (fixed point as
   // tcp_sock): srtt_ = 8 * srtt (srtt_us), mdev_ = 4 * mdev (mdev_us),
   // mdev_max_ and rttvar_ as mdev_max_us and rttvar_us.
@@ -64,7 +65,6 @@ private:
   std::uint64_t rtt_seq_ = 0;
   // Linux struct minmax: the best, second and third choices (lib/win_minmax.c).
   std::array<MinSample, 3> min_{};
-  bool has_min_ = false;
 };
 
 // retry_abort_time (Linux tcp_model_timeout, the abort bound of §4.8) is

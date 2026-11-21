@@ -273,6 +273,7 @@ StackUsage StackImpl::debug_usage() const {
   const TcpUsage t = tcp.usage();
   StackUsage u;
   u.tcp_slots = t.slots;
+  u.tcp_stream_states = t.stream_states;
   u.udp_slots = udp.open_count();
   u.time_wait_entries = t.time_wait_entries;
   u.pool_buffers = core.pool().count() + core.gso_pool().count();

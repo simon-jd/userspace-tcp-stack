@@ -84,6 +84,33 @@ std::optional<Pair> open(t::TcpHarness& h) {
   return Pair{*l, *c, *s};
 }
 
+TEST(TcpTransfer, UntouchedHandshakeAndReadOnlyCallsLeaveStreamQueuesUnallocated) {
+  for (const auto algo : {utcp::CcAlgo::newreno, utcp::CcAlgo::cubic, utcp::CcAlgo::bbr}) {
+    auto a = t::TcpHarness::default_config(Side::a);
+    auto b = t::TcpHarness::default_config(Side::b);
+    a.tcp.cc = b.tcp.cc = algo;
+    t::TcpHarness h(a, b);
+    const auto pair = open(h);
+    ASSERT_TRUE(pair);
+    const auto info = h.b().tcp_info(pair->server);
+    ASSERT_TRUE(info);
+    EXPECT_EQ(info->state, TcpState::established);
+    EXPECT_GT(info->cwnd, 0u);
+    EXPECT_EQ(info->delivered, 1u);
+    EXPECT_TRUE(h.a().tcp_readiness(pair->client).writable);
+    std::array<std::byte, 1> payload{std::byte{42}}, received{};
+    EXPECT_FALSE(h.b().tcp_recv(pair->server, received));
+    EXPECT_EQ(h.a().debug_usage().tcp_stream_states, 0u);
+    EXPECT_EQ(h.b().debug_usage().tcp_stream_states, 0u);
+    ASSERT_EQ(h.a().tcp_send(pair->client, payload).value(), 1u);
+    EXPECT_EQ(h.a().debug_usage().tcp_stream_states, 1u);
+    h.run_for(100ms);
+    ASSERT_EQ(h.b().tcp_recv(pair->server, received).value(), 1u);
+    EXPECT_EQ(payload, received);
+    EXPECT_EQ(h.b().debug_usage().tcp_stream_states, 1u);
+  }
+}
+
 std::string digest(std::span<const std::byte> d) { return utcp::app::sha256_hex(d); }
 
 // One direction of a transfer.

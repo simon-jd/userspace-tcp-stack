@@ -38,11 +38,11 @@ void TcpEngine::on_icmp_error(Time now, const TcpIcmpError& err) {
     }
     t.pmtu = err.new_pmtu;
     update_mss(t);
-    if (t.syn_acked && t.synchronized()) {
+    if (t.stream && t.syn_acked && t.synchronized()) {
       RecoveryCtx c = rctx(t, now);
-      t.recovery.on_pmtu_drop(c);
-      if (t.sndq.counters().lost_out > 0) {
-        t.pmtu_rexmit_end = t.sndq.nxt();
+      t.stream->recovery.on_pmtu_drop(c);
+      if (t.counters().lost_out > 0) {
+        t.stream->pmtu_rexmit_end = t.stream->sndq.nxt();
       }
       transmit(t, now);
     }

@@ -99,14 +99,14 @@ void TcpEngine::sync_timers(Tcb& t, Time now) {
     return;
   }
   TimerHeap& th = core_.timers();
-  if (t.syn_acked) {
+  if (t.stream && t.syn_acked) {
     const RecoveryCtx c = rctx(t, now);
-    auto [kind, when] = t.recovery.xmit_timer(c);
+    auto [kind, when] = t.stream->recovery.xmit_timer(c);
     // RFC 9293 §3.8.6.2.1: persist may override sender SWS avoidance and
     // send new payload in a positive window. Its departure still obeys EDT.
     if (kind == XmitTimer::persist && t.snd_wnd > 0 &&
         t.pacing_gated(c.pacing_delay > Duration::zero(), now, cfg_.test_fault)) {
-      when = std::max(when, t.pacing_next);
+      when = std::max(when, t.stream->pacing_next);
     }
     if (kind == XmitTimer::none) {
       if (th.armed(t.t_xmit)) {
@@ -153,7 +153,7 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
       // tcp_rack_reo_timeout (M2-DESIGN §1.6): recovery marks and re-arms;
       // the engine retransmits.
       RecoveryCtx c = rctx(t, now);
-      t.recovery.on_xmit_timer(c, kind);
+      t.stream->recovery.on_xmit_timer(c, kind);
       transmit(t, now);
       return;
     }
@@ -167,19 +167,19 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
       // Both are TxKind::tlp. Recovery then arms the RTO (on_tlp_sent).
       refresh_cc(t, now);
       RecoveryCtx c = rctx(t, now);
-      const TlpAction action = t.recovery.on_pto(c);
+      const TlpAction action = t.stream->recovery.on_pto(c);
       bool sent = false;
       const std::uint32_t mss = mss_now(t);
       if (action == TlpAction::new_data && sends_data_now(t.state)) {
-        const std::uint64_t una = t.sndq.una(), nxt = t.sndq.nxt(), end = t.sndq.end();
+        const std::uint64_t una = t.stream->sndq.una(), nxt = t.stream->sndq.nxt(), end = t.stream->sndq.end();
         const std::uint64_t wnd_end = una + t.snd_wnd;
         const auto len = static_cast<std::uint32_t>(std::min(end - nxt, std::uint64_t{mss}));
-        const bool fin = t.fin_queued && !t.sndq.fin_sent() && len == end - nxt;
-        const bool pacing = t.txp.pacing_applies(t.cc_conn, t.ctr.data_segs_out);
+        const bool fin = t.fin_queued && !t.stream->sndq.fin_sent() && len == end - nxt;
+        const bool pacing = t.txp.pacing_applies(t.stream->cc_conn, t.ctr.data_segs_out);
         if ((len > 0 || fin) && nxt + len <= wnd_end) {  // tcp_snd_wnd_test
           if (t.pacing_gated(pacing, now, cfg_.test_fault)) {
-            if (core_.timers().deadline(t.t_pace) != t.pacing_next) {
-              core_.timers().arm(t.t_pace, t.pacing_next);
+            if (core_.timers().deadline(t.t_pace) != t.stream->pacing_next) {
+              core_.timers().arm(t.t_pace, t.stream->pacing_next);
               trace_timer(t, TraceTimer::pace, TimerOp::armed);
             }
           } else if (core_.can_transmit()) {
@@ -196,7 +196,7 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
             o.data_len = len;
             o.kind = TxKind::tlp;
             if (pacing) {
-              t.tx_gate_rate = t.txp.gate_rate(t.cc_conn);
+              t.tx_gate_rate = t.txp.gate_rate(t.stream->cc_conn);
               t.tx_burst_start = true;
             }
             sent = send_segment(t, now, o);
@@ -209,16 +209,16 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
             core_.block_tx(t.self.slot);
           }
         }
-      } else if (action == TlpAction::retransmit_last && !t.sndq.segs().empty()) {
+      } else if (action == TlpAction::retransmit_last && !t.stream->sndq.segs().empty()) {
         // A TxSeg is one packet (tcp_skb_pcount 1), so tcp_send_loss_probe's
         // tcp_fragment at (pcount - 1) * mss never applies; a TxSeg longer
         // than the current MSS (SACK blocks or a PMTU drop since it was sent)
         // is cut to its first MSS by retransmit_seg, as __tcp_retransmit_skb
         // cuts the skb to cur_mss. A SACKed last segment is probed too.
-        const TxSeg last = t.sndq.segs().back();
+        const TxSeg last = t.stream->sndq.segs().back();
         if (core_.can_transmit()) {
           sent = retransmit_seg(t, now, last, TxKind::tlp);
-          const TxSeg* s = t.sndq.find(last.off);
+          const TxSeg* s = t.stream->sndq.find(last.off);
           if (sent && s != nullptr && s->len > 0) {
             t.pacing_after_send(now, s->len);
           }
@@ -230,7 +230,7 @@ void TcpEngine::on_xmit(Tcb& t, Time now) {
         ++core_.stats().TcpExtTCPLossProbes;  // tcp_send_loss_probe, probe_sent
       }
       RecoveryCtx c2 = rctx(t, now);
-      t.recovery.on_tlp_sent(c2, action, sent);
+      t.stream->recovery.on_tlp_sent(c2, action, sent);
       flush_ack(t, now);
       sync_timers(t, now);
       return;
@@ -275,10 +275,11 @@ void TcpEngine::on_syn_timeout(Tcb& t, Time now) {
 // RFC 6298 §5.4-5.6 with Linux tcp_retransmit_timer: abort check, loss
 // marking, backoff, then the head is resent outside the cwnd gate.
 void TcpEngine::on_rto(Tcb& t, Time now) {
+  auto& stream = *t.stream;
   if (core_.tracing(TraceKind::rto)) {
     core_.trace(trace_base(t, TraceKind::rto));
   }
-  if (t.sndq.segs().empty()) {
+  if (stream.sndq.segs().empty()) {
     sync_timers(t, now);
     return;
   }
@@ -288,13 +289,13 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
     // act as zero-window probes, so the retry bound does not apply while
     // the peer answers; abort only after 2 * rto_max without an ACK and
     // without progress.
-    const Time since = t.retrans_stamp ? *t.retrans_stamp : t.sndq.segs().front().last_tx;
+    const Time since = stream.retrans_stamp ? *stream.retrans_stamp : stream.sndq.segs().front().last_tx;
     if (now - t.last_ack_recv > 2 * cfg_.rto_max && now - since > 2 * cfg_.rto_max) {
       abort_timed_out(t, now);
       return;
     }
-  } else if (t.rto_count > 0 && t.retrans_stamp &&
-             now - *t.retrans_stamp >=
+  } else if (t.rto_count > 0 && stream.retrans_stamp &&
+             now - *stream.retrans_stamp >=
                  retry_abort_time(retry_limit(t), cfg_.rto_min, cfg_.rto_max)) {
     // §4.8 (Linux retransmits_timed_out): retries counted in time from the
     // first retransmission.
@@ -302,18 +303,18 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
     return;
   }
   RecoveryCtx c = rctx(t, now);
-  t.recovery.on_rto(c);
-  t.pmtu_rexmit_end.reset();
+  stream.recovery.on_rto(c);
+  stream.pmtu_rexmit_end.reset();
   if (t.backoff < 31) {
     ++t.backoff;
   }
   if (t.rto_count < 0xff) {
     ++t.rto_count;
   }
-  const TxSeg head = t.sndq.segs().front();
+  const TxSeg head = stream.sndq.segs().front();
   if (!core_.can_transmit() || !retransmit_seg(t, now, head, TxKind::rto_rexmit)) {
     core_.block_tx(t.self.slot);
-  } else if (const TxSeg* s = t.sndq.find(head.off)) {
+  } else if (const TxSeg* s = stream.sndq.find(head.off)) {
     // Not gated (tcp_retransmit_timer sends without tcp_pacing_check), but
     // it moves pacing_next like every data transmission (M2-DESIGN §2.5).
     t.pacing_after_send(now, s->len);
@@ -323,8 +324,9 @@ void TcpEngine::on_rto(Tcb& t, Time now) {
 
 // Zero-window probing (§4.9; Linux tcp_probe_timer, tcp_write_wakeup).
 void TcpEngine::on_persist(Tcb& t, Time now) {
-  const Counters& k = t.sndq.counters();
-  if (k.packets_out != 0 || t.sndq.nxt() == t.sndq.end()) {
+  auto& stream = *t.stream;
+  const Counters& k = t.counters();
+  if (k.packets_out != 0 || stream.sndq.nxt() == stream.sndq.end()) {
     // Linux tcp_send_probe0: the probe timer is not needed any more; the
     // probing backoff ends with it.
     t.probes_out = 0;
@@ -341,7 +343,7 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
     abort_timed_out(t, now);
     return;
   }
-  const std::uint64_t una = t.sndq.una(), nxt = t.sndq.nxt(), end = t.sndq.end();
+  const std::uint64_t una = stream.sndq.una(), nxt = stream.sndq.nxt(), end = stream.sndq.end();
   const std::uint64_t wnd_end = una + t.snd_wnd;
   const std::uint64_t usable = wnd_end > nxt ? wnd_end - nxt : 0;
   if (core_.can_transmit()) {
@@ -354,7 +356,7 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
       const std::uint8_t backoff = t.backoff;
       t.backoff = 0;
       refresh_cc(t, now);
-      const auto rate = t.cc_conn.paced ? t.txp.gate_rate(t.cc_conn) : 0;
+      const auto rate = stream.cc_conn.paced ? t.txp.gate_rate(stream.cc_conn) : 0;
       t.tx_gate_rate = rate;
       t.tx_burst_start = rate != 0;
       const bool sent = send_new_data(t, now, len, t.fin_queued && len == end - nxt);
@@ -363,13 +365,13 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
       if (sent) {
         if (rate != 0) {
           t.pacing_after_send(now, len);
-          t.pacing_next = std::max(t.pacing_next, now);  // stamp startup sends too
+          stream.pacing_next = std::max(stream.pacing_next, now);  // stamp startup sends too
         }
         t.probes_out = 0;
         RecoveryCtx c = rctx(t, now);
-        t.recovery.on_xmit_timer(c, XmitTimer::persist);
+        stream.recovery.on_xmit_timer(c, XmitTimer::persist);
         RecoveryCtx c2 = rctx(t, now);
-        t.recovery.on_burst_end(c2, false);  // tcp_write_wakeup: no loss probe
+        stream.recovery.on_burst_end(c2, false);  // tcp_write_wakeup: no loss probe
         sync_timers(t, now);
         return;
       }
@@ -392,9 +394,9 @@ void TcpEngine::on_persist(Tcb& t, Time now) {
     ++t.backoff;
   }
   RecoveryCtx c = rctx(t, now);
-  t.recovery.on_xmit_timer(c, XmitTimer::persist);
+  stream.recovery.on_xmit_timer(c, XmitTimer::persist);
   RecoveryCtx c2 = rctx(t, now);
-  t.recovery.on_burst_end(c2, false);
+  stream.recovery.on_burst_end(c2, false);
   sync_timers(t, now);
 }
 
