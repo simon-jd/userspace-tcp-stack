@@ -8,6 +8,8 @@ also checks the delayed ACK, an empty read before data arrives, and EOF after
 the peer's FIN. [RFC 9293 §§3.5–3.8](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.5)
 [Verification receipt](verification.md)
 
+[Screen of six upstream Linux TCP scripts](upstream-ordinary.md)
+
 | Case | Packetdrill checked | Stack and adapter observed |
 | --- | --- | --- |
 | Active open | `EINPROGRESS`, handshake, successful 5-byte write, data sequence and peer ACK, both FINs and the last ACK | ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2, TIME-WAIT. Four inbound datagrams delivered and five outbound packets matched. One TIME-WAIT entry remained, with zero live TCP slots and zero queued output. |

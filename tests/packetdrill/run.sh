@@ -4,6 +4,15 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 root="$PWD"
+mode=${1:-}
+if (( $# > 1 )) || [[ -n "$mode" && "$mode" != "--upstream-ordinary" ]]; then
+  echo "Usage: $0 [--upstream-ordinary]" >&2
+  exit 2
+fi
+container_options=()
+if [[ "$mode" == "--upstream-ordinary" ]]; then
+  container_options=(--read-only --security-opt no-new-privileges)
+fi
 cpus="${UTCP_PACKETDRILL_CPUS:-30,31}"
 image="${UTCP_PACKETDRILL_IMAGE:-utcp-testbed:dev}"
 revision=15ab46aedd01a5e664ec5cfb2b1888328cdd3901
@@ -41,13 +50,14 @@ limited=(taskset -c "$cpus" nice -n 10)
 } >"$logs/tools.txt"
 
 run_packetdrill() {
+  local script="$1" dir="${2:-/work}"
   "${limited[@]}" docker run --pull never --rm --name "utcp-m3-packetdrill-$$" --network none --cap-drop ALL \
     --cpuset-cpus "$cpus" --ulimit memlock=67108864:67108864 --user "$(id -u):$(id -g)" \
-    --mount "type=bind,src=$root,dst=/work,readonly" --workdir /work "$image_id" \
-    /usr/bin/timeout 8s /usr/bin/nice -n 10 "$packetdrill/packetdrill" \
+    "${container_options[@]}" --mount "type=bind,src=$root,dst=/work,readonly" --workdir "$dir" "$image_id" \
+    /usr/bin/timeout 8s /usr/bin/nice -n 10 "/work/$packetdrill/packetdrill" \
     --ip_version=ipv4 --local_ip=192.0.2.2 --remote_ip=198.51.100.2 \
     --so_filename="/work/$work/utcp_packetdrill.so" --so_flags=192.0.2.2 \
-    --strict_segments --tolerance_usecs=1000 --tolerance_percent=0 -v "$1"
+    --strict_segments --tolerance_usecs=1000 --tolerance_percent=0 -v "${@:3}" "$script"
 }
 
 check_log() {
@@ -81,6 +91,45 @@ for iteration in 1 2; do
   check_log '^utcp-packetdrill rx=6 tx=4 sleeps=[1-9][0-9]* clock_reads=[1-9][0-9]* regressions=0 fds=0 tcp_slots=0 time_wait=0 queued=0$' "$passive"
   printf 'run %s: active open and passive open passed\n' "$iteration"
 done
+
+if [[ "$mode" == "--upstream-ordinary" ]]; then
+  family="$upstream/gtests/net/tcp"
+  close_case=close/close-local-close-then-remote-fin.pkt
+  candidates=(blocking/blocking-{accept,connect,read,write}.pkt "$close_case" nagle/https_client.pkt)
+  for candidate in "${candidates[@]}"; do
+    dir="/work/$family/${candidate%/*}"
+    name=${candidate##*/}
+    sha256sum "$family/$candidate" >>"$logs/upstream.sha256"
+    status=0
+    run_packetdrill "$name" "$dir" --dry_run >"$logs/$name.parse.log" 2>&1 || status=$?
+    printf 'parse\t%s\t%s\n' "$candidate" "$status" | tee -a "$logs/upstream.tsv"
+    if (( status != 0 )); then
+      cat "$logs/$name.parse.log" >&2
+      exit 1
+    fi
+  done
+
+  # Exercise one ordinary original through its Linux preamble in the restricted container.
+  name=${close_case##*/}
+  status=0
+  run_packetdrill "$name" "/work/$family/close" >"$logs/$name.live.log" 2>&1 || status=$?
+  printf 'execute\t%s\t%s\n' "$close_case" "$status" | tee -a "$logs/upstream.tsv"
+  if (( status == 1 )); then
+    check_log '^utcp-packetdrill initialized$' "$logs/$name.live.log"
+    check_log 'setting key "net.ipv4.tcp_rmem".*Read-only file system' "$logs/$name.live.log"
+    check_log 'Cannot find device "tun0"' "$logs/$name.live.log"
+    check_log 'error executing init command: non-zero status 1' "$logs/$name.live.log"
+    echo "Upstream close case stopped in Linux initialization, before handshake."
+  elif (( status == 0 )); then
+    check_log '^utcp-packetdrill state=established ' "$logs/$name.live.log"
+    echo "Upstream close case ran to completion."
+  else
+    cat "$logs/$name.live.log" >&2
+    exit 1
+  fi
+  printf 'Receipts: %s\n' "$logs"
+  exit 0
+fi
 
 sed 's/^+0 > \. 1:1(0) ack 1$/+0 > . 1:1(0) ack 2/' tests/packetdrill/active-open.pkt \
   >"$logs/bad-expected-ack.pkt"
