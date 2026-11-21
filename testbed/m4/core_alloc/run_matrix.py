@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run in a new immutable attempt directory. Preserve both successful and failed cells."""
 import argparse
-import csv
 import hashlib
 import json
 import os
@@ -9,7 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-MODES = ("bulk","echo","tx_pressure","chunk_pressure","gso","fallback","reorder","loss","pmtu","udp","icmp")
+MODES = ("bulk","echo","tx_pressure","chunk_pressure","gso","fallback","reorder","loss","pmtu","udp","icmp","multi_waiter","duplicate","pool_pressure","timer_loss","delack")
 
 
 def sha(path):
@@ -37,7 +36,7 @@ def main():
         return result.returncode==0
 
     try:
-        if not all([run("control",[bin/"control"]),run("control-sites",[bin/"control","sites"])]):
+        if not all([run("control-c",[bin/"c-control"]),run("control",[bin/"control"]),run("control-sites",[bin/"control","sites"])]):
             return 1
         def same(left,right,reason):
             if sha(left)!=sha(right): broken.append(reason)
@@ -48,12 +47,12 @@ def main():
             for trace in ("off","count"):
                 for arm in ("count","sites"):
                     name=f"{mode}-{trace}-{arm}"
-                    run(name,[bin/"core_driver",mode,trace,arm,out/(name+".wire"),out/(name+".events")])
+                    run(name,[bin/"core_driver",mode,trace,arm,out/(name+".wire"),out/(name+".events"),out/(name+".tx")])
                     if arm=="sites":
-                        for suffix in ("wire","events","csv"):
+                        for suffix in ("wire","events","tx","csv"):
                             same(out/(name+"."+suffix),out/(f"{mode}-{trace}-count."+suffix),name+"-"+suffix)
                 if trace=="count":
-                    for suffix in ("wire","events"):
+                    for suffix in ("wire","events","tx"):
                         same(out/(f"{mode}-off-count."+suffix),out/(f"{mode}-count-count."+suffix),mode+"-trace-"+suffix)
     finally:
         (out/"receipt.json").write_text(json.dumps({"runs":results,"failures":broken},indent=2)+"\n")
