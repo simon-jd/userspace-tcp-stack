@@ -33,7 +33,7 @@ public:
   __attribute__((noinline)) std::invoke_result_t<F> run(Path p,F fn) {
     auto& r = row(p);
     ++r.invocations;
-    utcp_heap_label(phase * paths + p);
+    utcp_heap_label(static_cast<unsigned>(phase) * paths + p);
     utcp_heap_start();
     if constexpr (std::is_void_v<std::invoke_result_t<F>>) {
       fn();

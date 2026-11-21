@@ -186,6 +186,7 @@ struct Pair {
       if (received==data.size() && !info->unacked && sent==data.size()) {
         require(ready.writable,"writable after full drain"); return;
       }
+      if (received < sent && win.run(ready_,[&]{return dst.tcp_readiness(to);}).readable) continue;
       if (!progress || sent==data.size()) deadline();
       else advance(now+100us);
     }
