@@ -1,5 +1,7 @@
 # M4 TCP payload copies
 
+The measurements below use the original eager-stream baseline. The [lazy-stream integration](lazy-stream-integration.md) repeats the copy comparison on the later memory layout and verifies the integrated 10,000-connection population.
+
 On a normal 65,549-byte Linux TCP transfer, every application byte crossed the send ring into its final packet exactly once. On receive, every byte crossed from the original input packet into the receive ring exactly once. The synchronous socket API made one further copy on each direction between the application and its ring. Read shutdown had an avoidable cost. In the fixed unread-prefix case the change removed 11,852 copied bytes across ten calls.
 
 ## Linux transfers with 4 KiB chunks
