@@ -180,19 +180,22 @@ struct RxMeta { bool csum_verified = false;         // M4: VIRTIO_NET_HDR_F_DATA
 Ownership rules:
 
 - Input datagrams are borrowed: `receive()` parses in place and copies payload into the destination socket's
-  buffer before returning. The host may reuse its buffer immediately.
+  buffer before returning when the socket retains those bytes. A TCP connection
+  whose read direction is permanently shut can reserve receive space and track
+  coverage without storing the discarded payload. The host may reuse its buffer immediately.
 - Output datagrams are built into `PacketPool` buffers owned by the `Stack` and handed to the host as
   `TxPacket` by value; the host writes them and drops them, which returns the buffer.
 - Socket data lives in per-connection `ByteRing`s: offset-addressed storage (`write_at`, `read_at`, `consume`,
-  `bytes_held`) whose capacity is a limit, not an allocation. Storage is 4 KiB chunks from a per-`Stack`
-  `ChunkPool` (grows on demand up to `StackConfig::chunk_limit`, LIFO reuse), taken when first written and
-  returned when consumed, so idle connections hold no data memory. `tcp_send` copies application bytes in,
+  `bytes_held`) whose capacity is a limit, not an allocation. Rings draw chunks (4 KiB by default)
+  from a per-`Stack` `ChunkPool` that grows on demand to `StackConfig::chunk_limit` and reuses freed
+  chunks in LIFO order. Untouched connections hold no payload chunks. `tcp_send` copies application bytes in,
   `tcp_recv` copies them out; segments are built by copying from the send ring into a `PacketBuf`.
 
-Allocation policy: steady-state per-packet work allocates nothing from the heap. Pools, the transmit queue, timer
-heap and event queue are preallocated at `Stack` construction; the heap is used only on connection creation and
-on chunk-pool or retransmission-queue growth, amortised (M1 also allows a map node per connection and vector
-growth). M4 adds an `operator new` counter and requires zero allocations per packet in steady bulk and echo runs.
+Zero heap allocations per packet in steady bulk and echo are a design target. The stack uses
+pools and reuses released chunks. Stream activation, queue growth and partial SACK tracking can
+allocate storage. Bounded warm-process `operator new` measurements include the application and
+event loop and recorded nonzero calls. The per-packet target remains unverified.
+[Allocation scope and counts](results/m4-copy-allocation/README.md#initialized-c-allocation-diagnostics)
 
 ### 3.4 Stack: inputs and outputs
 
@@ -472,6 +475,7 @@ enum class TcpState : std::uint8_t { closed, listen, syn_sent, syn_received, est
   fin_wait_1, fin_wait_2, close_wait, closing, last_ack, time_wait };
 enum class CaState : std::uint8_t { open, disorder, cwr, recovery, loss };   // Linux tcp_ca_state
 
+// Logical fields across the TCB and its optional stream. See the layout note below.
 struct Tcb {
   FourTuple tuple; Handle self, listener; std::uint32_t conn_id;  // conn_id: monotonic, for traces
   TcpState state; bool passive, orphan, app_read_shut, app_write_shut;
@@ -502,8 +506,11 @@ queues' stream offsets (`snd_una()`, `snd_nxt()`, `rcv_nxt()`; SYN and FIN add o
 `SendQueue::fin_sent/fin_acked` and `fin_rcvd`), so the sequence and offset views cannot disagree; `rcv_adv` is
 `RcvWindow::rcv_adv()`.
 
-Buffers inside `SendQueue` and `RecvBuffer` are allocated on first use, not at SYN time, which keeps
-SYN-RECEIVED children and idle connections small (§12, item 4).
+The TCB embeds the selected algorithm in `CcStorage cc` and retains its initial congestion and
+pacing outputs. Its optional `StreamState` holds `CcConn cc_conn`, the send and receive queues
+and loss recovery. Untouched connections at the handshake-idle measurement barrier had no stream
+object. A subsequent acceptable pure ACK, data or a queued FIN can activate it.
+[Measured layout and population](results/m4-memory/README.md#where-the-bytes-went)
 
 ### 4.3 Demultiplexing
 
@@ -511,7 +518,8 @@ SYN-RECEIVED children and idle connections small (§12, item 4).
   only looked up, never iterated. Iteration over connections, when needed, walks the slot vector in index
   order.
 - `TimeWaitTable`: compact entries `{FourTuple, snd_nxt, rcv_nxt, rcv_wnd, rcv_wscale, ts_recent, ts_recent_stamp,
-  ts_offset, ts_ok, expiry}` (about 56 bytes; TIME_WAIT ACKs carry a scaled window and a TSval); the TCB is freed on
+  ts_offset, ts_ok, …}` occupy 64 bytes on the measured GCC 15 x86-64 build. The entry holds a timer ID,
+  and the timer heap holds the expiry. TIME_WAIT ACKs carry a scaled window and a TSval. The TCB is freed on
   entry to TIME_WAIT. Same keyed hash.
 - `Listeners`: sorted `std::vector<{port, slot}>`. Lookup order: connection, TIME_WAIT, listener, else CLOSED.
   `TcpEngine::tuple_in_use(const FourTuple&)` and `port_has_listener(port)` serve the port allocator (§4.6).
@@ -1599,6 +1607,11 @@ SACK coverage independently of the trace sink. Enabling tracing mid-connection
 therefore includes previously accepted SACKs. Historical JSONL records omit the
 new key, and readers should treat a missing byte value as unavailable.
 
+Two 451,019 B userspace-to-Linux transfers on the integrated default build checked every
+TX, RX, accepted-ACK and state byte count against the wire. Dedicated event publishers for
+cwnd changes, RTT updates and recovery transitions remain open.
+[Capture scope and per-run counts](results/trace-flight/README.md#integrated-runtime-on-november-21-2026)
+
 `StackConfig::trace_mask` selects events. With no sink, event construction is skipped. The JSONL writer (sim, apps) emits
 one line per event with fixed keys (`{"t":1234567,"node":"a","conn":3,"ev":"ack","cwnd":42,"srtt_us":20113,...}`);
 `tools/` scripts plot cwnd, RTT and in-flight from traces and `utcp-bulk` JSONL on one axis with Linux data.
@@ -1615,7 +1628,9 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
 - **Simulator** (`tests/sim/`): directed scenarios (handshake in all 8×8 option combinations, simultaneous open,
   zero window and probes, half-close both ways, TIME_WAIT, every RST/SYN/ACK case of RFC 5961, PAWS, PMTU with
   valid and forged ICMP, Nagle, delayed-ACK timing per profile, SYN and data retry exhaustion, sequence wrap),
-  plus random sweeps (§7): 1e4 seeds in CI-sized runs, 1e5 for M1 acceptance, 1e6 in M3.
+  plus random sweeps (§7). The design budgets were 1e4 seeds for CI-sized runs, 1e5 for M1
+  acceptance and 1e6 for M3. The fresh M3 Gen6 campaign has 0 of 1,000,000 counted seeds.
+  [Campaign status](RESULTS.md#pending-validation)
 - **Interop** (`tests/interop/`, `testbed/`): containers named `utcp-*`, run with `--cap-add NET_ADMIN --device
   /dev/net/tun` and `--cpuset-cpus 16-31` (functional) or `8-15` (timing). `utcp-m1-dut` runs the stack on `utcp0`
   (kernel side 198.18.0.1, stack 198.18.0.2) with IP forwarding; `utcp-m1-peer` is plain Linux on `utcp-m1-net`
@@ -1635,8 +1650,11 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
   parse round trip), `fuzz_tcp_options`, `fuzz_reassembler` (input decoded as insert/read/fin operations applied
   to `RecvBuffer` and to the naive reference in `tests/support/naive_reassembler.hpp`, a byte map; contiguous
   output, FIN state and SACK-able ranges must agree after every step), `fuzz_stack_input` (arbitrary datagrams
-  into a stack with a listener and an established connection; checks `debug_check()`). M1 runs each for 60 s in
-  CI; M3 runs them for hours.
+  into a stack with a listener and an established connection; checks `debug_check()`).
+  The M1 design called for 60 seconds per target. CTest configures 20,000 iterations per
+  smoke case. The planned multi-hour M3 campaigns have 0 of 4 targets completed.
+  Separately, two sustained valid-input tests each ran for at least two active hours.
+  [Valid-input results](RESULTS.md#valid-ipv4-datagrams-and-receive-streams) · [Open campaigns](RESULTS.md#pending-validation)
 - **packetdrill** (M3, one day): `--so_filename` loads a shared object implementing its socket, packet and time
   interface (check `so_testing.h` at M3 start); virtual time, `receive`/`pop_transmit` and loops over `advance`
   map onto it, plus `to_errno` and blocking `accept`/`connect` emulation. Only scripts for RFC behaviour are kept.
@@ -1649,15 +1667,19 @@ The targets below guided the measurement. See the
 [multiqueue results](results/m4-tun-multiqueue/README.md),
 [legacy echo load](results/m4-echo-load/pre-copy.md), and
 [echo copy, C++ allocation and final-mode results](results/m4-copy-allocation/README.md).
-The measured 2,208 B TCB and about 3,334 B of idle process RSS growth per
-established socket missed the 1 KiB and 2 KiB targets. The sampled active
-RSS growth and process RSS high-water mark met the 12 KiB per-connection
-and 128 MiB process targets. The ordinary PMU probe was denied. Bounded
-warm-process C++ allocation counts were nonzero and include application
-and event-loop work, so the per-packet allocation target remains unverified.
+The earlier echo build measured a 2,208 B TCB and about 3,334 B of idle RSS growth per
+connection, exceeding the 1 KiB and 2 KiB targets. It met the 12 KiB active per-connection
+and 128 MiB process targets. The ordinary PMU probe was denied.
+
+In the November 21 comparison the lazy-stream build met all five memory limits for the
+registered 10,000-connection workload. Its TCB was 1,016 B and median idle process RSS
+growth was 1,542.144 B per untouched established socket. The physical copy study and
+ring-size comparison have separate measured revisions and workloads.
+[Independent results, limits and raw archives](RESULTS.md#independent-acceptance-on-november-21-2026)
 
 1. **Buffer pools**: a 64 KiB packet class for GSO next to the 2 KiB class (`alloc` already takes a size); data
-   rings are chunked from M1 (§3.3), M4 tunes the chunk size.
+   rings are chunked from M1 (§3.3). A six-block comparison at a fixed 4 GiB default
+   pool backing ceiling retained the 4 KiB chunk size. [Ring-size study](results/m4-ring-size/README.md)
 2. **Batching**: read up to 64 datagrams per wake-up, one `advance` per batch, write all queued packets before
    sleeping. Delayed-ACK decisions stay per segment, as in §3.4.
 3. **GSO**: the output path packs consecutive fresh full-MSS segments from the same allowed burst.

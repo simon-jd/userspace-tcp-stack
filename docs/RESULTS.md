@@ -10,9 +10,11 @@ changed afterwards; the commit that fixed them is named in each.
 
 The [interop matrix](INTEROP.md) records the earlier Linux exchanges. The
 [core matrix](#core-matrix) and [multi-flow study](#multi-flow) report the
-shaped-path comparisons. [M3 validation](#m3-validation) records the bounded
-correctness evidence and the two open long runs. [M4 bulk, TUN and echo](#m4-bulk-tun-and-echo)
-covers the separate same-host datapath studies. The
+shaped-path comparisons. [M3 validation](#m3-validation) records the two-hour valid-input tests
+and the outstanding campaigns. [M4 bulk, TUN and echo](#m4-bulk-tun-and-echo)
+covers the earlier same-host datapath studies. [November 21 independent
+acceptance](#independent-acceptance-on-november-21-2026) locates the later
+memory, core copy, ring-size and trace measurements. The
 [reproducibility index](results/reproduction/README.md) identifies private
 input archives, source revisions, replay commands and evidence limits.
 
@@ -1331,7 +1333,13 @@ and a fresh rebuild and rerun reproduced the counts.
 [Method and commands](results/m3-fuzz/VALID_WIRE_STREAM.md)
 [Per-seed counts](results/m3-fuzz/valid-wire-stream-counts.csv)
 
-[Two-hour valid-input soak](VALID-INPUT-SOAK.md#independent-run-on-2026-11-21)
+On November 21, two concurrent in-memory tests each completed at least 7,200
+active seconds on source `ac8e2827e04184b00f9c4aea4488c627ede0b49c`. They
+verified 121,982,976 valid IPv4 datagrams and 1,326,336 complete receive
+streams with 13,582,105,777 bytes checked at application reads. The independent
+raw logs are under `wire/` and `stream/` in `utcp-data:/valid-soak-independent-n21/`.
+[Two-hour run and independent report](VALID-INPUT-SOAK.md#independent-run-on-2026-11-21) ·
+[Counts, binary digest and revised checker commit](results/m3-fuzz/valid-soak-20261121.json)
 
 ### Packetdrill
 
@@ -1369,7 +1377,8 @@ The archived Ubuntu builds passed 20 of 20 simulator corpus cases in
 The planned fresh Gen6 simulator campaign recorded 0 of 1,000,000 seeds.
 Both launches ended before a counted shard was written. The 2,000 sampled
 serialized replays and independent capture checks remain unexecuted. The
-planned sustained arbitrary-input parser validation also remains unexecuted.
+four planned sustained arbitrary-input parser and reassembly targets have
+zero completed campaigns. The valid-input counts above come from separate tests.
 
 
 ## M4 bulk, TUN and echo
@@ -1392,9 +1401,10 @@ planned sustained arbitrary-input parser validation also remains unexecuted.
   the rate-limited echo shows no consistent CPU or goodput benefit.
 - The [legacy 10,000-connection echo](results/m4-echo-load/pre-copy.md)
   retained five pairs against Linux. Each arm verified 50,000 replies.
-  The 2,208 B TCB and about 3,334 B of idle RSS growth per connection
-  missed the 1 KiB and 2 KiB targets. Active process RSS and its
-  per-connection growth met the measured targets.
+  On this earlier build the 2,208 B TCB and about 3,334 B of idle RSS growth
+  per connection missed the 1 KiB and 2 KiB targets. The active RSS increase
+  and process high-water mark met their limits. The [subsequent memory
+  comparison](#independent-acceptance-on-november-21-2026) measured the lazy-stream build.
 - The [paired echo copy study and allocation diagnostics](results/m4-copy-allocation/README.md)
   measured zero staging bytes with direct echo versus 3,200,000 B in
   the staged path. Median active server process CPU rose from 0.25 s
@@ -1421,3 +1431,52 @@ same-device queue cases, and a pair of 10,000-connection staged and direct
 echo runs with 50,000 verified replies per arm. These checks used the
 combined runtime. The timing figures above retain the measured source,
 binary and experimental configuration recorded for each study.
+
+### Independent acceptance on November 21, 2026
+
+**Connection memory.** Five primary matched pairs compared GCC 15 Release
+`15d2f1bbdbc5c0d19a004cd59c56e48bc6c5d7ca` with
+`b749be2a4d6355e301e482e06e0aecaf97814774`. The staged CUBIC echo workload used
+legacy single-queue TUN, held 10,000 untouched established connections for at
+least five seconds, then verified 50,000 replies of 64 B per arm. The 1,016 B
+TCB and 64 B TIME_WAIT entry met their 1,024 and 64 B limits. The candidate's
+worst idle and active RSS increases were 1,542.5536 and 3,988.6848 B per
+connection against limits of 2,048 and 12,288 B. Worst server VmHWM through
+the final reply was 53,354,496 B against 128 MiB. Idle RSS is relative to the
+listener-only process and precedes stream activation. A 42 ms transfer overlapped
+the candidate arm of pair 5. The archive retains that pair and the repeat, pair 6,
+which supplied the fifth primary comparison.
+Independent raw pairs and report are at `utcp-data:/m4-mem-independent-n21-2215/`
+and `method/REPORT.md` within it. [Developer pairs and methods](results/m4-memory/README.md)
+
+**Core payload copies.** On `fa35221f9f86f3c3b997d839f2bb43d8ec8b305f`, four
+81,937 B transfers against a stock Linux peer covered send and receive with
+legacy and TCPv4 TUN. The physical observer counted exactly one copy of every
+fresh byte at the application boundary and one at the packet boundary. A
+fixed pending-FIN/read-shutdown case eliminated 11,852 B across ten calls.
+Retransmission and redelivery after pruning retain their required repeated
+copies. The independent archive `utcp-data:/m4/independent-copy-accept-n21-a/`
+contains the packet records in `wire/` and the copy fixtures and report in `review/`.
+A separate offline checker revision, `7958ea1fc98fbd91f13bb9c0110d13d10f499bc7`,
+rejected all six independently shifted offset controls. Its report and raw replay
+are at `utcp-data:/m4/independent-copy-checker-7958ea1-n21-a/`. These runs
+measure copy counts and byte coverage. [Fixtures, boundaries and layout](results/m4-core-copy/lazy-stream-integration.md)
+
+**Ring chunk size.** Six independent matched blocks on
+`2e21e11111241f0d3a58ecb320550cae7448c0e3` compared 2, 4 and 8 KiB at a fixed
+4 GiB backing-store ceiling. Legacy single-queue CUBIC ran 36 verified
+1,000,000,000 B transfers and 18 staged echo trials at 10,000 connections.
+Neither alternative met the registered 5% median improvement and 5-of-6 sign
+rule on a primary measure. The default remains 4 KiB. The published ring
+commit `e3c7657f7ef895abf237274c8ded71894af6d374` matched the 411 frozen input
+paths. Raw runs are at `utcp-data:/m4-ring-size-independent-n21a/`, and the
+recomputed tables and report at `utcp-data:/m4-ring-size-independent-n21a-review/`.
+[Protocol and developer measurements](results/m4-ring-size/README.md)
+
+**Trace payload bytes.** On the integrated default build
+`38f648e462935ca7a448c1e23cc7ac7b1f0ddb58`, captures at both ends of two legacy
+TUN transfers confirmed `in_flight_bytes` for all 653 clean-run and 713 one-loss
+TX, RX, accepted-ACK and state snapshots. The field counts unique transmitted
+payload still lacking cumulative or accepted selective acknowledgment. The
+existing `in_flight` field remains in packets. Dedicated cwnd-change, RTT-update
+and recovery-transition events remain open. [Trace captures, report and raw manifest](results/trace-flight/README.md#integrated-runtime-on-november-21-2026)

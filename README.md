@@ -16,8 +16,8 @@ comparison.
 | M0 and M1 | Toolchain, deterministic core, simulator, TUN backend and TCP interoperability complete |
 | M2a and M2b | Loss recovery, delivery-rate sampling, pacing, NewReno and CUBIC complete |
 | M2c and M2d | [BBRv1 paired smoke](docs/RESULTS.md#bbrv1-paired-smoke), [24-cell NewReno/CUBIC/BBRv1 matrix](docs/RESULTS.md#core-matrix), and [multi-flow study](docs/RESULTS.md#multi-flow) complete |
-| M3 | [Valid-wire and receive-stream tests, two IPv4 Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) verified. The fresh one-million-seed simulator run and the sustained arbitrary-input parser and reassembly campaign [remain open](docs/RESULTS.md#pending-validation). |
-| M4 | Legacy bulk and 10,000-connection echo measurements, opt-in TUN and direct echo modes, and allocation diagnostics are recorded. [M4 results](docs/RESULTS.md#m4-bulk-tun-and-echo) |
+| M3 | [Two-hour valid-input tests, two IPv4 Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) verified. The fresh one-million-seed simulator run and the sustained arbitrary-input parser and reassembly campaign [remain open](docs/RESULTS.md#pending-validation). |
+| M4 | The 10,000-connection memory workload met all five limits. Core copy checks passed for legacy and TCPv4 TUN, and six matched blocks retained the 4 KiB default. [Independent results](docs/RESULTS.md#independent-acceptance-on-november-21-2026) · [Earlier bulk, TUN and echo studies](docs/RESULTS.md#m4-bulk-tun-and-echo) |
 | M5 | Private build and evidence guides. [Reproduction commands and archive inventory](docs/results/reproduction/README.md) |
 
 The implementation covers the TCP state machine (RFC 9293), timestamps and window scaling
@@ -68,9 +68,20 @@ directions. Two active TUN FDs showed no consistent benefit on one event loop.
 
 At 10,000 connections, direct echo eliminated measured app staging in its
 paired workload. Its median CPU and p99 rose within overlapping run ranges.
-The 2,208 B TCB and about 3,334 B idle RSS growth per established connection
-missed their targets. PMU access was denied, and bounded warm-process C++
-allocation counts were nonzero. [M4 methods, individual studies and limits](docs/RESULTS.md#m4-bulk-tun-and-echo)
+That build's 2,208 B TCB and about 3,334 B idle RSS growth per established
+connection missed their targets. PMU access was denied, and bounded warm-process C++
+allocation counts were nonzero. [November 20 methods and results](docs/RESULTS.md#m4-bulk-tun-and-echo)
+
+On November 21, allocating stream state on demand reduced the TCB to 1,016 B.
+Median idle server RSS growth was 1,542.144 B per connection across five
+independent pairs with 10,000 untouched, handshake-idle sockets. Later ACKs or
+data can activate the additional 1,064 B stream object. [Memory, copy and ring-size evidence](docs/RESULTS.md#independent-acceptance-on-november-21-2026)
+
+The integrated sender trace records unique outstanding payload in
+`in_flight_bytes` alongside the existing packet count. Independent TUN captures
+checked every TX, RX, accepted-ACK and state snapshot in a clean transfer and
+a transfer with one loss. Dedicated cwnd-change, RTT-update and recovery-transition
+events remain open. [Trace captures and measured source](docs/results/trace-flight/README.md#integrated-runtime-on-november-21-2026)
 
 ## Non-goals
 
