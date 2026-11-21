@@ -82,6 +82,12 @@ public:
   // Precondition (checked): limit <= right_edge().
   InsertResult insert(std::uint64_t off, std::span<const std::byte> data, std::uint64_t limit);
 
+  // After permanent read shutdown, admit this sequence range with exactly
+  // the same chunk and reassembly rules as insert. No reader can observe
+  // its payload. Pre-existing out-of-order data and the FIN retain their offsets.
+  InsertResult insert_after_read_shutdown(std::uint64_t off, std::size_t len, std::uint64_t limit);
+  void discard_readable();
+
   // Forgets every range above contiguous_end() (reneging: the test knob of
   // §7.2, and a future memory-pressure prune).
   void drop_out_of_order();
@@ -120,6 +126,9 @@ public:
   void check_invariants() const;
 
 private:
+  template <bool materialize>
+  InsertResult insert_impl(std::uint64_t off, std::size_t len, const std::byte* data,
+                           std::uint64_t limit);
   // Number of ranges above the in-order data if [lo, hi) were held too.
   [[nodiscard]] std::size_t range_count_with(std::uint64_t lo, std::uint64_t hi) const;
   // Bytes of [lo, hi) not held yet.

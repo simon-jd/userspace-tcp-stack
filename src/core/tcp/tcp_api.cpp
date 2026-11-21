@@ -232,8 +232,8 @@ std::expected<void, Error> TcpEngine::tcp_shutdown(Handle h, Shutdown how) {
   const Time now = core_.now();
   if (how == Shutdown::read || how == Shutdown::both) {
     t.app_read_shut = true;
-    std::array<std::byte, 4096> sink{};
-    while (t.stream && t.stream->rcvq.read(sink) > 0) {
+    if (t.stream) {
+      t.stream->rcvq.discard_readable();
     }
     wake_chunk_waiters();
   }

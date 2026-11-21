@@ -46,6 +46,10 @@ public:
   // pool is exhausted, in which case [off + result, ...) is not stored.
   std::size_t write_at(std::uint64_t off, std::span<const std::byte> data) noexcept;
 
+  // Take the same chunks as a write, without materializing payload that the
+  // socket has shut down reading. The reserved bytes must never be read.
+  std::size_t reserve_at(std::uint64_t off, std::size_t len) noexcept;
+
   // Copies offsets [off, off + out.size()) to `out`. Precondition (checked):
   // begin() <= off. Bytes never written read as unspecified (deterministic)
   // values; bytes in a range without a chunk read as zero (debug builds abort).
@@ -77,6 +81,8 @@ private:
   [[nodiscard]] ChunkPool::ChunkId slot(std::size_t i) const noexcept {
     return slots_[slot_index(i)];
   }
+  template <bool materialize>
+  std::size_t store_at(std::uint64_t off, std::size_t len, const std::byte* data) noexcept;
   void ensure_slots(std::size_t n);
   void release_all() noexcept;
 
