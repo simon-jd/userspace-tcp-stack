@@ -135,7 +135,12 @@ def verify(output, expected_batches=None):
             active += end - begin
             last_end = end
             batches += 1
-    require(active >= spec["seconds"] * 10**9, "insufficient verified workload time")
+    require(batches > 0 and active >= spec["seconds"] * 10**9, "insufficient verified workload time")
+    properties = [(p.get("name"), p.get("value")) for p in cases[0].findall("./properties/property")]
+    expected = {key: str(value) for key, value in counts.items()}
+    expected["seed"] = str(prefix | idx)
+    require(len(properties) == len(expected) and dict(properties) == expected,
+            "XML properties differ from final batch")
     if expected_batches is not None:
         require(batches == expected_batches, "unexpected number of completed batches")
     return {"lane": spec["lane"], "run": spec["run"], "scale": spec["scale"], "batches": batches,
@@ -186,7 +191,14 @@ def main():
     check.add_argument("output", type=Path)
     check.add_argument("--expected-batches", type=int)
     args = parser.parse_args()
-    result = run(args) if args.action == "run" else verify(args.output, args.expected_batches)
+    if args.action == "run":
+        result = run(args)
+    else:
+        result = verify(args.output, args.expected_batches)
+        stored = read(args.output / "summary.json")
+        # Compare JSON values with their types (Python otherwise equates 1, True and 1.0).
+        require(json.dumps(stored, sort_keys=True) == json.dumps(result, sort_keys=True),
+                "stored summary differs from recomputed receipt")
     print(json.dumps(result, sort_keys=True))
 
 

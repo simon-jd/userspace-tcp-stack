@@ -42,11 +42,13 @@ are outside the workload.
 
 ## Run and independently read back
 
-Use two CPUs within 16–23 at nice 10, an offline testbed, and empty per-lane
-directories on the private project data volume. Build from the clean checkout
-at the same absolute path that the runner will see. The build needs local
-GoogleTest sources, Ninja and Python 3.11+. For example, inside the testbed
-with the checkout at /src and a new private results directory at /results:
+Use two CPUs within the project's 16–31 allocation at nice 10, an offline
+testbed, and empty per-lane directories on the private project data volume.
+Build from the clean checkout at the same absolute path that the runner will
+see. The build needs local GoogleTest sources, Ninja and Python 3.11+. The
+registered run uses CPUs 24 and 25. This example uses CPUs 16 and 17 inside
+the testbed with the checkout at /src and a new private results directory
+at /results.
 
 ~~~sh
 cd /src
@@ -67,6 +69,9 @@ For a short smoke run choose another run number, a new output path and
 e.g. --seconds 2 --scale 1. The check command accepts --expected-batches N
 for an external count cross-check. Both run commands need separate output
 paths. A failed or interrupted run leaves its available logs for inspection.
+For a stream smoke receipt with at least two batches,
+`python3 tests/selftest/valid_soak_receipt.py /path/to/stream-smoke` exercises
+the offline checker using temporary copies.
 
 start.json records the Git commit, tree and archive digest, selected source
 file digests, compilation database digest, test compile and link commands,
@@ -77,5 +82,10 @@ measured executable. test.log records per-batch steady-clock boundaries,
 64-bit seed and work counts. test.xml carries the GoogleTest verdict and
 last-batch properties. exit.json records the process exit, wall clock bounds
 and executable digest rechecked after exit. summary.json totals passing batch
-data and links the log and XML by SHA-256. Retain the testbed image ID and
-fresh build output alongside these receipts.
+data and links the log and XML by SHA-256. The offline check requires this
+saved summary. It matches the final log batch's seed and counters against the
+test case's XML properties, then compares every summary field with its value
+recomputed from the raw files. These checks establish internal consistency.
+Authenticating the origin of a receipt requires separate evidence, such as a
+signature verified with a trusted key. Retain the testbed image ID and fresh
+build output alongside these receipts.
