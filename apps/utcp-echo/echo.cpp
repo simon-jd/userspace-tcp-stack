@@ -245,7 +245,7 @@ void EchoClient::advance_load() {
       // the load and clear the connection map.
       for (auto& [id, c] : conns_) {
         c.waiting = true;
-        waiting_.push_back(id);
+        wait_for_token(id);
       }
       refill(start_);
       break;
@@ -309,7 +309,7 @@ void EchoClient::begin_request(ConnId id) {
   if (o_.rate > 0) {
     if (tokens_milli_ < 1000) {
       c.waiting = true;
-      waiting_.push_back(id);
+      wait_for_token(id);
       return;
     }
     tokens_milli_ -= 1000;
@@ -322,6 +322,17 @@ void EchoClient::begin_request(ConnId id) {
   send_some(id);
 }
 
+void EchoClient::wait_for_token(ConnId id) {
+  // Reuse capacity across requests. Move a live suffix only when the
+  // consumed prefix is at least as long, so compaction is amortized.
+  if (waiting_.size() == waiting_.capacity() && waiting_head_ != 0 &&
+      waiting_head_ >= waiting_.size() - waiting_head_) {
+    waiting_.erase(waiting_.begin(), waiting_.begin() + static_cast<std::ptrdiff_t>(waiting_head_));
+    waiting_head_ = 0;
+  }
+  waiting_.push_back(id);
+}
+
 void EchoClient::refill(Time now) {
   // Thousandths of a token: rate per second times the elapsed nanoseconds.
   // The elapsed time is capped at 1 s (the bucket holds at most
@@ -332,8 +343,11 @@ void EchoClient::refill(Time now) {
   const std::uint64_t cap = std::max<std::uint64_t>(o_.concurrency, 1) * 1000;
   tokens_milli_ = std::min(cap, tokens_milli_ + add);
   while (!done_ && tokens_milli_ >= 1000 && !waiting_.empty()) {
-    const ConnId id = waiting_.front();
-    waiting_.pop_front();
+    const ConnId id = waiting_[waiting_head_++];
+    if (waiting_head_ == waiting_.size()) {
+      waiting_.clear();
+      waiting_head_ = 0;
+    }
     if (conns_.contains(id) && conns_.at(id).waiting) {
       begin_request(id);
     }
@@ -552,8 +566,14 @@ JsonLine EchoClient::summary() const {
 }
 
 JsonLine EchoClient::load_report() const {
-  constexpr const char* phases[]{"baseline", "opening", "idle", "active", "drained"};
   JsonLine line;
+  load_report(line);
+  return line;
+}
+
+void EchoClient::load_report(JsonLine& line) const {
+  line.clear();
+  constexpr const char* phases[]{"baseline", "opening", "idle", "active", "drained"};
   line.add("role", "client")
       .add("phase", phases[static_cast<std::size_t>(load_phase_)])
       .add("open", conns_.size())
@@ -564,7 +584,6 @@ JsonLine EchoClient::load_report() const {
       .add("bytes", result_.bytes)
       .add("errors", result_.errors)
       .add("workload_start_ns", start_.ns);
-  return line;
 }
 
 // --- Program.
@@ -790,8 +809,9 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     std::fprintf(stderr, "utcp-echo: %s\n", s.error().c_str());
     return 1;
   }
+  JsonLine line;
   const auto emit = [&] {
-    auto line = client.load_report();
+    client.load_report(line);
     if (!report_load(t, line)) {
       client.abort("cannot write load report");
     }
@@ -803,14 +823,15 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
   }
   if (control_dir) {
     const auto dir = std::filesystem::path(*control_dir);
+    const std::array gates{dir / "open", dir / "active", dir / "close"};
     auto last_phase = client.load_phase();
-    gate_timer = t.add_timer(std::chrono::milliseconds(50), [&, dir, last_phase]() mutable {
+    gate_timer = t.add_timer(std::chrono::milliseconds(50), [&, gates, last_phase]() mutable {
       const auto phase = client.load_phase();
-      const char* gate = phase == LoadPhase::baseline ? "open" :
-                         phase == LoadPhase::idle ? "active" :
-                         phase == LoadPhase::drained ? "close" : nullptr;
+      const auto* gate = phase == LoadPhase::baseline ? &gates[0] :
+                         phase == LoadPhase::idle ? &gates[1] :
+                         phase == LoadPhase::drained ? &gates[2] : nullptr;
       std::error_code error;
-      if (gate && std::filesystem::exists(dir / gate, error)) {
+      if (gate && std::filesystem::exists(*gate, error)) {
         client.advance_load();
       } else if (error) {
         client.abort("cannot read load control: " + error.message());

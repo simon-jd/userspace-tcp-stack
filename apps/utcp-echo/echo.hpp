@@ -19,7 +19,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <expected>
 #include <map>
 #include <string>
@@ -138,6 +137,7 @@ public:
   void advance_load();
   [[nodiscard]] LoadPhase load_phase() const { return load_phase_; }
   [[nodiscard]] JsonLine load_report() const;
+  void load_report(JsonLine& line) const;
 
   void on_connected(ConnId id) override;
   void on_readable(ConnId id) override;
@@ -162,6 +162,7 @@ private:
   void read_some(ConnId id);
   void finish_conn(ConnId id, bool ok, const std::string& why);
   void refill(Time now);
+  void wait_for_token(ConnId id);
   void check_done();
 
   Transport& t_;
@@ -172,7 +173,8 @@ private:
   std::uint64_t requests_started_ = 0;
   LoadPhase load_phase_ = LoadPhase::baseline;
   TimerToken open_timer_ = 0;
-  std::deque<ConnId> waiting_;  // connections waiting for a rate token
+  std::vector<ConnId> waiting_;  // FIFO of connections waiting for a rate token
+  std::size_t waiting_head_ = 0;
   std::uint64_t tokens_milli_ = 0;  // rate tokens, in thousandths
   Time last_refill_{};
   TimerToken rate_timer_ = 0;
