@@ -75,15 +75,21 @@ struct Entry {
     ++state.counts.entries[n];
     if (state.depth++ == 0) {
       ++state.counts.outer[n];
-      if (state.sites) record(n);
+      if (state.sites) {
+        state.active = false;  // exclude any allocations internal to the unwinder
+        record(n);
+        state.active = true;
+      }
     }
   }
   ~Entry() { if (live) --state.depth; }
 };
 
+void* resolved[heap_api_count];
 template<HeapApi Api, typename Fn>
 Fn next() {
-  static auto fn = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, names[static_cast<unsigned>(Api)]));
+  constexpr auto index = static_cast<unsigned>(Api);
+  auto fn = reinterpret_cast<Fn>(resolved[index] ? resolved[index] : dlsym(RTLD_NEXT, names[index]));
   if (!fn) _exit(125);
   return fn;
 }
@@ -101,7 +107,14 @@ extern "C" void utcp_heap_stop(utcp_heap_counts* out) {
   state.active = false;
   *out = state.counts;
 }
-extern "C" void utcp_heap_sites(bool on) { state.sites = on; }
+extern "C" void utcp_heap_sites(bool on) {
+  // Called by the single-threaded harness before creating its first stack.
+  for (unsigned i=0;i<heap_api_count;++i) {
+    resolved[i]=dlsym(RTLD_NEXT,names[i]);
+    if (!resolved[i]) _exit(125);
+  }
+  state.sites = on;
+}
 extern "C" bool utcp_heap_write_sites(std::FILE* f) {
   for (unsigned i = 0; i < used; ++i) {
     const auto& s = sites[i];
