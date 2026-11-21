@@ -64,6 +64,61 @@ Counters recount(const SendQueue& q) {
   return c;
 }
 
+TEST(SendQueue, FlightBytesFollowPayloadRangeUnionAndReneging) {
+  ChunkPool pool(16);
+  SendQueue q(pool, 16'000);
+  q.write(pattern(2200, 0));
+  q.on_transmit(0, 1000, false, at(0), {});
+  q.on_transmit(1000, 1000, false, at(0), {});
+  q.on_transmit(2000, 200, true, at(0), {});
+  Deliveries d;
+  const utcp::Range islands[] = {{260, 320}, {120, 150}, {200, 240}, {1000, 2000}};
+  const utcp::Range bridge[] = {{130, 300}, {1190, 1220}};
+  q.on_sack(islands, at(1), d.fn());
+  EXPECT_EQ(q.in_flight_bytes(), 2200u - 1130u);
+  q.on_sack(bridge, at(2), d.fn());
+  q.on_sack(bridge, at(3), d.fn());
+  EXPECT_EQ(q.in_flight_bytes(), 2200u - 1200u);
+  EXPECT_EQ(q.counters().sacked_out, 1u);
+  q.on_cumulative_ack(160, at(4), d.fn());  // trim part of [120,320)
+  EXPECT_EQ(q.in_flight_bytes(), 2200u - 160u - 1160u);
+  q.split_to_mss(250);
+  EXPECT_EQ(q.in_flight_bytes(), 880u);
+  q.clear_all_sacked();
+  EXPECT_EQ(q.in_flight_bytes(), 2040u);
+  q.on_cumulative_ack(2200, false, at(5), d.fn());  // only the FIN remains
+  EXPECT_EQ(q.in_flight_bytes(), 0u);
+  EXPECT_EQ(q.counters().packets_out, 1u);
+  q.on_cumulative_ack(2200, true, at(6), d.fn());
+  EXPECT_EQ(q.in_flight_bytes(), 0u);
+}
+
+TEST(SendQueue, PurgeDiscardsOutstandingSackCoverage) {
+  ChunkPool pool(4);
+  SendQueue q(pool, 4000);
+  q.write(pattern(1100, 0));
+  send_all(q, 1000, at(0));
+  Deliveries d;
+  const utcp::Range tail[] = {{1000, 1100}};
+  q.on_sack(tail, at(1), d.fn());
+  EXPECT_EQ(q.in_flight_bytes(), 1000u);
+  q.purge();
+  EXPECT_EQ(q.in_flight_bytes(), 0u);
+}
+
+TEST(SendQueue, FlightBytesIgnoreRenoDuplicateAckPacketCredit) {
+  ChunkPool pool(4);
+  SendQueue q(pool, 4000);
+  q.set_sack_ok(false);
+  q.write(pattern(1041, 0));
+  send_all(q, 1000, at(0));
+  q.reno_dupack();
+  EXPECT_EQ(packets_in_flight(q.counters()), 1u);
+  EXPECT_EQ(q.in_flight_bytes(), 1041u);
+  q.purge();
+  EXPECT_EQ(q.in_flight_bytes(), 0u);
+}
+
 // held() charges the TxSegs held at least seg_charge() each (DESIGN §4.11;
 // sweep seeds 13775, 34664, 73713, 81519): unsent bytes count as bytes, and
 // segments of at least the charge count as their payload.

@@ -25,6 +25,11 @@ std::uint64_t SendQueue::una() const { return ring_.begin(); }
 std::uint64_t SendQueue::nxt() const { return nxt_; }
 std::uint64_t SendQueue::end() const { return end_; }
 
+std::uint32_t SendQueue::in_flight_bytes() const {
+  // One outstanding span fits the send buffer; only the absolute offsets need 64 bits.
+  return static_cast<std::uint32_t>(nxt_ - una() - (sack_coverage_ ? sack_coverage_->bytes : 0));
+}
+
 std::uint64_t SendQueue::held() const {
   const std::uint64_t sent = std::max<std::uint64_t>(
       nxt_ - una(), std::uint64_t{ctr_.packets_out} * std::uint64_t{seg_charge_});
@@ -182,6 +187,10 @@ AckedSummary SendQueue::on_cumulative_ack(std::uint64_t new_una, bool fin_acked,
   }
   ctr_.bytes_acked += new_una - old_una;
   ring_.consume(new_una - old_una);
+  if (sack_coverage_ && old_una < new_una) {
+    sack_coverage_->consume(new_una);
+    if (sack_coverage_->bytes == 0) sack_coverage_.reset();
+  }
   if (!sack_ok_ && s.pkts > 0) {
     // tcp_remove_reno_sacks: one ACK filled the hole, the rest ate duplicate ACKs.
     ctr_.sacked_out -= std::min(s.pkts - 1, ctr_.sacked_out);
@@ -192,6 +201,35 @@ AckedSummary SendQueue::on_cumulative_ack(std::uint64_t new_una, bool fin_acked,
   s.stopped_at_sacked = head_ < segs_.size() && segs_[head_].sacked;  // FLAG_SACK_RENEGING
   compact();
   return s;
+}
+
+// RFC 2018 blocks describe payload octets even when they cover only part of a TxSeg.
+void SendQueue::SackCoverage::include(Range block) {
+  auto it = by_end.lower_bound(block.begin);
+  while (it != by_end.end() && it->second <= block.end) {
+    block.begin = std::min(block.begin, it->second);
+    if (it->first >= block.end) {
+      bytes += it->second - block.begin;
+      it->second = block.begin;
+      return;
+    }
+    bytes -= it->first - it->second;
+    it = by_end.erase(it);
+  }
+  by_end.emplace_hint(it, block.end, block.begin);
+  bytes += block.size();
+}
+
+void SendQueue::SackCoverage::consume(std::uint64_t una) {
+  auto it = by_end.begin();
+  while (it != by_end.end() && it->first <= una) {
+    bytes -= it->first - it->second;
+    it = by_end.erase(it);
+  }
+  if (it != by_end.end() && it->second < una) {
+    bytes -= una - it->second;
+    it->second = una;
+  }
 }
 
 SackedSummary SendQueue::on_sack(std::span<const Range> blocks, Time now, DeliveredFn fn) {
@@ -220,9 +258,12 @@ SackedSummary SendQueue::on_sack(std::span<const Range> blocks, Time now, Delive
   // later block that starts below the end of an earlier one is not covered
   // by the earlier block, so it ends above every segment that block SACKed.
   for (const Range& b : std::span<const Range>(sorted.data(), n)) {
-    if (b.empty()) {
+    const Range payload{std::max(b.begin, una()), std::min(b.end, nxt_)};
+    if (payload.empty()) {
       continue;
     }
+    if (!sack_coverage_) sack_coverage_ = std::make_unique<SackCoverage>();
+    sack_coverage_->include(payload);
     // Segments are sorted and contiguous: walk those that start inside b.
     for (std::size_t i = index_of(b.begin); i < segs_.size(); ++i) {
       TxSeg& seg = segs_[i];
@@ -249,12 +290,14 @@ SackedSummary SendQueue::on_sack(std::span<const Range> blocks, Time now, Delive
       seg.sacked = true;
       ++ctr_.sacked_out;
       ++s.newly_sacked;
-      high_sacked_ = std::max(high_sacked_, seg.end());
+      sack_coverage_->high_tagged = std::max(sack_coverage_->high_tagged, seg.end());
       fn(seg, true);
       seg.rate_used = true;  // tcp_rate_skb_delivered: delivered_mstamp = 0
     }
   }
-  s.high_sacked = high_sacked_ > una() ? high_sacked_ : 0;
+  if (sack_coverage_ && sack_coverage_->high_tagged > una()) {
+    s.high_sacked = sack_coverage_->high_tagged;
+  }
   return s;
 }
 
@@ -286,7 +329,7 @@ void SendQueue::clear_all_sacked() {
     segs_[i].sacked = false;
   }
   ctr_.sacked_out = 0;
-  high_sacked_ = 0;
+  sack_coverage_.reset();
 }
 
 // tcp_limit_reno_sacked: sacked_out + max(lost_out, 1) <= packets_out.
@@ -383,7 +426,7 @@ void SendQueue::purge() {
   segs_.clear();
   head_ = 0;
   ctr_.packets_out = ctr_.sacked_out = ctr_.lost_out = ctr_.retrans_out = 0;
-  high_sacked_ = 0;
+  sack_coverage_.reset();
 }
 
 void SendQueue::compact() {

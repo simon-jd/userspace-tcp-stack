@@ -10,6 +10,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -94,6 +96,8 @@ public:
 
   [[nodiscard]] std::uint64_t una() const;  // first unacknowledged byte (SND.UNA as an offset)
   [[nodiscard]] std::uint64_t nxt() const;  // first byte never sent (SND.NXT as an offset); never moves back
+  // Unique transmitted payload not cumulatively ACKed or covered by accepted SACK blocks.
+  [[nodiscard]] std::uint32_t in_flight_bytes() const;
   [[nodiscard]] std::uint64_t end() const;  // one past the last byte written
   // capacity() - held(), or 0 if held() >= capacity().
   [[nodiscard]] std::uint32_t free_space() const;
@@ -228,7 +232,16 @@ private:
   std::uint64_t next_id_ = 0;
   Counters ctr_;
   std::uint64_t lost_total_ = 0;
-  std::uint64_t high_sacked_ = 0;  // highest end of a TxSeg SACKed since the last clear
+  struct SackCoverage {
+    // Disjoint, nonadjacent payload ranges. Key by end so a partial cumulative ACK
+    // trims the first range in place. The packet scoreboard still tags whole TxSegs.
+    std::map<std::uint64_t, std::uint64_t> by_end;
+    std::uint64_t bytes = 0;
+    std::uint64_t high_tagged = 0;  // highest end of a whole TxSeg tagged SACKed
+    void include(Range block);
+    void consume(std::uint64_t una);
+  };
+  std::unique_ptr<SackCoverage> sack_coverage_;  // allocated only while SACKs are outstanding
   bool sack_ok_ = true;
   bool fin_sent_ = false, fin_acked_ = false;
 };

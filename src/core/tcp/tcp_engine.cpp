@@ -395,6 +395,7 @@ TraceEvent TcpEngine::trace_base(const Tcb& t, TraceKind k) const {
   e.ssthresh = t.cc_conn.ssthresh;
   const Counters& c = t.sndq.counters();
   e.in_flight = packets_in_flight(c);
+  e.in_flight_bytes = t.sndq.in_flight_bytes();
   e.snd_wnd = t.snd_wnd;
   e.sacked_out = c.sacked_out;
   e.lost_out = c.lost_out;
