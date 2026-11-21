@@ -149,3 +149,5 @@ and the final telemetry for failed runs. The runner preserves evidence
 already written if a later gate fails.
 
 The [legacy single-queue baseline](pre-copy.md) records the five paired timing runs.
+
+The [TCP memory measurements](../m4-memory/README.md) compare the original and deferred stream storage at the same 10,000-connection load.
