@@ -118,11 +118,25 @@ overlapping pairs per family.
   [terminal receipt](../m2-multiflow/measured/production-status.json)
   bind the schedule, deployed runtime, and accepted calibrations.
 
-[M5 output bundle digests](m2-replayed-output.tsv) bind the sorted
-individual SHA-256 entries for the regenerated comparison files. The
-bundles include native tables, checked endpoint and report outputs, and
-figures. Multiflow includes the endpoint census. Diagnostic transcripts
-and previously archived physical-replay receipts are outside these bundles.
+[M5 output bundle digests](m2-replayed-output.tsv) record the file count
+and SHA-256 of a manifest for each campaign's regenerated comparison files.
+Build the manifest from the campaign's fresh replay directory using these
+file selections.
+
+- For `checkpoint`, `bbr`, `ablation`, and `matrix`, include the immediate
+  regular files at the replay root except `plot-selection.log`. Include the
+  immediate regular files in `native`, `audit`, `report`, `plots`,
+  `shallow-queue`, and `wire-report` where present, excluding `audit.json`
+  from those subdirectories.
+- For `multiflow`, include all regular files recursively under `tables`
+  and the root `physical-connections.csv`.
+
+For every selected file, get its relative POSIX pathname with
+`path.relative_to(replay_root).as_posix()`. Sort these strings with Python's
+`sorted()`. Write each file's lowercase hexadecimal SHA-256, two ASCII spaces,
+the relative pathname, and one line feed (`\n`) in that order. Encode the
+manifest as UTF-8 with no header. Check the number of entries and hash the
+manifest bytes with SHA-256 to compare with the TSV.
 
 The replay reads saved endpoint telemetry, packet projections, and prior
 capture receipts where applicable. Independent decoding, capture lengths,
