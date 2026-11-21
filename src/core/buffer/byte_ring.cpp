@@ -93,15 +93,24 @@ void ByteRing::ensure_slots(std::size_t n) {
 }
 
 std::size_t ByteRing::write_at(std::uint64_t off, std::span<const std::byte> data) noexcept {
-  UTCP_CHECK(off >= begin_ && off <= limit() && data.size() <= limit() - off);
-  if (data.empty()) {
+  return store_at<true>(off, data.size(), data.data());
+}
+
+std::size_t ByteRing::reserve_at(std::uint64_t off, std::size_t len) noexcept {
+  return store_at<false>(off, len, nullptr);
+}
+
+template <bool materialize>
+std::size_t ByteRing::store_at(std::uint64_t off, std::size_t len, const std::byte* data) noexcept {
+  UTCP_CHECK(off >= begin_ && off <= limit() && len <= limit() - off);
+  if (len == 0) {
     return 0;
   }
   if (count_ == 0) {
     base_ = align_down(begin_);
   }
   std::size_t written = 0;
-  while (written < data.size()) {
+  while (written < len) {
     const std::uint64_t pos = off + written;
     const auto idx = static_cast<std::size_t>((pos - base_) / chunk_size);
     ensure_slots(idx + 1);
@@ -115,8 +124,10 @@ std::size_t ByteRing::write_at(std::uint64_t off, std::span<const std::byte> dat
       ++held_;
     }
     const auto in_chunk = static_cast<std::size_t>(pos % chunk_size);
-    const std::size_t n = std::min(data.size() - written, chunk_size - in_chunk);
-    std::memcpy(pool_->data(id) + in_chunk, data.data() + written, n);
+    const std::size_t n = std::min(len - written, chunk_size - in_chunk);
+    if constexpr (materialize) {
+      std::memcpy(pool_->data(id) + in_chunk, data + written, n);
+    }
     written += n;
   }
   high_ = std::max(high_, off + written);
