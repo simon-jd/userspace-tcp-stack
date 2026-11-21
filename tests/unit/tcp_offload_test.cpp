@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <span>
 
+#include "core/buffer/chunk_pool.hpp"
 #include "core/wire/ipv4.hpp"
 #include "core/wire/tcp.hpp"
 #include "support/packet_builder.hpp"
@@ -102,10 +103,11 @@ TEST(TcpOffload, PartialSendAndShortReadsKeepTheAcceptedBytes) {
   auto cfg = ConnectedStack::config();
   cfg.chunk_limit = 1;
   cfg.tcp.nodelay = true;
+  cfg.tcp.initial_cwnd = 1 + ChunkPool::chunk_size / mss;
   ConnectedStack c(cfg);
   ASSERT_NO_FATAL_FAILURE(c.connect());
-  const auto data = t::pattern(5059, 171);
-  constexpr std::uint32_t accepted = 4096;
+  constexpr auto accepted = ChunkPool::chunk_size;
+  const auto data = t::pattern(accepted + 963, 171);
   ASSERT_EQ(c.stack.tcp_send(c.server, data).value_or(0), accepted);
   t::Bytes on_wire;
   while (const auto packet = c.stack.pop_transmit()) {
@@ -135,7 +137,9 @@ TEST(TcpOffload, ReadShutdownWithUnreadPrefixAndPendingFinPreservesAdmission) {
   cfg.chunk_limit = 3;
   ConnectedStack c(cfg);
   ASSERT_NO_FATAL_FAILURE(c.connect());
-  constexpr std::uint32_t prefix = 4500, gap_end = 8192, end = gap_end + 41;
+  constexpr auto prefix = ChunkPool::chunk_size + 404u;
+  constexpr auto gap_end = 2u * ChunkPool::chunk_size;
+  constexpr auto end = gap_end + 41u;
   const auto data = t::pattern(end, 91);
   auto feed = [&](std::uint32_t start, std::uint32_t stop) {
     for (auto off = start; off < stop; off += mss) {
@@ -177,19 +181,20 @@ TEST(TcpOffload, ReadShutdownStillChargesOutOfOrderChunksAndPrunesOnHoleFill) {
   ConnectedStack c(cfg);
   ASSERT_NO_FATAL_FAILURE(c.connect());
   ASSERT_TRUE(c.stack.tcp_shutdown(c.server, Shutdown::read));
-  const auto block = t::pattern(4096, 19);
-  c.receive_piece(4096, std::span(block).first(17));
+  constexpr auto chunk = ChunkPool::chunk_size;
+  const auto block = t::pattern(chunk, 19);
+  c.receive_piece(chunk, std::span(block).first(17));
   EXPECT_EQ(c.stack.debug_usage().chunks - c.stack.debug_usage().chunks_free, 1u);
-  c.receive_piece(8192, std::span(block).first(23));
+  c.receive_piece(2 * chunk, std::span(block).first(23));
   EXPECT_EQ(c.stack.stats().TcpExtTCPOFODrop, 1u);
   EXPECT_EQ(c.stack.tcp_info(c.server)->bytes_received, 0u);
   for (std::uint32_t off = 0; off < block.size(); off += mss) {
     c.receive_piece(off, std::span(block).subspan(off, std::min<std::size_t>(mss, block.size() - off)));
   }
   EXPECT_EQ(c.stack.stats().TcpExtOfoPruned, 1u);
-  EXPECT_EQ(c.stack.tcp_info(c.server)->bytes_received, 4096u);
-  c.receive_piece(4096, std::span(block).first(17), true);
-  EXPECT_EQ(c.stack.tcp_info(c.server)->bytes_received, 4113u);
+  EXPECT_EQ(c.stack.tcp_info(c.server)->bytes_received, chunk);
+  c.receive_piece(chunk, std::span(block).first(17), true);
+  EXPECT_EQ(c.stack.tcp_info(c.server)->bytes_received, chunk + 17u);
   EXPECT_EQ(c.stack.tcp_info(c.server)->state, TcpState::close_wait);
   EXPECT_EQ(c.stack.debug_usage().chunks_free, 1u);
   c.stack.debug_check();

@@ -12,7 +12,7 @@ docker run --rm --network none --cpuset-cpus "$cpus" -v utcp-data:/data "$image"
   mkdir "/data/m4/$volume_dir"
 for mode in legacy tcpv4; do
   for direction in send recv; do
-    docker run --rm --network none --cpuset-cpus "$cpus" --cap-add NET_ADMIN --device /dev/net/tun \
+    docker run --rm -i --network none --cpuset-cpus "$cpus" --cap-add NET_ADMIN --device /dev/net/tun \
       --mount "type=volume,src=utcp-data,dst=/out,volume-subpath=m4/$volume_dir" \
       --mount "type=bind,src=$root,dst=$root,readonly" -w "$root" \
       --mount type=bind,src=/usr/bin/gdb,dst=/usr/bin/gdb,readonly \
@@ -49,6 +49,8 @@ done
 timeout 60 "$bin" --backend kernel --connect 198.18.0.2:7304 "--$other" \
   "${common[@]}" "$out/linux.jsonl" >"$out/client.log" 2>&1
 wait "$debugger"
+test -s "$out/copies.json"
+test -s "$out/stack.json"
 trap - EXIT
 INNER
   done
