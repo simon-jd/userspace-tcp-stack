@@ -18,6 +18,8 @@ class AppTrial(BulkTrial):
         if role == "server":
             if "--tun-offload" not in argv:
                 argv += ("--tun-offload", self.args.offload)
+            if self.args.queues > 1:
+                argv += ("--tun-queues",str(self.args.queues))
             if self.args.trace:
                 argv += ("--set=test_fixed_pacing_rate=800Mbit","--trace",self.out+"/server/events.trace","--trace-kinds","tx")
         super().launch(role,*argv)
@@ -41,8 +43,29 @@ class AppTrial(BulkTrial):
         r = self.count(phase)
         snaps["server"]["cpp_new"] = {"calls":r["calls"],"sample_ns":r["start_ns"]}
         return snaps
+    def network_readback(self):
+        if self.args.queues == 1:
+            return super().network_readback()
+        summary = {}
+        for role in ("client","server"):
+            pid = self.docker(role,"cat",self.out+"/"+role+"/pid")
+            digest = self.docker(role,"sha256sum","/proc/"+pid+"/exe").split()[0]
+            require(digest==self.binary_shas[role], "running binary mismatch")
+            summary[role] = {"running_sha256":digest,"eth0_features":self.docker(role,"ethtool","-k","eth0")}
+            if role == "server":
+                raw=self.docker(role,"sh","-c",'grep -h "^iff:" /proc/"$1"/fdinfo/*',"sh",pid)
+                require(raw.count("utcp0")==self.args.queues,"active fd count mismatch")
+                summary[role]["tun_queues"]=self.docker(role,"ls","-1","/sys/class/net/utcp0/queues").splitlines()
+                summary[role]["active_fdinfo"]=raw
+        self.capture_json("server","network.json",summary)
+        return summary
     def setup(self):
         super().setup()
+        if self.args.queues > 1:
+            self.docker("server","ip","tuntap","del","dev","utcp0","mode","tun")
+            self.docker("server","ip","tuntap","add","dev","utcp0","mode","tun","vnet_hdr","multi_queue")
+            self.docker("server","ip","addr","add","198.18.0.1/24","dev","utcp0")
+            self.docker("server","ip","link","set","dev","utcp0","mtu","1500","txqueuelen","10000","up")
         if self.args.offload == "tcpv4":
             self.docker("server","ethtool","-K","eth0","gro","on")
             self.docker("client","ethtool","-K","eth0","tso","on","gso","on","gro","on")
@@ -86,6 +109,7 @@ def main():
     p.add_argument("arm",choices=["send","receive","staged","direct"])
     p.add_argument("--source",required=True)
     p.add_argument("--offload",choices=["legacy","tcpv4"],default="legacy")
+    p.add_argument("--queues",choices=(1,2),type=int,default=1)
     p.add_argument("--trace",action="store_true")
     a=p.parse_args()
     bulk=a.arm in ("send","receive")
