@@ -145,6 +145,8 @@ struct TraceEvent {
   std::optional<CcAlgo> cc_override;
   std::optional<BbrInfo> bbr;  // only for connections using BBR
 
+  // Local sender's unique payload without cumulative or selective acknowledgement.
+  std::uint32_t in_flight_bytes = 0;
   bool operator==(const TraceEvent&) const = default;
 };
 
@@ -287,6 +289,7 @@ void for_each_field(const TraceEvent& e, F&& f) {
     f(std::string_view{"bbr_pacing_gain_q8"}, e.bbr->pacing_gain_q8);
     f(std::string_view{"bbr_cwnd_gain_q8"}, e.bbr->cwnd_gain_q8);
   }
+  f(std::string_view{"in_flight_bytes"}, e.in_flight_bytes);
 }
 
 }  // namespace utcp

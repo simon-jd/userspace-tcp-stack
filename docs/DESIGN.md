@@ -1367,6 +1367,11 @@ redundant SACK information. At an unchanged cumulative ACK the receive and accep
 distinguish newly SACKed segments from repeated blocks. An ACK beyond the marker, Recovery/Loss, or RTO
 also ends the episode (RFC 8985 §7.4.2).
 
+The wire checker reconstructs its own outstanding bytes. For ordinary accepted ACKs,
+the sender's corresponding trace quantity is `in_flight_bytes` (§10.2). Read the
+post-processing `ack` snapshot for a received ACK and the post-send `tx` snapshot
+for a data segment. FIN contributes no payload.
+
 The pacing checker groups each sender's transmit traces at `burst_start`. At the gate rate, a burst takes
 `bytes × 10⁹ / gate_rate` nanoseconds. The next deadline is the later of the send time and prior deadline,
 plus that interval, less lateness credit capped at half the interval. Startup bursts stamp the send time
@@ -1571,11 +1576,30 @@ struct TraceEvent {                                 // POD; no strings
   std::uint32_t sacked_out, lost_out, retrans_out;  // packets
   std::int64_t srtt_ns, rttvar_ns, rto_ns; std::uint64_t delivered, pacing_rate, delivery_rate;
   std::uint64_t snd_una_off, snd_nxt_off;
+  // Optional diagnostics and pacing fields omitted here.
+  std::uint32_t in_flight_bytes;
 };
 class TraceSink { public: virtual ~TraceSink() = default; virtual void on_event(const TraceEvent&) = 0; };
 ```
 
-`StackConfig::trace_mask` selects kinds; with no sink the cost is one branch. The JSONL writer (sim, apps) emits
+Each connection event reports its local sender. `in_flight` counts packets using
+the congestion-control formula in §4.11. `in_flight_bytes` counts unique transmitted
+payload in `[snd_una_off, snd_nxt_off)` minus the union of accepted SACK blocks
+within that span. It excludes SYN, FIN and zero-window probes. A partial cumulative
+ACK or SACK removes exactly its covered payload. Overlaps and repeated blocks
+count once. A retransmission or loss mark leaves the byte count unchanged. A
+scoreboard reset for reneging restores coverage to outstanding bytes. Reno
+duplicate-ACK packet credit has no byte-range evidence and leaves the byte count
+unchanged. With no outstanding payload, including in TIME-WAIT, the field is zero.
+
+`rx` precedes input processing. An accepted `ack` follows ACK processing. `tx`
+includes the send just recorded. `state` records the queue when the state changes,
+so a close transition can precede purging outstanding data. The sender retains
+SACK coverage independently of the trace sink. Enabling tracing mid-connection
+therefore includes previously accepted SACKs. Historical JSONL records omit the
+new key, and readers should treat a missing byte value as unavailable.
+
+`StackConfig::trace_mask` selects events. With no sink, event construction is skipped. The JSONL writer (sim, apps) emits
 one line per event with fixed keys (`{"t":1234567,"node":"a","conn":3,"ev":"ack","cwnd":42,"srtt_us":20113,...}`);
 `tools/` scripts plot cwnd, RTT and in-flight from traces and `utcp-bulk` JSONL on one axis with Linux data.
 pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` writes what crosses the TUN with

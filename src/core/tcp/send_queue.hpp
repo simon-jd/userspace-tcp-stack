@@ -10,6 +10,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -94,6 +96,8 @@ public:
 
   [[nodiscard]] std::uint64_t una() const;  // first unacknowledged byte (SND.UNA as an offset)
   [[nodiscard]] std::uint64_t nxt() const;  // first byte never sent (SND.NXT as an offset); never moves back
+  // Unique transmitted payload not cumulatively ACKed or covered by accepted SACK blocks.
+  [[nodiscard]] std::uint32_t in_flight_bytes() const;
   [[nodiscard]] std::uint64_t end() const;  // one past the last byte written
   // capacity() - held(), or 0 if held() >= capacity().
   [[nodiscard]] std::uint32_t free_space() const;
@@ -220,7 +224,7 @@ private:
   ByteRing ring_;  // begin() is una()
   std::uint32_t capacity_;
   std::uint32_t seg_charge_ = 0;
-  std::uint64_t nxt_ = 0, end_ = 0;
+  std::uint64_t nxt_ = 0;
   // TxSegs in sequence order: segs_[head_, size()); popped entries below
   // head_ are dropped by compact() (amortised O(1) per pop).
   std::vector<TxSeg> segs_;
@@ -228,7 +232,20 @@ private:
   std::uint64_t next_id_ = 0;
   Counters ctr_;
   std::uint64_t lost_total_ = 0;
-  std::uint64_t high_sacked_ = 0;  // highest end of a TxSeg SACKed since the last clear
+  std::uint64_t high_sacked_ = 0;
+  // Only the portions that overlap untagged segments need interval bookkeeping.
+  struct PartialSacks {
+    using Ranges = std::map<std::uint64_t, std::uint64_t>;  // disjoint intervals, end -> begin
+    Ranges ranges;
+    Ranges::node_type spare;  // reuse the last removed node when a block moves or grows
+    std::uint64_t bytes = 0;
+    void include(Range block);
+    void exclude(Range block);
+    void put(Ranges::iterator hint, Range block);
+    void discard(Ranges::iterator it);
+  };
+  std::unique_ptr<PartialSacks> partial_sacks_;
+  std::uint32_t tagged_bytes_ = 0;  // remaining payload of whole segments tagged SACKed
   bool sack_ok_ = true;
   bool fin_sent_ = false, fin_acked_ = false;
 };

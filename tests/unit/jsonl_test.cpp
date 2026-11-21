@@ -91,6 +91,7 @@ TEST(Jsonl, TraceEventKeys) {
   e.kind = TraceKind::ack;
   e.tx = TxKind::fast_rexmit;
   e.cwnd = 42;
+  e.in_flight = 3;
   e.srtt_ns = 20'113'999;
   e.rto_ns = -1500;
   JsonLine l;
@@ -104,8 +105,10 @@ TEST(Jsonl, TraceEventKeys) {
                             "\"cause\":\"none\",\"timer\":\"none\",\"timer_op\":\"none\","))
       << s;
   EXPECT_NE(s.find("\"cwnd\":42,"), std::string::npos) << s;
+  EXPECT_NE(s.find(R"("in_flight":3,)"), std::string::npos) << s;
+  EXPECT_NE(s.find(R"("in_flight_bytes":0)"), std::string::npos) << s;
   EXPECT_NE(s.find("\"srtt_us\":20113,\"rttvar_us\":0,\"rto_us\":-1,"), std::string::npos) << s;
-  EXPECT_TRUE(s.ends_with("\"snd_nxt_off\":0,\"gate_rate\":0,\"burst_start\":false}")) << s;
+  EXPECT_TRUE(s.ends_with("\"snd_nxt_off\":0,\"gate_rate\":0,\"burst_start\":false,\"in_flight_bytes\":0}")) << s;
 }
 
 TEST(Jsonl, BbrTraceAndSocketOverrideFields) {
@@ -118,7 +121,7 @@ TEST(Jsonl, BbrTraceAndSocketOverrideFields) {
                                       utcp::test::field_count<utcp::BbrInfo>());
   EXPECT_TRUE(l.str().ends_with(R"("cc_override":"bbr","bbr_mode":"PROBE_BW","bbr_lt_use_bw":true,)"
                                 R"("bbr_bandwidth_q24":8388,"bbr_min_rtt_us":20000,)"
-                                R"("bbr_pacing_gain_q8":256,"bbr_cwnd_gain_q8":512})"));
+                                R"("bbr_pacing_gain_q8":256,"bbr_cwnd_gain_q8":512,"in_flight_bytes":0})"));
 }
 
 TEST(Jsonl, WriterWritesOneLinePerCall) {

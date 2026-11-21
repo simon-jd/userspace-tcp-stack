@@ -435,8 +435,11 @@ TraceEvent TcpEngine::trace_base(const Tcb& t, TraceKind k) const {
     e.bbr = bbr->info();
     e.delivery_rate = rate_delivery_rate(t.rate, t.mss_cache);
   }
-  e.snd_una_off = t.stream ? t.stream->sndq.una() : 0;
-  e.snd_nxt_off = t.stream ? t.stream->sndq.nxt() : 0;
+  if (t.stream) {
+    e.snd_una_off = t.stream->sndq.una();
+    e.snd_nxt_off = t.stream->sndq.nxt();
+    e.in_flight_bytes = t.stream->sndq.in_flight_bytes();
+  }
   return e;
 }
 
