@@ -16,19 +16,23 @@ std::size_t SendQueue::write(std::span<const std::byte> data) {
   if (n == 0) {
     return 0;
   }
-  const std::size_t written = ring_.write_at(end_, data.first(n));
-  end_ += written;
-  return written;
+  return ring_.write_at(end(), data.first(n));
 }
 
 std::uint64_t SendQueue::una() const { return ring_.begin(); }
 std::uint64_t SendQueue::nxt() const { return nxt_; }
-std::uint64_t SendQueue::end() const { return end_; }
+std::uint64_t SendQueue::end() const { return ring_.high_water(); }
+
+std::uint32_t SendQueue::in_flight_bytes() const {
+  // One outstanding span fits the send buffer; only the absolute offsets need 64 bits.
+  const auto partial = partial_sacks_ ? partial_sacks_->bytes : 0;
+  return static_cast<std::uint32_t>(nxt_ - una() - tagged_bytes_ - partial);
+}
 
 std::uint64_t SendQueue::held() const {
   const std::uint64_t sent = std::max<std::uint64_t>(
       nxt_ - una(), std::uint64_t{ctr_.packets_out} * std::uint64_t{seg_charge_});
-  return (end_ - nxt_) + sent;
+  return (end() - nxt_) + sent;
 }
 
 std::uint32_t SendQueue::free_space() const {
@@ -48,7 +52,7 @@ void SendQueue::set_capacity(std::uint32_t capacity) {
 }
 
 void SendQueue::copy_out(std::uint64_t off, std::span<std::byte> dst) const {
-  UTCP_CHECK(una() <= off && off + dst.size() <= end_);
+  UTCP_CHECK(una() <= off && off + dst.size() <= end());
   ring_.read_at(off, dst);
 }
 
@@ -91,8 +95,8 @@ TxSeg& SendQueue::on_transmit(std::uint64_t off, std::uint32_t len, bool fin, Ti
   if (new_data) {
     UTCP_CHECK(len > 0 || fin);
     UTCP_CHECK(!fin_sent_);
-    UTCP_CHECK(off + len <= end_);
-    UTCP_CHECK(!fin || off + len == end_);  // the FIN follows the last byte
+    UTCP_CHECK(off + len <= end());
+    UTCP_CHECK(!fin || off + len == end());  // the FIN follows the last byte
     TxSeg seg;
     seg.id = next_id_++;
     seg.off = off;
@@ -138,7 +142,7 @@ AckedSummary SendQueue::on_cumulative_ack(std::uint64_t new_una, bool fin_acked,
   static_cast<void>(now);
   const std::uint64_t old_una = una();
   UTCP_CHECK(new_una <= nxt_);
-  UTCP_CHECK(!fin_acked || (fin_sent_ && new_una == end_));
+  UTCP_CHECK(!fin_acked || (fin_sent_ && new_una == end()));
   if (new_una < old_una) {
     new_una = old_una;  // an old ACK acknowledges nothing new
   }
@@ -163,6 +167,7 @@ AckedSummary SendQueue::on_cumulative_ack(std::uint64_t new_una, bool fin_acked,
     }
     if (seg.sacked) {
       --ctr_.sacked_out;
+      tagged_bytes_ -= seg.len;
     }
     if (seg.lost) {
       --ctr_.lost_out;
@@ -177,11 +182,19 @@ AckedSummary SendQueue::on_cumulative_ack(std::uint64_t new_una, bool fin_acked,
   if (head_ < segs_.size() && segs_[head_].off < new_una) {
     TxSeg& seg = segs_[head_];
     const auto delta = static_cast<std::uint32_t>(new_una - seg.off);
+    if (seg.sacked) tagged_bytes_ -= delta;
     seg.off = new_una;
     seg.len -= delta;
   }
   ctr_.bytes_acked += new_una - old_una;
   ring_.consume(new_una - old_una);
+  if (partial_sacks_ && old_una < new_una) {
+    if (new_una == nxt_) {
+      partial_sacks_.reset();
+    } else {
+      partial_sacks_->exclude({old_una, new_una});
+    }
+  }
   if (!sack_ok_ && s.pkts > 0) {
     // tcp_remove_reno_sacks: one ACK filled the hole, the rest ate duplicate ACKs.
     ctr_.sacked_out -= std::min(s.pkts - 1, ctr_.sacked_out);
@@ -192,6 +205,55 @@ AckedSummary SendQueue::on_cumulative_ack(std::uint64_t new_una, bool fin_acked,
   s.stopped_at_sacked = head_ < segs_.size() && segs_[head_].sacked;  // FLAG_SACK_RENEGING
   compact();
   return s;
+}
+
+void SendQueue::PartialSacks::put(Ranges::iterator hint, Range block) {
+  if (spare.empty()) {
+    ranges.emplace_hint(hint, block.end, block.begin);
+  } else {
+    spare.key() = block.end;
+    spare.mapped() = block.begin;
+    ranges.insert(hint, std::move(spare));
+  }
+}
+
+void SendQueue::PartialSacks::discard(Ranges::iterator it) {
+  if (spare.empty()) {
+    spare = ranges.extract(it);
+  } else {
+    ranges.erase(it);
+  }
+}
+
+void SendQueue::PartialSacks::include(Range block) {
+  auto it = ranges.lower_bound(block.begin);
+  while (it != ranges.end() && it->second <= block.end) {
+    block.begin = std::min(block.begin, it->second);
+    if (it->first >= block.end) {
+      bytes += it->second - block.begin;
+      it->second = block.begin;
+      return;
+    }
+    bytes -= it->first - it->second;
+    discard(it++);
+  }
+  put(it, block);
+  bytes += block.size();
+}
+
+void SendQueue::PartialSacks::exclude(Range block) {
+  auto it = ranges.upper_bound(block.begin);
+  while (it != ranges.end() && it->second < block.end) {
+    const Range old{it->second, it->first};
+    bytes -= std::min(old.end, block.end) - std::max(old.begin, block.begin);
+    if (old.end > block.end) {
+      it->second = block.end;
+      if (old.begin < block.begin) put(it, {old.begin, block.begin});
+      break;
+    }
+    discard(it++);
+    if (old.begin < block.begin) put(it, {old.begin, block.begin});
+  }
 }
 
 SackedSummary SendQueue::on_sack(std::span<const Range> blocks, Time now, DeliveredFn fn) {
@@ -220,18 +282,25 @@ SackedSummary SendQueue::on_sack(std::span<const Range> blocks, Time now, Delive
   // later block that starts below the end of an earlier one is not covered
   // by the earlier block, so it ends above every segment that block SACKed.
   for (const Range& b : std::span<const Range>(sorted.data(), n)) {
-    if (b.empty()) {
+    const Range payload{std::max(b.begin, una()), std::min(b.end, nxt_)};
+    if (payload.empty()) {
       continue;
     }
-    // Segments are sorted and contiguous: walk those that start inside b.
-    for (std::size_t i = index_of(b.begin); i < segs_.size(); ++i) {
+    std::size_t first = index_of(payload.begin);
+    if (first > head_ && segs_[first - 1].end() > payload.begin) --first;
+    for (std::size_t i = first; i < segs_.size(); ++i) {
       TxSeg& seg = segs_[i];
-      if (seg.end() > b.end || seg.off >= b.end) {
-        break;
-      }
-      if (seg.sacked || seg.len == 0) {
+      if (seg.off >= payload.end) break;
+      if (seg.sacked || seg.len == 0) continue;
+      const Range overlap{std::max(payload.begin, seg.off), std::min(payload.end, seg.end())};
+      if (overlap.size() != seg.len) {
+        // RFC 2018 also reports individual octets within an untagged segment.
+        if (!partial_sacks_) partial_sacks_ = std::make_unique<PartialSacks>();
+        partial_sacks_->include(overlap);
         continue;
       }
+      if (partial_sacks_) partial_sacks_->exclude(overlap);
+      tagged_bytes_ += seg.len;
       // Linux tcp_sacktag_one.
       if (seg.retrans_inflight) {
         // A retransmission of a segment not marked lost is believed to be
@@ -287,6 +356,8 @@ void SendQueue::clear_all_sacked() {
   }
   ctr_.sacked_out = 0;
   high_sacked_ = 0;
+  tagged_bytes_ = 0;
+  partial_sacks_.reset();
 }
 
 // tcp_limit_reno_sacked: sacked_out + max(lost_out, 1) <= packets_out.
@@ -378,12 +449,14 @@ std::span<const TxSeg> SendQueue::segs() const {
 }
 
 void SendQueue::purge() {
-  ring_.consume(end_ - una());  // begin() reaches high_water(): every chunk is freed
-  nxt_ = end_;
+  ring_.consume(end() - una());  // begin() reaches high_water(): every chunk is freed
+  nxt_ = end();
   segs_.clear();
   head_ = 0;
   ctr_.packets_out = ctr_.sacked_out = ctr_.lost_out = ctr_.retrans_out = 0;
   high_sacked_ = 0;
+  tagged_bytes_ = 0;
+  partial_sacks_.reset();
 }
 
 void SendQueue::compact() {
@@ -398,6 +471,7 @@ void SendQueue::compact() {
 
 void SendQueue::check_invariants() const {
   Counters recount;
+  std::uint64_t tagged = 0;
   std::uint64_t expect = una();
   const auto live = segs();
   for (std::size_t i = 0; i < live.size(); ++i) {
@@ -412,12 +486,14 @@ void SendQueue::check_invariants() const {
     expect = seg.end();
     ++recount.packets_out;
     recount.sacked_out += seg.sacked ? 1u : 0u;
+    if (seg.sacked) tagged += seg.len;
     recount.lost_out += seg.lost ? 1u : 0u;
     recount.retrans_out += seg.retrans_inflight ? 1u : 0u;
   }
+  UTCP_CHECK(tagged == tagged_bytes_);
   UTCP_CHECK(expect == nxt_);
-  UTCP_CHECK(nxt_ <= end_);
-  UTCP_CHECK(!fin_sent_ || nxt_ == end_);
+  UTCP_CHECK(nxt_ <= end());
+  UTCP_CHECK(!fin_sent_ || nxt_ == end());
   UTCP_CHECK(!fin_acked_ || (fin_sent_ && live.empty()));
   UTCP_CHECK(recount.packets_out == ctr_.packets_out);
   UTCP_CHECK(recount.lost_out == ctr_.lost_out);

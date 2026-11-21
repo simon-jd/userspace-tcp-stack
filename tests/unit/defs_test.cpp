@@ -266,7 +266,7 @@ TEST(Defs, TraceEventFields) {
       "seq",        "ack",         "len",         "wnd",         "cwnd",     "ssthresh",
       "in_flight",  "snd_wnd",     "sacked_out",  "lost_out",    "retrans_out",
       "srtt_ns",    "rttvar_ns",   "rto_ns",      "delivered",   "pacing_rate",
-      "delivery_rate", "snd_una_off", "snd_nxt_off", "gate_rate",  "burst_start"};
+      "delivery_rate", "snd_una_off", "snd_nxt_off", "gate_rate",  "burst_start", "in_flight_bytes"};
   std::vector<std::string> got;
   utcp::for_each_field(TraceEvent{}, [&](std::string_view name, const auto&) { got.emplace_back(name); });
   EXPECT_EQ(got, want);
@@ -279,7 +279,7 @@ TEST(Defs, TraceEventFields) {
   got.clear();
   utcp::for_each_field(selected, [&](std::string_view name, const auto&) { got.emplace_back(name); });
   auto all = want;
-  all.insert(all.end(), {"cc_override", "bbr_mode", "bbr_lt_use_bw", "bbr_bandwidth_q24",
+  all.insert(all.end() - 1, {"cc_override", "bbr_mode", "bbr_lt_use_bw", "bbr_bandwidth_q24",
                          "bbr_min_rtt_us", "bbr_pacing_gain_q8", "bbr_cwnd_gain_q8"});
   EXPECT_EQ(got, all);
   EXPECT_EQ(got.size(), utcp::test::field_count<TraceEvent>() - 1 +
