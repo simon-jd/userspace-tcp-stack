@@ -1,0 +1,1155 @@
+{
+  "blocks": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "metrics": {
+    "2": {
+      "active_rss_bpc": {
+        "candidate_median": 3979.264,
+        "default_median": 3983.9744,
+        "max": -0.09254498714652559,
+        "median": -0.12337640590833199,
+        "min": -0.20546537908362472,
+        "negative": 6,
+        "paired_pct": [
+          -0.09254498714652559,
+          -0.10283833813246046,
+          -0.14391447368420351,
+          -0.09254498714652559,
+          -0.20546537908362472,
+          -0.19511193263503923
+        ],
+        "positive": 0
+      },
+      "echo_active_cpu_fraction": {
+        "candidate_median": 0.08160125311728163,
+        "default_median": 0.10978029386655272,
+        "max": 4.0776988398104175,
+        "median": -6.697010058249492,
+        "min": -45.01536950795322,
+        "negative": 4,
+        "paired_pct": [
+          4.0776988398104175,
+          -3.9795282130270504,
+          -9.414491903471934,
+          0.09641712561587745,
+          -45.01536950795322,
+          -34.29100945918779
+        ],
+        "positive": 2
+      },
+      "echo_p50_ns": {
+        "candidate_median": 69119.0,
+        "default_median": 81279.0,
+        "max": 44.509675525549255,
+        "median": 3.4481374024746487,
+        "min": -36.68153556167748,
+        "negative": 3,
+        "paired_pct": [
+          11.282277289208519,
+          44.509675525549255,
+          -4.386002484259222,
+          20.32128010695411,
+          -36.68153556167748,
+          -26.363870417883682
+        ],
+        "positive": 3
+      },
+      "echo_p99_ns": {
+        "candidate_median": 1046527.0,
+        "default_median": 1007615.0,
+        "max": 45.946006579928444,
+        "median": 27.153492272693025,
+        "min": -38.02085750634353,
+        "negative": 2,
+        "paired_pct": [
+          19.30695402778131,
+          45.946006579928444,
+          35.00003051760474,
+          -11.320767754053374,
+          -38.02085750634353,
+          36.470614423407646
+        ],
+        "positive": 4
+      },
+      "hwm_bytes": {
+        "candidate_median": 53233664.0,
+        "default_median": 53317632.0,
+        "max": 0.16949152542373724,
+        "median": -0.18429965353289335,
+        "min": -0.4918536735321277,
+        "negative": 4,
+        "paired_pct": [
+          0.053862726992925936,
+          0.16949152542373724,
+          -0.2687759176777771,
+          -0.4918536735321277,
+          -0.3146101903008014,
+          -0.09982338938800961
+        ],
+        "positive": 2
+      },
+      "idle_allocated_chunks": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "idle_rss_bpc": {
+        "candidate_median": 1542.144,
+        "default_median": 1542.144,
+        "max": 0.0,
+        "median": 0.0,
+        "min": -0.026553372278281806,
+        "negative": 2,
+        "paired_pct": [
+          -0.026553372278281806,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          -0.026553372278281806
+        ],
+        "positive": 0
+      },
+      "pool_allocated_chunks": {
+        "candidate_median": 23.5,
+        "default_median": 23.0,
+        "max": 25.0,
+        "median": -4.380952380952385,
+        "min": -30.000000000000004,
+        "negative": 4,
+        "paired_pct": [
+          25.0,
+          25.0,
+          -7.9999999999999964,
+          -4.761904761904767,
+          -30.000000000000004,
+          -4.0000000000000036
+        ],
+        "positive": 2
+      },
+      "pool_backing_bytes": {
+        "candidate_median": 48128.0,
+        "default_median": 94208.0,
+        "max": -37.5,
+        "median": -52.19047619047619,
+        "min": -65.0,
+        "negative": 6,
+        "paired_pct": [
+          -37.5,
+          -37.5,
+          -54.0,
+          -52.38095238095239,
+          -65.0,
+          -52.0
+        ],
+        "positive": 0
+      },
+      "rx_dut_cpu": {
+        "candidate_median": 2.035138,
+        "default_median": 2.0583489999999998,
+        "max": 12.760335484967356,
+        "median": 4.101650640584175,
+        "min": -16.447713499511785,
+        "negative": 2,
+        "paired_pct": [
+          11.248054335464698,
+          12.760335484967356,
+          -16.447713499511785,
+          -3.2797150198730307,
+          8.136414771192557,
+          0.06688650997579426
+        ],
+        "positive": 4
+      },
+      "rx_gbps": {
+        "candidate_median": 3.9374109845,
+        "default_median": 3.8944595175,
+        "max": 19.756349119669416,
+        "median": -3.797359762616898,
+        "min": -11.002952591188564,
+        "negative": 4,
+        "paired_pct": [
+          -10.139764765624681,
+          -11.002952591188564,
+          19.756349119669416,
+          3.369892384248896,
+          -7.546684776587531,
+          -0.048034748646264
+        ],
+        "positive": 2
+      },
+      "rx_recv_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "rx_recv_sys_s_per_gb": {
+        "candidate_median": 1.2259795,
+        "default_median": 1.2542195,
+        "max": 22.096900042596058,
+        "median": 5.4600364573911495,
+        "min": -28.08792811117651,
+        "negative": 2,
+        "paired_pct": [
+          18.96513150633443,
+          22.096900042596058,
+          -28.08792811117651,
+          -5.160225545051722,
+          8.456603665026897,
+          2.463469249755401
+        ],
+        "positive": 4
+      },
+      "rx_recv_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "rx_recv_total_s_per_gb": {
+        "candidate_median": 2.035138,
+        "default_median": 2.0583489999999998,
+        "max": 12.760335484967356,
+        "median": 4.101650640584175,
+        "min": -16.447713499511785,
+        "negative": 2,
+        "paired_pct": [
+          11.248054335464698,
+          12.760335484967356,
+          -16.447713499511785,
+          -3.2797150198730307,
+          8.136414771192557,
+          0.06688650997579426
+        ],
+        "positive": 4
+      },
+      "rx_recv_user_s_per_gb": {
+        "candidate_median": 0.8091584999999999,
+        "default_median": 0.8058095,
+        "max": 7.65235306470633,
+        "median": 1.1486035995600608,
+        "min": -3.7065788319439963,
+        "negative": 2,
+        "paired_pct": [
+          1.1526279162032527,
+          1.1445792829168688,
+          4.092159730312583,
+          -0.2563783447417589,
+          7.65235306470633,
+          -3.7065788319439963
+        ],
+        "positive": 4
+      },
+      "rx_send_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": 0.0,
+        "median": null,
+        "min": -100.0,
+        "negative": 1,
+        "paired_pct": [
+          0.0,
+          null,
+          null,
+          null,
+          null,
+          -100.0
+        ],
+        "positive": 0
+      },
+      "rx_send_sys_s_per_gb": {
+        "candidate_median": 0.12903549999999997,
+        "default_median": 0.20902500000000002,
+        "max": 299.2112769276833,
+        "median": -15.461611824480315,
+        "min": -78.25373123930324,
+        "negative": 4,
+        "paired_pct": [
+          -30.02451011389994,
+          -78.25373123930324,
+          299.2112769276833,
+          1.8921111173574756,
+          -0.8987135350606912,
+          -54.93583754671357
+        ],
+        "positive": 2
+      },
+      "rx_send_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": 0.0,
+        "median": null,
+        "min": -100.0,
+        "negative": 1,
+        "paired_pct": [
+          0.0,
+          null,
+          null,
+          null,
+          null,
+          -100.0
+        ],
+        "positive": 0
+      },
+      "rx_send_total_s_per_gb": {
+        "candidate_median": 0.616571,
+        "default_median": 0.7166555,
+        "max": 64.42503439239022,
+        "median": -7.139787901375944,
+        "min": -37.83037760211769,
+        "negative": 4,
+        "paired_pct": [
+          -13.079937883605709,
+          -37.83037760211769,
+          64.42503439239022,
+          1.9389728018270658,
+          -1.1996379191461792,
+          -26.258724606665794
+        ],
+        "positive": 2
+      },
+      "rx_send_user_s_per_gb": {
+        "candidate_median": 0.49133249999999995,
+        "default_median": 0.49458799999999997,
+        "max": 3.0042874221874127,
+        "median": -0.2474188907575503,
+        "min": -10.376039401669889,
+        "negative": 3,
+        "paired_pct": [
+          0.7710152838428019,
+          -2.81869178427977,
+          3.0042874221874127,
+          1.9508328336670155,
+          -1.2658530653579025,
+          -10.376039401669889
+        ],
+        "positive": 3
+      },
+      "tx_dut_cpu": {
+        "candidate_median": 2.128532,
+        "default_median": 2.0899805000000002,
+        "max": 7.737244235069074,
+        "median": -0.15279979054345083,
+        "min": -4.660636701963739,
+        "negative": 4,
+        "paired_pct": [
+          -2.6726327649995385,
+          -0.09247264950945633,
+          -4.660636701963739,
+          -0.21312693157744533,
+          0.6042720117245048,
+          7.737244235069074
+        ],
+        "positive": 2
+      },
+      "tx_gbps": {
+        "candidate_median": 3.7678788855,
+        "default_median": 3.835589051,
+        "max": 4.887792375885547,
+        "median": 0.14860569404758772,
+        "min": -7.218639647079006,
+        "negative": 2,
+        "paired_pct": [
+          2.7070917095201263,
+          0.09900313101454117,
+          4.887792375885547,
+          0.19820825708063428,
+          -0.6069123858730818,
+          -7.218639647079006
+        ],
+        "positive": 4
+      },
+      "tx_recv_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_recv_sys_s_per_gb": {
+        "candidate_median": 0.7953939999999999,
+        "default_median": 0.8122469999999999,
+        "max": 3.318307429510381,
+        "median": -0.5119635634581177,
+        "min": -6.1299430877584715,
+        "negative": 4,
+        "paired_pct": [
+          -6.1299430877584715,
+          -0.5069662035170563,
+          -2.390200457276548,
+          3.318307429510381,
+          -0.516960923399179,
+          0.8621944865279785
+        ],
+        "positive": 2
+      },
+      "tx_recv_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_recv_total_s_per_gb": {
+        "candidate_median": 1.211297,
+        "default_median": 1.2144879999999998,
+        "max": 0.8450319178803234,
+        "median": -0.7701754603588795,
+        "min": -3.6676281151355683,
+        "negative": 5,
+        "paired_pct": [
+          -3.3864652386794036,
+          -0.24517254266850363,
+          -3.6676281151355683,
+          -0.9134005431731818,
+          -0.6269503775445773,
+          0.8450319178803234
+        ],
+        "positive": 1
+      },
+      "tx_recv_user_s_per_gb": {
+        "candidate_median": 0.398818,
+        "default_median": 0.4077535,
+        "max": 2.350525283509719,
+        "median": -0.28874717148835716,
+        "min": -9.638033549079317,
+        "negative": 3,
+        "paired_pct": [
+          2.350525283509719,
+          0.2564953387603319,
+          -5.939295085454921,
+          -9.638033549079317,
+          -0.8339896817370462,
+          0.8085280642932124
+        ],
+        "positive": 3
+      },
+      "tx_send_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_send_sys_s_per_gb": {
+        "candidate_median": 1.229325,
+        "default_median": 1.2519875,
+        "max": 6.6345689476744685,
+        "median": -1.868498117461176,
+        "min": -6.453825970026972,
+        "negative": 5,
+        "paired_pct": [
+          -2.4686396463399207,
+          -1.9739956298122752,
+          -0.6064660052555904,
+          -6.453825970026972,
+          -1.7630006051100766,
+          6.6345689476744685
+        ],
+        "positive": 1
+      },
+      "tx_send_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_send_total_s_per_gb": {
+        "candidate_median": 2.128532,
+        "default_median": 2.0899805000000002,
+        "max": 7.737244235069074,
+        "median": -0.15279979054345083,
+        "min": -4.660636701963739,
+        "negative": 4,
+        "paired_pct": [
+          -2.6726327649995385,
+          -0.09247264950945633,
+          -4.660636701963739,
+          -0.21312693157744533,
+          0.6042720117245048,
+          7.737244235069074
+        ],
+        "positive": 2
+      },
+      "tx_send_user_s_per_gb": {
+        "candidate_median": 0.866644,
+        "default_median": 0.85781,
+        "max": 9.401504915147086,
+        "median": 3.3881452152702107,
+        "min": -10.177267058613925,
+        "negative": 2,
+        "paired_pct": [
+          -2.9730896124630757,
+          2.7593512353969896,
+          -10.177267058613925,
+          9.234207753825153,
+          4.016939195143432,
+          9.401504915147086
+        ],
+        "positive": 4
+      }
+    },
+    "8": {
+      "active_rss_bpc": {
+        "candidate_median": 3993.6000000000004,
+        "default_median": 3983.9744,
+        "max": 0.3187988482106219,
+        "median": 0.169555991660153,
+        "min": 0.12327922745016817,
+        "negative": 0,
+        "paired_pct": [
+          0.17480719794342736,
+          0.3187988482106219,
+          0.15419407894736725,
+          0.2982005141388244,
+          0.12327922745016817,
+          0.16430478537687865
+        ],
+        "positive": 6
+      },
+      "echo_active_cpu_fraction": {
+        "candidate_median": 0.0817263244209557,
+        "default_median": 0.10978029386655272,
+        "max": 16.753446353947176,
+        "median": -20.447120328062518,
+        "min": -64.06951520954837,
+        "negative": 3,
+        "paired_pct": [
+          4.292043265129952,
+          12.674543689053719,
+          -64.06951520954837,
+          16.753446353947176,
+          -45.18628392125499,
+          -53.74197603633366
+        ],
+        "positive": 3
+      },
+      "echo_p50_ns": {
+        "candidate_median": 51839.0,
+        "default_median": 81279.0,
+        "max": 54.01182344216748,
+        "median": -30.67151932926157,
+        "min": -60.307534158564266,
+        "negative": 4,
+        "paired_pct": [
+          11.79510807508164,
+          -11.560954681960844,
+          -60.307534158564266,
+          54.01182344216748,
+          -49.7820839765623,
+          -57.500510480384236
+        ],
+        "positive": 2
+      },
+      "echo_p99_ns": {
+        "candidate_median": 970751.0,
+        "default_median": 1007615.0,
+        "max": 27.567603947957075,
+        "median": -0.2459551089298735,
+        "min": -53.64586744045731,
+        "negative": 3,
+        "paired_pct": [
+          17.821803717951965,
+          27.567603947957075,
+          -14.64286991042647,
+          14.150959692566722,
+          -53.64586744045731,
+          -31.17649297484847
+        ],
+        "positive": 3
+      },
+      "hwm_bytes": {
+        "candidate_median": 53413888.0,
+        "default_median": 53317632.0,
+        "max": 0.6933744221879756,
+        "median": 0.21513080536954554,
+        "min": -0.16894486254032115,
+        "negative": 1,
+        "paired_pct": [
+          0.3000923361034191,
+          0.6933744221879756,
+          -0.16894486254032115,
+          0.29972333230863235,
+          0.06906077348065587,
+          0.13053827843045873
+        ],
+        "positive": 5
+      },
+      "idle_allocated_chunks": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "idle_rss_bpc": {
+        "candidate_median": 1542.144,
+        "default_median": 1542.144,
+        "max": 0.026560424966803886,
+        "median": -0.013276686139140903,
+        "min": -0.07968127490040056,
+        "negative": 3,
+        "paired_pct": [
+          -0.026553372278281806,
+          0.026560424966803886,
+          -0.07968127490040056,
+          0.0,
+          0.0,
+          -0.026553372278281806
+        ],
+        "positive": 1
+      },
+      "pool_allocated_chunks": {
+        "candidate_median": 23.5,
+        "default_median": 23.0,
+        "max": 30.000000000000004,
+        "median": 0.0,
+        "min": -26.66666666666667,
+        "negative": 2,
+        "paired_pct": [
+          0.0,
+          30.000000000000004,
+          -16.000000000000004,
+          19.047619047619047,
+          -26.66666666666667,
+          0.0
+        ],
+        "positive": 2
+      },
+      "pool_backing_bytes": {
+        "candidate_median": 192512.0,
+        "default_median": 94208.0,
+        "max": 160.0,
+        "median": 100.0,
+        "min": 46.66666666666666,
+        "negative": 0,
+        "paired_pct": [
+          100.0,
+          160.0,
+          68.0,
+          138.0952380952381,
+          46.66666666666666,
+          100.0
+        ],
+        "positive": 6
+      },
+      "rx_dut_cpu": {
+        "candidate_median": 1.8142045,
+        "default_median": 2.0583489999999998,
+        "max": 14.333755788528158,
+        "median": -4.5345349260027925,
+        "min": -19.598505164945625,
+        "negative": 3,
+        "paired_pct": [
+          2.885106325424447,
+          14.333755788528158,
+          -19.598505164945625,
+          -13.962079010969298,
+          -11.954176177430032,
+          4.3101424313923165
+        ],
+        "positive": 3
+      },
+      "rx_gbps": {
+        "candidate_median": 4.4028005025,
+        "default_median": 3.8944595175,
+        "max": 24.438171231674154,
+        "median": 5.021918699433425,
+        "min": -12.234826357762628,
+        "negative": 3,
+        "paired_pct": [
+          -3.513425644192081,
+          -12.234826357762628,
+          24.438171231674154,
+          16.268174507446,
+          13.557263043058931,
+          -4.147141048710356
+        ],
+        "positive": 3
+      },
+      "rx_recv_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "rx_recv_sys_s_per_gb": {
+        "candidate_median": 1.0553219999999999,
+        "default_median": 1.2542195,
+        "max": 26.446076187215617,
+        "median": -6.684260957730176,
+        "min": -26.69534203240167,
+        "negative": 3,
+        "paired_pct": [
+          6.092614744260927,
+          26.446076187215617,
+          -26.69534203240167,
+          -24.49249266916653,
+          -19.46113665972128,
+          8.211538725724399
+        ],
+        "positive": 3
+      },
+      "rx_recv_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "rx_recv_total_s_per_gb": {
+        "candidate_median": 1.8142045,
+        "default_median": 2.0583489999999998,
+        "max": 14.333755788528158,
+        "median": -4.5345349260027925,
+        "min": -19.598505164945625,
+        "negative": 3,
+        "paired_pct": [
+          2.885106325424447,
+          14.333755788528158,
+          -19.598505164945625,
+          -13.962079010969298,
+          -11.954176177430032,
+          4.3101424313923165
+        ],
+        "positive": 3
+      },
+      "rx_recv_user_s_per_gb": {
+        "candidate_median": 0.8007915,
+        "default_median": 0.8058095,
+        "max": 2.9678904791536898,
+        "median": -1.023146264322916,
+        "min": -7.075700865081913,
+        "negative": 5,
+        "paired_pct": [
+          -1.3109337703979707,
+          -0.7353587582478616,
+          -7.075700865081913,
+          2.9678904791536898,
+          -0.6051501132637305,
+          -1.8326806213641689
+        ],
+        "positive": 1
+      },
+      "rx_send_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": -50.0,
+        "median": null,
+        "min": -100.0,
+        "negative": 2,
+        "paired_pct": [
+          -50.0,
+          null,
+          null,
+          null,
+          null,
+          -100.0
+        ],
+        "positive": 0
+      },
+      "rx_send_sys_s_per_gb": {
+        "candidate_median": 0.4195135,
+        "default_median": 0.20902500000000002,
+        "max": 389.6113426345353,
+        "median": 133.27061903977136,
+        "min": -75.39228230857297,
+        "negative": 3,
+        "paired_pct": [
+          -8.013972535519432,
+          -75.39228230857297,
+          274.55521061506215,
+          307.239172161231,
+          389.6113426345353,
+          -59.50655363816224
+        ],
+        "positive": 3
+      },
+      "rx_send_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": -50.0,
+        "median": null,
+        "min": -100.0,
+        "negative": 2,
+        "paired_pct": [
+          -50.0,
+          null,
+          null,
+          null,
+          null,
+          -100.0
+        ],
+        "positive": 0
+      },
+      "rx_send_total_s_per_gb": {
+        "candidate_median": 0.904992,
+        "default_median": 0.7166555,
+        "max": 67.516805061289,
+        "median": 26.669348211303053,
+        "min": -35.75590481589822,
+        "negative": 3,
+        "paired_pct": [
+          -2.8195837291452253,
+          -35.75590481589822,
+          56.15828015175133,
+          60.32340003114294,
+          67.516805061289,
+          -25.509213405011522
+        ],
+        "positive": 3
+      },
+      "rx_send_user_s_per_gb": {
+        "candidate_median": 0.48744599999999993,
+        "default_median": 0.49458799999999997,
+        "max": 1.4264506417890566,
+        "median": -1.7966702909281373,
+        "min": -6.679945135952126,
+        "negative": 5,
+        "paired_pct": [
+          1.4264506417890566,
+          -1.4258388796032029,
+          -0.9749762955023167,
+          -2.167501702253072,
+          -3.3566037660623937,
+          -6.679945135952126
+        ],
+        "positive": 1
+      },
+      "tx_dut_cpu": {
+        "candidate_median": 2.027938,
+        "default_median": 2.0899805000000002,
+        "max": 2.931807088215943,
+        "median": -2.0650505471846103,
+        "min": -11.716020285575423,
+        "negative": 4,
+        "paired_pct": [
+          -8.806575296481057,
+          0.18307279988551972,
+          2.931807088215943,
+          -11.716020285575423,
+          -1.4161201179743288,
+          -2.713980976394892
+        ],
+        "positive": 2
+      },
+      "tx_gbps": {
+        "candidate_median": 3.9571956869999996,
+        "default_median": 3.835589051,
+        "max": 13.260092819825587,
+        "median": 2.13000285368945,
+        "min": -2.859499252462594,
+        "negative": 2,
+        "paired_pct": [
+          9.64359521388638,
+          -0.1729167006494392,
+          -2.859499252462594,
+          13.260092819825587,
+          1.4468471114896353,
+          2.8131585958892646
+        ],
+        "positive": 4
+      },
+      "tx_recv_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_recv_sys_s_per_gb": {
+        "candidate_median": 0.7707694999999999,
+        "default_median": 0.8122469999999999,
+        "max": 10.082017333971404,
+        "median": -4.86464091270819,
+        "min": -14.99237461481565,
+        "negative": 3,
+        "paired_pct": [
+          -12.281803755620203,
+          1.3582295744188677,
+          10.082017333971404,
+          -14.99237461481565,
+          1.2696243367772642,
+          -10.998906162193645
+        ],
+        "positive": 3
+      },
+      "tx_recv_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_recv_total_s_per_gb": {
+        "candidate_median": 1.173921,
+        "default_median": 1.2144879999999998,
+        "max": 4.1469910066280535,
+        "median": -3.5296046222039523,
+        "min": -8.928206392830374,
+        "negative": 4,
+        "paired_pct": [
+          -8.081361974807134,
+          0.5659233420538978,
+          4.1469910066280535,
+          -8.928206392830374,
+          -0.12223713357155663,
+          -6.936972110836348
+        ],
+        "positive": 2
+      },
+      "tx_recv_user_s_per_gb": {
+        "candidate_median": 0.4031515,
+        "default_median": 0.4077535,
+        "max": 3.5744621666327303,
+        "median": -0.1250049567889766,
+        "min": -6.407346996666896,
+        "negative": 3,
+        "paired_pct": [
+          0.7023410514887862,
+          -0.9523509650667394,
+          -6.407346996666896,
+          3.5744621666327303,
+          -2.7422158632806837,
+          1.7025415269637412
+        ],
+        "positive": 3
+      },
+      "tx_send_bytes_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_send_sys_s_per_gb": {
+        "candidate_median": 1.2141345,
+        "default_median": 1.2519875,
+        "max": 1.0001737316123416,
+        "median": -4.52400787861556,
+        "min": -6.735251432635314,
+        "negative": 5,
+        "paired_pct": [
+          -6.007001790876543,
+          -0.008925255764369311,
+          1.0001737316123416,
+          -6.735251432635314,
+          -5.206802548871902,
+          -3.8412132083592176
+        ],
+        "positive": 1
+      },
+      "tx_send_total_retrans": {
+        "candidate_median": 0.0,
+        "default_median": 0.0,
+        "max": null,
+        "median": null,
+        "min": null,
+        "negative": 0,
+        "paired_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "positive": 0
+      },
+      "tx_send_total_s_per_gb": {
+        "candidate_median": 2.027938,
+        "default_median": 2.0899805000000002,
+        "max": 2.931807088215943,
+        "median": -2.0650505471846103,
+        "min": -11.716020285575423,
+        "negative": 4,
+        "paired_pct": [
+          -8.806575296481057,
+          0.18307279988551972,
+          2.931807088215943,
+          -11.716020285575423,
+          -1.4161201179743288,
+          -2.713980976394892
+        ],
+        "positive": 2
+      },
+      "tx_send_user_s_per_gb": {
+        "candidate_median": 0.8151789999999999,
+        "default_median": 0.85781,
+        "max": 5.560237909249133,
+        "median": -0.2692862282529851,
+        "min": -19.256039449204998,
+        "negative": 3,
+        "paired_pct": [
+          -12.93000374967278,
+          0.47408420218573166,
+          5.560237909249133,
+          -19.256039449204998,
+          4.048538849772565,
+          -1.0126566586917018
+        ],
+        "positive": 3
+      }
+    }
+  },
+  "selection": {
+    "alternatives": {
+      "2": {
+        "qualifying_benefits": {},
+        "vetoes": [
+          "no repeatable benefit at or above 5%"
+        ]
+      },
+      "8": {
+        "qualifying_benefits": {},
+        "vetoes": [
+          "no repeatable benefit at or above 5%"
+        ]
+      }
+    },
+    "selected_kib": 4
+  }
+}
