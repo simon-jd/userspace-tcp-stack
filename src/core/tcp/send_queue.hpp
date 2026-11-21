@@ -237,7 +237,10 @@ private:
   struct PartialSacks {
     using Ranges = std::map<std::uint64_t, std::uint64_t>;  // disjoint intervals, end -> begin
     Ranges ranges;
-    Ranges::node_type spare;  // reuse the last removed node when a block moves or grows
+    // Retired nodes have contiguous spare keys. Reuse them across drains
+    // without changing the ordered interval lookup for live ranges.
+    Ranges spare;
+    void clear();
     std::uint64_t bytes = 0;
     void include(Range block);
     void exclude(Range block);

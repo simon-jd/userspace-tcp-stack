@@ -6,7 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <span>
 #include <vector>
 
 #include "core/tcp/send_queue.hpp"
@@ -46,7 +46,7 @@ public:
   void on_transmit(const SendQueue& q, const TxSeg& seg);
   // Rebuilt from the live TxSegs sorted by (last_tx, off) (after a PMTU split).
   void rebuild(const SendQueue& q);
-  void clear() { fifo_.clear(); }
+  void clear() { fifo_.clear(); head_ = 0; }
 
   [[nodiscard]] static bool live(const TxSeg& s) {
     return !s.sacked && !(s.lost && !s.retrans_inflight);
@@ -62,7 +62,7 @@ public:
     pop_dead_front(q);
     std::size_t dead = 0;
     bool stopped = false;
-    for (const Entry& e : fifo_) {
+    for (const Entry& e : entries()) {
       const std::span<const TxSeg> segs = q.segs();
       bool any = false;
       for (std::size_t i = first_in(segs, e.off); i < segs.size() && in_range(e, segs[i]); ++i) {
@@ -79,14 +79,14 @@ public:
       }
       dead += any ? 0 : 1;
     }
-    if (dead > fifo_.size() / 2 + 64) {
+    if (dead > size() / 2 + 64) {
       filter(q);
     }
   }
 
   // The offsets of the live TxSegs in FIFO order (tests).
   [[nodiscard]] std::vector<std::uint64_t> live_offsets(const SendQueue& q) const;
-  [[nodiscard]] std::size_t size() const { return fifo_.size(); }
+  [[nodiscard]] std::size_t size() const { return fifo_.size() - head_; }
 
 private:
   static std::size_t first_in(std::span<const TxSeg> segs, std::uint64_t off);
@@ -97,7 +97,12 @@ private:
   void pop_dead_front(const SendQueue& q);
   void filter(const SendQueue& q);
 
-  std::deque<Entry> fifo_;
+  std::span<const Entry> entries() const { return std::span{fifo_}.subspan(head_); }
+
+  // Reuse the per-connection high-water capacity across complete ACK drains.
+  // A dead prefix is compacted only when its length pays for moving the tail.
+  std::vector<Entry> fifo_;
+  std::size_t head_ = 0;
 };
 
 struct RackState {  // Linux tp->rack (RFC 8985 §6.1 names in comments)
