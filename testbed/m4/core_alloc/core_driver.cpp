@@ -18,7 +18,14 @@ std::FILE* event_file;
 std::FILE* tx_file;
 struct Sink final : TraceSink {
   std::array<std::uint64_t,32> kinds{};
-  void on_event(const TraceEvent& e) override { ++kinds.at(static_cast<unsigned>(e.kind)); }
+  unsigned fired_rto{},fired_delack{};
+  void on_event(const TraceEvent& e) override {
+    ++kinds.at(static_cast<unsigned>(e.kind));
+    if (e.kind==TraceKind::timer && e.timer_op==TimerOp::fired) {
+      fired_rto += e.timer==TraceTimer::rto;
+      fired_delack += e.timer==TraceTimer::delack;
+    }
+  }
 };
 using Mode=std::string_view;
 struct Pair {
@@ -31,6 +38,7 @@ struct Pair {
   Time now{1'000'000'000};
   std::uint64_t gso{},ordinary{},blocked{},would_block{},reorders{},losses{},timer_wakes{};
   unsigned full_packets_after_gso{}, last_gso_stride{};
+  unsigned timer_drops{};
   bool inject{};
   unsigned pmtu_count{}, expired{}, duplicate_count{}, wake_count{};
   std::array<Handle,2> waiter{}, child{};
@@ -42,7 +50,8 @@ struct Pair {
     ac.tcp.initial_cwnd=32;
     if (m=="pmtu") ac.tcp.pmtu_expiry=2s;
     ac.max_connections=32;
-    ac.pool_buffers=128;
+    ac.pool_buffers=m=="pool_pressure" ? 2 : 128;
+    if (m=="delack") ac.tcp.quickack=Quickack::rfc;
     ac.tx_queue_packets=m=="tx_pressure" ? 2 : 64;
     ac.chunk_limit=m=="chunk_pressure" || m=="multi_waiter" ? 2 : 128;
     if (m=="gso" || m=="fallback") {
@@ -111,6 +120,12 @@ struct Pair {
     last_gso_stride=0;
     while (auto packet=pop(src)) {
       active=true;
+      if (forward && timer_drops) {
+        --timer_drops;
+        ++losses;
+        win.run(release_,[&]{packet->buf.reset();});
+        continue;
+      }
       if (forward && inject && mode=="pmtu") {
         inject=false;
         // The router reports its lower MTU for the actual first data datagram.
@@ -232,6 +247,12 @@ struct Pair {
       }
       if (src.debug_usage().blocked_conns) ++blocked;
       pump();
+      if (mode=="delack" && received<sent && src.tcp_info(from)->unacked) {
+        // A receiver that has not yet consumed the data can take its normal
+        // delayed-ACK deadline. Application read follows the ACK transmission.
+        deadline();
+        pump();
+      }
       while (received<sent) {
         auto v=win.run(recv_,[&]{return dst.tcp_recv(to,read);});
         if (!v) { require(v.error()==Error::would_block,"ordinary blocked read"); break; }
@@ -292,12 +313,13 @@ int main(int argc,char** argv) {
     win.phase=round==0 ? first : round<=32 ? warm : round<=160 ? steady_a : steady_b;
     p.advance(p.now+100us);
     // At each fixed epoch, revisit the larger high-water mark every eight rounds.
-    auto n=is_ip ? 257u : mode=="echo" ? 64u : round%8 ? 16384u : 32768u;
+    auto n=is_ip ? 257u : (mode=="echo" || mode=="timer_loss" || mode=="delack") ? 64u : round%8 ? 16384u : 32768u;
     for (unsigned i=0;i<n;++i) payload[i]=std::byte((i*13 + (i>>7) + round*31) & 255);
     auto data=std::span(payload).first(n);
     if (is_ip) p.ip(round,data);
     else if (mode=="multi_waiter") p.multi_waiter(data);
     else {
+      if (mode=="timer_loss" && round%8==0) p.timer_drops=2;
       p.inject=(round%8==0 && (mode=="reorder" || mode=="loss" || mode=="duplicate")) || (round%32==0 && mode=="pmtu");
       p.transfer(*p.a,p.client,*p.b,p.server,data);
       if (mode=="pmtu" && round%32==0) {
@@ -319,6 +341,15 @@ int main(int argc,char** argv) {
     auto info=p.a->tcp_info(p.client).value();
     require(p.losses>0 && info.total_retrans>0,"retransmission path");
   }
+  if (mode=="timer_loss") {
+    require(p.losses==74 && p.timer_wakes>=74 && p.a->tcp_info(p.client)->total_retrans>=74,"ordinary timer recovery");
+    if (trace) require(p.sink.fired_rto>0,"RTO fired in trace");
+  }
+  if (mode=="delack") {
+    require(p.timer_wakes>0,"delayed-ACK deadline reached");
+    if (trace) require(p.sink.fired_delack>0,"delayed ACK fired in trace");
+  }
+  if (mode=="pool_pressure") require(p.blocked>0,"packet pool exhaustion");
   if (mode=="tx_pressure") require(p.blocked>0,"TX queue pressure");
   if (mode=="chunk_pressure") require(p.would_block>0,"chunk waiter pressure");
   if (mode=="gso" || mode=="fallback") require(p.gso>0,"GSO path");
@@ -346,5 +377,6 @@ int main(int argc,char** argv) {
       (unsigned long long)p.would_block,(unsigned long long)p.reorders,(unsigned long long)p.losses,(unsigned long long)p.timer_wakes);
   std::fprintf(stderr,"coverage,duplicates=%u,pmtu=%u,expiry=%u,waiters_last=%u,full_mss_after_gso=%u\n",
       p.duplicate_count,p.pmtu_count,p.expired,p.wake_count,p.full_packets_after_gso);
+  std::fprintf(stderr,"coverage,trace_rto_fired=%u,trace_delack_fired=%u\n",p.sink.fired_rto,p.sink.fired_delack);
   require(utcp_heap_write_sites(stderr),"call-site recorder capacity");
 }

@@ -14,6 +14,7 @@ common=(-std=c++23 -O2 -g -fno-omit-frame-pointer -Wall -Wextra -Werror)
 "$cxx" "${common[@]}" -fPIC -shared "$here/heap_probe.cpp" -ldl -o "$bin/libutcp_heap_probe.so"
 link=(-L"$bin" -Wl,-rpath,"$bin" -Wl,-z,now -lutcp_heap_probe -ldl)
 "$cxx" "${common[@]}" -fno-builtin "$here/probe_control.cpp" "${link[@]}" -o "$bin/control"
+"${CC:-gcc-15}" -std=c17 -O2 -fno-builtin -Wall -Wextra -Werror   "$here/c_control.c" "${link[@]}" -o "$bin/c-control"
 for driver in core_driver sack_driver; do
   "$cxx" "${common[@]}" -no-pie -I"$root/include" -I"$root/src" -I"$root/tests" \
     "$here/$driver.cpp" "$root/tests/support/packet_builder.cpp" \

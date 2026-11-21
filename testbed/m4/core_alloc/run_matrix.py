@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run in a new immutable attempt directory. Preserve both successful and failed cells."""
 import argparse
-import csv
 import hashlib
 import json
 import os
@@ -9,7 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-MODES = ("bulk","echo","tx_pressure","chunk_pressure","gso","fallback","reorder","loss","pmtu","udp","icmp","multi_waiter","duplicate")
+MODES = ("bulk","echo","tx_pressure","chunk_pressure","gso","fallback","reorder","loss","pmtu","udp","icmp","multi_waiter","duplicate","pool_pressure","timer_loss","delack")
 
 
 def sha(path):
@@ -37,7 +36,7 @@ def main():
         return result.returncode==0
 
     try:
-        if not all([run("control",[bin/"control"]),run("control-sites",[bin/"control","sites"])]):
+        if not all([run("control-c",[bin/"c-control"]),run("control",[bin/"control"]),run("control-sites",[bin/"control","sites"])]):
             return 1
         def same(left,right,reason):
             if sha(left)!=sha(right): broken.append(reason)
