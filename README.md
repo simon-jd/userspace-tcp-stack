@@ -80,8 +80,9 @@ data can activate the additional 1,064 B stream object. [Memory, copy and ring-s
 The integrated sender trace records unique outstanding payload in
 `in_flight_bytes` alongside the existing packet count. Independent TUN captures
 checked every TX, RX, accepted-ACK and state snapshot in a clean transfer and
-a transfer with one loss. Dedicated cwnd-change, RTT-update and recovery-transition
-events remain open. [Trace captures and measured source](docs/results/trace-flight/README.md#integrated-runtime-on-november-21-2026)
+a transfer with one loss. Dedicated cwnd, RTT and recovery events record previous
+windows, estimator inputs and state transitions. Six real transfers exercised
+NewReno, CUBIC and BBR. [Sender events and independent acceptance](docs/results/sender-events/README.md)
 
 ## Non-goals
 
