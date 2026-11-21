@@ -127,31 +127,29 @@ if [[ "$mode" == "--upstream-ordinary" ]]; then
     cat "$logs/$name.live.log" >&2
     exit 1
   fi
-  printf 'Receipts: %s\n' "$logs"
-  exit 0
+else
+  sed 's/^+0 > \. 1:1(0) ack 1$/+0 > . 1:1(0) ack 2/' tests/packetdrill/active-open.pkt \
+    >"$logs/bad-expected-ack.pkt"
+  {
+    cat tests/packetdrill/active-open.pkt
+    printf '+0 > . 7:7(0) ack 2\n'
+  } >"$logs/missing-egress.pkt"
+
+  for kind in bad-expected-ack missing-egress; do
+    log="$logs/$kind.log"
+    status=0
+    run_packetdrill "$logs/$kind.pkt" >"$log" 2>&1 || status=$?
+    if [[ "$status" != 1 ]]; then
+      echo "$kind returned $status, expected an assertion exit of 1" >&2
+      cat "$log" >&2
+      exit 1
+    fi
+    printf '%s: rejected with exit %s\n' "$kind" "$status"
+  done
+  check_log 'tcp_ack_seq: expected: 2 .* vs actual: 1' "$logs/bad-expected-ack.log"
+  check_log 'no fitting datagram within transmit wait' "$logs/missing-egress.log"
+  check_log 'IP header overflows packet: packet of 0 bytes' "$logs/missing-egress.log"
 fi
-
-sed 's/^+0 > \. 1:1(0) ack 1$/+0 > . 1:1(0) ack 2/' tests/packetdrill/active-open.pkt \
-  >"$logs/bad-expected-ack.pkt"
-{
-  cat tests/packetdrill/active-open.pkt
-  printf '+0 > . 7:7(0) ack 2\n'
-} >"$logs/missing-egress.pkt"
-
-for kind in bad-expected-ack missing-egress; do
-  log="$logs/$kind.log"
-  status=0
-  run_packetdrill "$logs/$kind.pkt" >"$log" 2>&1 || status=$?
-  if [[ "$status" != 1 ]]; then
-    echo "$kind returned $status, expected an assertion exit of 1" >&2
-    cat "$log" >&2
-    exit 1
-  fi
-  printf '%s: rejected with exit %s\n' "$kind" "$status"
-done
-check_log 'tcp_ack_seq: expected: 2 .* vs actual: 1' "$logs/bad-expected-ack.log"
-check_log 'no fitting datagram within transmit wait' "$logs/missing-egress.log"
-check_log 'IP header overflows packet: packet of 0 bytes' "$logs/missing-egress.log"
 
 if [[ -n "$(docker ps -a --filter "name=^/utcp-m3-packetdrill-$$$" --format '{{.Names}}')" ]]; then
   echo 'Packetdrill container still exists after --rm' >&2
