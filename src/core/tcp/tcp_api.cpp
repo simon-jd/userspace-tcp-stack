@@ -230,9 +230,7 @@ std::expected<void, Error> TcpEngine::tcp_shutdown(Handle h, Shutdown how) {
   const Time now = core_.now();
   if (how == Shutdown::read || how == Shutdown::both) {
     t.app_read_shut = true;
-    std::array<std::byte, 4096> sink{};
-    while (t.rcvq.read(sink) > 0) {
-    }
+    t.rcvq.discard_readable();
     wake_chunk_waiters();
   }
   if ((how == Shutdown::write || how == Shutdown::both) && !t.app_write_shut) {

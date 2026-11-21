@@ -89,9 +89,20 @@ std::uint64_t RecvBuffer::prune_last_range() {
 
 InsertResult RecvBuffer::insert(std::uint64_t off, std::span<const std::byte> data,
                                 std::uint64_t limit) {
+  return insert_impl<true>(off, data.size(), data.data(), limit);
+}
+
+InsertResult RecvBuffer::insert_after_read_shutdown(std::uint64_t off, std::size_t len,
+                                                    std::uint64_t limit) {
+  return insert_impl<false>(off, len, nullptr, limit);
+}
+
+template <bool materialize>
+InsertResult RecvBuffer::insert_impl(std::uint64_t off, std::size_t len, const std::byte* data,
+                                     std::uint64_t limit) {
   UTCP_CHECK(limit <= right_edge());
   const std::uint64_t old_end = rcv_end_;
-  const std::uint64_t seg_end = off + data.size();
+  const std::uint64_t seg_end = off + len;
 
   InsertResult r;
   r.out_of_order = off > old_end;
@@ -154,8 +165,12 @@ InsertResult RecvBuffer::insert(std::uint64_t off, std::span<const std::byte> da
         }
         const std::uint64_t gap_end = i < ooo_.size() ? std::min(ooo_[i].begin, hi) : hi;
         const auto n = static_cast<std::size_t>(gap_end - pos);
-        const std::size_t written =
-            ring_.write_at(pos, data.subspan(static_cast<std::size_t>(pos - off), n));
+        std::size_t written;
+        if constexpr (materialize) {
+          written = ring_.write_at(pos, {data + (pos - off), n});
+        } else {
+          written = ring_.reserve_at(pos, n);
+        }
         UTCP_CHECK(written == n);  // chunks_needed() reserved them
         pos = gap_end;
       }
@@ -229,6 +244,12 @@ std::size_t RecvBuffer::read(std::span<std::byte> out) {
   ring_.read_at(ring_.begin(), out.first(n));
   ring_.consume(n);
   return n;
+}
+
+void RecvBuffer::discard_readable() {
+  if (const auto n = readable(); n != 0) {
+    ring_.consume(n);
+  }
 }
 
 std::uint64_t RecvBuffer::readable() const { return rcv_end_ - ring_.begin(); }

@@ -942,7 +942,10 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
   }
   if (!payload.empty()) {
     const std::uint32_t ssthresh_before = t.rwin.rcv_ssthresh();
-    const InsertResult r = t.rcvq.insert(uoff, payload, t.rwin.rcv_adv());
+    const auto limit = t.rwin.rcv_adv();
+    const InsertResult r = t.app_read_shut
+        ? t.rcvq.insert_after_read_shutdown(uoff, payload.size(), limit)
+        : t.rcvq.insert(uoff, payload, limit);
     const std::uint64_t new_nxt = r.contiguous_end;
     t.ctr.bytes_received += new_nxt - old_nxt;
     if (r.out_of_order && !r.stored.empty()) {
@@ -1002,9 +1005,7 @@ bool TcpEngine::data_input(Tcb& t, const InSeg& s) {
     if (r.advanced) {
       t.last_data_recv = now;
       if (t.app_read_shut) {
-        std::array<std::byte, 4096> sink{};
-        while (t.rcvq.read(sink) > 0) {
-        }
+        t.rcvq.discard_readable();
       } else {
         raise(t, ev_readable);
       }
