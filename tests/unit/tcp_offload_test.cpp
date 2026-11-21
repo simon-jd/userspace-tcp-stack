@@ -176,11 +176,12 @@ TEST(TcpOffload, InOrderGroFallsBackUnderChunkPressure) {
   ConnectedStack c(cfg);
   ASSERT_NO_FATAL_FAILURE(c.connect());
   auto data = c.incoming(0);
-  data.payload = t::pattern(3 * mss, 21);
+  constexpr auto segments_that_fit = utcp::ring_chunk_bytes / mss;
+  data.payload = t::pattern((segments_that_fit + 1) * mss, 21);
   c.stack.receive(c.now, t::tcp_datagram(data), RxMeta{true, false, mss});
-  auto got = t::Bytes(2 * mss);
+  auto got = t::Bytes(segments_that_fit * mss);
   ASSERT_EQ(c.stack.tcp_recv(c.server, got).value_or(0), got.size());
-  EXPECT_EQ(got, t::Bytes(data.payload.begin(), data.payload.begin() + 2 * mss));
+  EXPECT_EQ(got, t::Bytes(data.payload.begin(), data.payload.begin() + segments_that_fit * mss));
 }
 
 TEST(TcpOffload, HeldLargePacketFallsBackToOrdinaryFramesWithoutDroppingData) {

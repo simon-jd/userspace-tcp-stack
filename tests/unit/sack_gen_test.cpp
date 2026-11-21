@@ -254,17 +254,18 @@ TEST(SackGen, PrunedDataIsNotReported) {
     sg.on_arrival(r.stored, rb);
     return r;
   };
-  arrive(4096, 4196);    // chunk 1
-  arrive(8192, 8292);    // chunk 2
-  arrive(12288, 12388);  // chunk 3
+  constexpr std::uint64_t cs = ChunkPool::chunk_size;
+  arrive(cs, cs + 100);    // chunk 1
+  arrive(2 * cs, 2 * cs + 100);    // chunk 2
+  arrive(3 * cs, 3 * cs + 100);  // chunk 3
   std::array<Range, 4> out{};
   ASSERT_EQ(sg.fill(rb, out, 4), 3u);
-  EXPECT_EQ(out[0], (Range{12288, 12388}));
+  EXPECT_EQ(out[0], (Range{3 * cs, 3 * cs + 100}));
   const InsertResult r = arrive(0, 100);  // needs chunk 0
   ASSERT_EQ(r.pruned, 100u);
   ASSERT_EQ(sg.fill(rb, out, 4), 2u);
-  EXPECT_EQ(out[0], (Range{8192, 8292}));
-  EXPECT_EQ(out[1], (Range{4096, 4196}));
+  EXPECT_EQ(out[0], (Range{2 * cs, 2 * cs + 100}));
+  EXPECT_EQ(out[1], (Range{cs, cs + 100}));
 }
 
 TEST(SackGen, DroppedSegmentChangesNoOrderAndReportsNoDsack) {

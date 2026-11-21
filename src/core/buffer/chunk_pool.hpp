@@ -1,4 +1,4 @@
-// Pool of 4 KiB chunks backing every ByteRing of a Stack (DESIGN §3.3).
+// Pool of fixed-size chunks backing every ByteRing of a Stack (DESIGN §3.3).
 //
 // Chunks are allocated from the heap on demand, up to `limit` chunks, and
 // never returned to the heap; freed chunks are reused LIFO. A chunk is
@@ -12,12 +12,14 @@
 #include <optional>
 #include <vector>
 
+#include "utcp/ring_config.hpp"
+
 namespace utcp {
 
 class ChunkPool {
 public:
   using ChunkId = std::uint32_t;
-  static constexpr std::uint32_t chunk_size = 4096;
+  static constexpr std::uint32_t chunk_size = ring_chunk_bytes;
   static constexpr ChunkId no_chunk = 0xffff'ffff;
 
   // `limit`: the most chunks that may exist (StackConfig::chunk_limit).

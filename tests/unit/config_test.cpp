@@ -203,7 +203,7 @@ TEST(Config, StackUdpAndIcmpDefaults) {
   EXPECT_EQ(s.pool_buffers, 4096u);
   EXPECT_EQ(s.tx_queue_packets, 1024u);
   EXPECT_EQ(s.max_connections, 65536u);
-  EXPECT_EQ(s.chunk_limit, 1u << 20);
+  EXPECT_EQ(std::uint64_t{s.chunk_limit} * ring_chunk_bytes, 1ULL << 32);
   EXPECT_EQ(s.trace_mask, 0u);
   EXPECT_EQ(s.tx_headroom, 0);
   EXPECT_FALSE(s.tcp_checksum_offload);

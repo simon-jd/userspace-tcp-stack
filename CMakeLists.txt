@@ -21,6 +21,12 @@ option(UTCP_SANITIZE "Build everything with ASan and UBSan, aborting on the firs
 option(UTCP_DCHECKS "Enable UTCP_DCHECK in every build type (it is always on without NDEBUG)" OFF)
 option(UTCP_FUZZ "Build the libFuzzer targets in tests/fuzz (clang only; implies coverage instrumentation)" OFF)
 
+set(UTCP_RING_CHUNK_BYTES "4096" CACHE STRING "Core ByteRing / ChunkPool allocation unit in bytes")
+set_property(CACHE UTCP_RING_CHUNK_BYTES PROPERTY STRINGS 2048 4096 8192)
+if(NOT UTCP_RING_CHUNK_BYTES MATCHES "^(2048|4096|8192)$")
+  message(FATAL_ERROR "UTCP_RING_CHUNK_BYTES must be 2048, 4096 or 8192")
+endif()
+
 include(cmake/Warnings.cmake)
 include(cmake/Targets.cmake)
 

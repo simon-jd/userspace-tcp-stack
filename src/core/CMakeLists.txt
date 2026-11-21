@@ -10,6 +10,7 @@ add_library(utcp::core ALIAS utcp_core)
 target_include_directories(utcp_core
   PUBLIC ${PROJECT_SOURCE_DIR}/include
   PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_compile_definitions(utcp_core PUBLIC UTCP_RING_CHUNK_BYTES=${UTCP_RING_CHUNK_BYTES})
 target_compile_options(utcp_core PRIVATE -fno-exceptions)
 utcp_target_warnings(utcp_core STRICT)
 

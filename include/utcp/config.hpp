@@ -24,6 +24,7 @@
 #include "utcp/defs/config_tcp_types.hpp"
 #include "utcp/defs/config_tx_types.hpp"
 #include "utcp/random.hpp"
+#include "utcp/ring_config.hpp"
 #include "utcp/time.hpp"
 #include "utcp/types.hpp"
 
@@ -333,7 +334,7 @@ struct StackConfig {
   std::uint32_t pool_buffers = 4096;     // PacketPool buffers (2 KiB each in M1)
   std::uint32_t tx_queue_packets = 1024; // transmit queue bound (§3.4)
   std::uint32_t max_connections = 65536; // TCP and UDP slots
-  std::uint32_t chunk_limit = 1u << 20;  // ChunkPool limit, in 4 KiB chunks
+  std::uint32_t chunk_limit = default_chunk_limit;  // chunk count; the default bounds storage at 4 GiB
   std::uint32_t trace_mask = 0;          // bit i enables TraceKind i (§10.2)
   std::uint16_t tx_headroom = 0;         // M4: room for virtio_net_hdr
   // Host capabilities. Enable only if the host can complete TCP checksums

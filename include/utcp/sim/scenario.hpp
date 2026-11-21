@@ -67,7 +67,7 @@ struct NodeSpec {
   TestFault test_fault = TestFault::none;  // TcpConfig::test_fault (planted bug)
   std::uint32_t tx_queue_packets = 1024;
   std::uint32_t pool_buffers = 4096;
-  std::uint32_t chunk_limit = 1u << 20;  // StackConfig::chunk_limit (4 KiB chunks)
+  std::uint32_t chunk_limit = 1u << 20;  // serialized count; keep generated scenarios reproducible
   std::uint32_t host_drain_max = 0;  // datagrams the host drains per wake-up; 0 = all
   Duration host_delay{};             // when the host drains the rest
 

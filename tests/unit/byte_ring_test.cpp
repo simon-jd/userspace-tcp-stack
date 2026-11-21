@@ -38,12 +38,14 @@ TEST(ByteRing, WriteAndReadAcrossChunks) {
   ByteRing r(pool, 64 * 1024);
   const auto data = pattern(10'000, 1);
   EXPECT_EQ(r.write_at(0, data), data.size());
-  EXPECT_EQ(r.chunks_held(), 3u);
-  EXPECT_EQ(r.bytes_held(), 3 * cs);
+  const auto expected_chunks = (data.size() + cs - 1) / cs;
+  EXPECT_EQ(r.chunks_held(), expected_chunks);
+  EXPECT_EQ(r.bytes_held(), expected_chunks * cs);
   EXPECT_EQ(r.high_water(), 10'000u);
   EXPECT_EQ(read(r, 0, 10'000), data);
-  EXPECT_EQ(read(r, 4090, 20), std::vector<std::byte>(data.begin() + 4090, data.begin() + 4110));
-  EXPECT_EQ(pool.in_use(), 3u);
+  EXPECT_EQ(read(r, cs - 6, 20),
+            std::vector<std::byte>(data.begin() + cs - 6, data.begin() + cs + 14));
+  EXPECT_EQ(pool.in_use(), expected_chunks);
 }
 
 TEST(ByteRing, ChunksTakenOnFirstWriteAndReturnedWhenConsumed) {
@@ -91,7 +93,7 @@ TEST(ByteRing, FarAheadWriteTakesOnlyItsChunk) {
 
 TEST(ByteRing, PoolExhaustionWritesAPrefix) {
   ChunkPool pool(2);
-  ByteRing r(pool, 64 * 1024, 100);
+  ByteRing r(pool, 16 * cs, 100);
   const auto data = pattern(3 * cs, 7);
   // Offsets 100.. span chunks 0, 1, 2, 3; only two chunks exist.
   const std::size_t n = r.write_at(100, data);
@@ -128,12 +130,13 @@ TEST(ByteRing, MoveKeepsTheData) {
   a.write_at(0, pattern(5000, 10));
   ByteRing b(std::move(a));
   EXPECT_EQ(a.chunks_held(), 0u);
-  EXPECT_EQ(b.chunks_held(), 2u);
+  const auto expected_chunks = (5000 + cs - 1) / cs;
+  EXPECT_EQ(b.chunks_held(), expected_chunks);
   EXPECT_EQ(read(b, 0, 5000), pattern(5000, 10));
   ByteRing c(pool, 1024);
   c.write_at(0, pattern(10, 11));
   c = std::move(b);  // returns c's chunk
-  EXPECT_EQ(pool.in_use(), 2u);
+  EXPECT_EQ(pool.in_use(), expected_chunks);
   EXPECT_EQ(read(c, 0, 5000), pattern(5000, 10));
 }
 
@@ -271,7 +274,7 @@ private:
 };
 
 TEST(ByteRing, DifferentialAgainstByteMap) {
-  constexpr std::uint64_t capacity = 96 * 1024;  // 24 chunks of window
+  constexpr std::uint64_t capacity = 24 * cs;      // 24 chunks of window
   constexpr std::uint32_t pool_limit = 12;       // so writes far ahead can exhaust the pool
   ChunkPool pool(pool_limit);
   ByteRing ring(pool, capacity);

@@ -356,7 +356,7 @@ TEST(TcpListen, ClosingListenerResetsUnacceptedChildren) {
 // refused connection gets ev_writable, even with nothing in flight.
 TEST(TcpListen, ChunkPoolExhaustionResumesWriters) {
   StackConfig ca = config(Side::a);
-  ca.chunk_limit = 4;
+  ca.chunk_limit = (16 * 1024) / utcp::ring_chunk_bytes;
   t::TcpHarness h(ca, config(Side::b));
   const auto l = h.b().tcp_listen(Endpoint{{}, port}, 4, {});
   ASSERT_TRUE(l);
@@ -368,7 +368,7 @@ TEST(TcpListen, ChunkPoolExhaustionResumesWriters) {
   ASSERT_TRUE(s1);
   ASSERT_TRUE(h.b().tcp_send(*s1, t::pattern(16 * 1024)));
   h.run_for(100ms);
-  EXPECT_EQ(h.a().debug_usage().chunks - h.a().debug_usage().chunks_free, 4u);
+  EXPECT_EQ(h.a().debug_usage().chunks - h.a().debug_usage().chunks_free, ca.chunk_limit);
   (void)events_of(h.a(), *c2);
   const auto r = h.a().tcp_send(*c2, t::pattern(1000));
   ASSERT_FALSE(r);

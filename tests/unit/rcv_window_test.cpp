@@ -45,7 +45,7 @@ class Rx {
 public:
   Rx(const TcpConfig& c, std::uint32_t rcv_buf, std::uint8_t wscale, std::uint16_t adv_mss = 1460,
      bool autotune = false)
-      : pool_(rcv_buf / 4096 + 8), rb(rcv_buf, pool_), rw(c, rcv_buf, autotune), mss(adv_mss) {
+      : pool_(rcv_buf / ChunkPool::chunk_size + 8), rb(rcv_buf, pool_), rw(c, rcv_buf, autotune), mss(adv_mss) {
     syn = rw.syn_window(mss);
     rw.on_established(wscale, mss, syn);
   }
@@ -580,7 +580,7 @@ void property_run(const PropertyCase& pc, std::uint32_t seed, int steps, Propert
   c.rcv_buf_max = 4u << 20;
   const std::uint16_t mss = 1460;
   const std::uint64_t unit = std::uint64_t{1} << pc.wscale;
-  ChunkPool pool((4u << 20) / 4096 + 8);
+  ChunkPool pool((4u << 20) / ChunkPool::chunk_size + 8);
   RecvBuffer rb(pc.rcv_buf, pool);
   RcvWindow rw(c, pc.rcv_buf, pc.autotune);
   rw.on_established(pc.wscale, mss, rw.syn_window(mss));

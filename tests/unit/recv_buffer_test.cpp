@@ -88,10 +88,10 @@ TEST(RecvBuffer, InOrder) {
   EXPECT_FALSE(r.duplicate);
   EXPECT_EQ(r.stored, (Range{0, 1000}));
   EXPECT_EQ(r.dropped, 0u);
-  r = put(rb, 1000, 5000);  // spans two chunk boundaries
+  r = put(rb, 1000, 5000);
   EXPECT_EQ(r.contiguous_end, 6000u);
   EXPECT_EQ(rb.readable(), 6000u);
-  EXPECT_EQ(rb.chunks_held(), 2u);
+  EXPECT_EQ(rb.chunks_held(), (6000 + cs - 1) / cs);
   EXPECT_EQ(read_all(rb), bytes(0, 6000));
   EXPECT_EQ(rb.read_offset(), 6000u);
   EXPECT_EQ(rb.right_edge(), 6000u + 64 * 1024);
@@ -106,7 +106,7 @@ TEST(RecvBuffer, PartialReadsKeepTheRest) {
   std::vector<std::byte> out(4097);
   EXPECT_EQ(rb.read(out), 4097u);
   EXPECT_EQ(out, bytes(0, 4097));
-  EXPECT_EQ(rb.chunks_held(), 2u);  // chunk 0 returned, chunk 1 still has unread bytes
+  EXPECT_EQ(rb.chunks_held(), (10'000 + cs - 1) / cs - 4097 / cs);
   EXPECT_EQ(read_all(rb), bytes(4097, 10'000 - 4097));
   std::vector<std::byte> none(10);
   EXPECT_EQ(rb.read(none), 0u);
@@ -573,7 +573,7 @@ TEST(RecvBuffer, InOrderSegmentPrunesOutOfOrderDataForChunks) {
 
 TEST(RecvBuffer, PruningStopsBelowTheIncomingSegment) {
   ChunkPool pool(4);
-  RecvBuffer rb(64 * 1024, pool);
+  RecvBuffer rb(16 * cs, pool);
   put(rb, 0, 100);  // chunk 0, unread
   put(rb, 2 * cs, 100);
   put(rb, 4 * cs, 100);
