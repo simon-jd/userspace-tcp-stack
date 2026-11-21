@@ -46,7 +46,7 @@ def main():
         before=readrows(args.compare/(name+".csv")) if args.compare else {}
         if args.compare:
             if rows.keys()!=before.keys(): raise ValueError(f"{name} path coverage changed")
-            for ext in ("wire","events"):
+            for ext in ("wire","events","tx"):
                 file=name+"."+ext
                 if (args.raw/file).exists() and digest(args.raw/file)!=digest(args.compare/file):
                     raise ValueError(f"ordered transcript changed: {file}")

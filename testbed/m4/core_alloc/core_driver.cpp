@@ -15,6 +15,7 @@ namespace {
 Windows win;
 std::FILE* wire_file;
 std::FILE* event_file;
+std::FILE* tx_file;
 struct Sink final : TraceSink {
   std::array<std::uint64_t,32> kinds{};
   void on_event(const TraceEvent& e) override { ++kinds.at(static_cast<unsigned>(e.kind)); }
@@ -31,7 +32,9 @@ struct Pair {
   std::uint64_t gso{},ordinary{},blocked{},would_block{},reorders{},losses{},timer_wakes{};
   unsigned full_packets_after_gso{}, last_gso_stride{};
   bool inject{};
-  bool pmtu_sent{};
+  unsigned pmtu_count{}, expired{}, duplicate_count{}, wake_count{};
+  std::array<Handle,2> waiter{}, child{};
+  bool checking_wakes{};
   Pair(Mode m,bool trace) : mode(m) {
     ac.local_addr=Ipv4Addr{0xc0000201};
     ac.tcp.cc=CcAlgo::cubic;
@@ -41,7 +44,7 @@ struct Pair {
     ac.max_connections=32;
     ac.pool_buffers=128;
     ac.tx_queue_packets=m=="tx_pressure" ? 2 : 64;
-    ac.chunk_limit=m=="chunk_pressure" ? 2 : 128;
+    ac.chunk_limit=m=="chunk_pressure" || m=="multi_waiter" ? 2 : 128;
     if (m=="gso" || m=="fallback") {
       ac.tcp_checksum_offload=true;
       ac.tcp_gso_buffers=m=="fallback" ? 1 : 16;
@@ -55,9 +58,24 @@ struct Pair {
     if (trace) {a->set_trace_sink(&sink); b->set_trace_sink(&sink);}
   }
   std::optional<TxPacket> pop(Stack& src) {
-    return win.run(pop_,[&]{return src.pop_transmit();});
+    auto packet=win.run(pop_,[&]{return src.pop_transmit();});
+    if (packet) {
+      const auto bytes=packet->buf.bytes();
+      const auto ihl=(std::to_integer<unsigned>(bytes[0])&15)*4;
+      const auto tcp=std::to_integer<unsigned>(bytes[9])==6;
+      const auto l4=tcp ? (std::to_integer<unsigned>(bytes[ihl+12])>>4)*4 : 8u;
+      const auto payload=bytes.size()-ihl-l4;
+      auto& row=win.row(pop_);
+      ++row.packets; row.bytes+=payload;
+      row.segments+=packet->gso_size && payload ? 1+(payload-1)/packet->gso_size : 1;
+      const std::array<std::uint64_t,6> header{(unsigned)win.phase,&src==&*a,
+          (std::uint64_t)now.ns,bytes.size(),packet->gso_size,packet->csum_partial};
+      require(std::fwrite(header.data(),sizeof(header),1,tx_file)==1 &&
+              std::fwrite(bytes.data(),bytes.size(),1,tx_file)==1,"TX transcript");
+    }
+    return packet;
   }
-  void deliver(TxPacket& p,Stack& dst,bool forward) {
+  void deliver(TxPacket& p,Stack& dst,bool forward,bool release=true) {
     auto bytes=p.buf.bytes();
     require(bytes.size()>=20,"IPv4 header");
     auto u=[&](std::size_t i){return std::to_integer<unsigned>(bytes[i]);};
@@ -86,7 +104,7 @@ struct Pair {
     require(std::fwrite(h.data(),sizeof(h),1,wire_file)==1 &&
             std::fwrite(bytes.data(),bytes.size(),1,wire_file)==1,"write transcript");
     win.run(path,[&]{dst.receive(now,bytes,RxMeta{.csum_partial=p.csum_partial,.gso_size=p.gso_size});});
-    win.run(release_,[&]{p.buf.reset();});
+    if (release) win.run(release_,[&]{p.buf.reset();});
   }
   bool drain(Stack& src,Stack& dst,bool forward) {
     bool active=false;
@@ -96,13 +114,19 @@ struct Pair {
       if (forward && inject && mode=="pmtu") {
         inject=false;
         // The router reports its lower MTU for the actual first data datagram.
+        const auto mtu=static_cast<std::uint16_t>(1400 - 8*pmtu_count);
         auto message=test::icmp_error(Ipv4Addr{0xc00002fe},ac.local_addr,
-            wire::icmp_dest_unreach,wire::icmp_frag_needed,1280,packet->buf.bytes(),28);
+            wire::icmp_dest_unreach,wire::icmp_frag_needed,mtu,packet->buf.bytes(),28);
         win.run(release_,[&]{packet->buf.reset();});
         win.run(pmtu_,[&]{src.receive(now,message);});
-        require(src.tcp_info(client)->pmtu==1280 && src.debug_usage().stack_timers_armed>0,"applied ICMP PMTU");
-        pmtu_sent=true;
+        require(src.tcp_info(client)->pmtu==mtu && src.debug_usage().stack_timers_armed>0,"applied ICMP PMTU");
+        ++pmtu_count;
         continue;
+      }
+      if (forward && inject && mode=="duplicate") {
+        inject=false;
+        deliver(*packet,dst,forward,false);
+        ++duplicate_count;
       }
       if (forward && inject && (mode=="reorder" || mode=="loss")) {
         inject=false;
@@ -122,6 +146,11 @@ struct Pair {
   }
   void events(Stack& s,bool forward) {
     while (auto e=win.run(event_,[&]{return s.poll_event();})) {
+      if (checking_wakes && forward && (e->events & ev_writable) &&
+          (e->h==waiter[0] || e->h==waiter[1])) {
+        require(wake_count<2 && e->h==waiter[wake_count],"waiter FIFO order");
+        ++wake_count;
+      }
       require(std::fprintf(event_file,"%d,%lld,%u,%u,%u,%u\n",forward,
           (long long)now.ns,e->h.slot,e->h.gen,e->events,(unsigned)win.phase)>0,"event transcript");
     }
@@ -151,6 +180,36 @@ struct Pair {
     client=win.run(connect_,[&]{return a->tcp_connect(peer);}).value();
     pump();
     server=win.run(accept_,[&]{return b->tcp_accept(listener);}).value();
+  }
+  void open_waiters() {
+    for (unsigned i=0;i<2;++i) {
+      waiter[i]=win.run(connect_,[&]{return a->tcp_connect(peer);}).value();
+      pump();
+      child[i]=win.run(accept_,[&]{return b->tcp_accept(listener);}).value();
+    }
+  }
+  void multi_waiter(std::span<const std::byte> data) {
+    auto fill=data.first(2*ring_chunk_bytes);
+    require(win.run(send_,[&]{return a->tcp_send(client,fill);}).value()==fill.size(),"hold two chunks");
+    win.row(send_).bytes+=fill.size();
+    wake_count=0;
+    for (const auto h:waiter) {
+      auto blocked=win.run(send_,[&]{return a->tcp_send(h,data.first(1));});
+      require(!blocked && blocked.error()==Error::would_block,"waiter genuinely blocked");
+      ++would_block;
+    }
+    checking_wakes=true;
+    for (unsigned step=0;step<10 && wake_count!=2;++step) {
+      pump();
+      if (wake_count!=2) deadline();
+    }
+    require(wake_count==2,"both waiters notified");
+    checking_wakes=false;
+    std::array<std::byte,2*ring_chunk_bytes> got{};
+    require(win.run(recv_,[&]{return b->tcp_recv(server,got);}).value()==got.size() &&
+            std::equal(got.begin(),got.end(),fill.begin()),"exact held payload");
+    win.row(recv_).bytes+=got.size();
+    for (unsigned i=0;i<2;++i) transfer(*a,waiter[i],*b,child[i],data.subspan(i,64));
   }
   void transfer(Stack& src,Handle from,Stack& dst,Handle to,std::span<const std::byte> data) {
     std::array<std::byte,32768> read{};
@@ -213,15 +272,17 @@ struct Pair {
 }
 
 int main(int argc,char** argv) {
-  require(argc==6,"usage: MODE {off|count} {count|sites} WIRE EVENT");
+  require(argc==7,"usage: MODE {off|count} {count|sites} WIRE EVENT TX");
   Mode mode=argv[1]; bool trace=Mode(argv[2])=="count";
   require(trace || Mode(argv[2])=="off","trace switch");
   wire_file=std::fopen(argv[4],"wb"); event_file=std::fopen(argv[5],"w");
-  require(wire_file && event_file,"transcript files");
+  tx_file=std::fopen(argv[6],"wb");
+  require(wire_file && event_file && tx_file,"transcript files");
   utcp_heap_sites(Mode(argv[3])=="sites");
   Pair p(mode,trace);
   bool is_ip=mode=="udp" || mode=="icmp";
   if (!is_ip) p.connect();
+  if (mode=="multi_waiter") p.open_waiters();
   if (mode=="udp") {
     p.client=win.run(udp_open_,[&]{return p.a->udp_open({p.ac.local_addr,4000});}).value();
     p.server=win.run(udp_open_,[&]{return p.b->udp_open(p.peer);}).value();
@@ -235,17 +296,24 @@ int main(int argc,char** argv) {
     for (unsigned i=0;i<n;++i) payload[i]=std::byte((i*13 + (i>>7) + round*31) & 255);
     auto data=std::span(payload).first(n);
     if (is_ip) p.ip(round,data);
+    else if (mode=="multi_waiter") p.multi_waiter(data);
     else {
-      p.inject=(round%8==0 && (mode=="reorder" || mode=="loss")) || (!round && mode=="pmtu");
+      p.inject=(round%8==0 && (mode=="reorder" || mode=="loss" || mode=="duplicate")) || (round%32==0 && mode=="pmtu");
       p.transfer(*p.a,p.client,*p.b,p.server,data);
+      if (mode=="pmtu" && round%32==0) {
+        p.advance(p.now+3s);
+        require(p.a->debug_usage().stack_timers_armed==0,"expired PMTU");
+        ++p.expired;
+      }
       if (mode=="echo") p.transfer(*p.b,p.server,*p.a,p.client,data);
     }
   }
   if (mode=="pmtu") {
-    require(p.pmtu_sent,"PMTU notification");
+    require(p.pmtu_count==10 && p.expired==10,"ten PMTU applications and expiries");
     p.advance(p.now+3s);
     require(p.a->debug_usage().stack_timers_armed==0,"PMTU cache expiry");
   }
+  if (mode=="duplicate") require(p.duplicate_count==37,"duplicated ordinary datagrams");
   if (mode=="reorder") require(p.reorders>0,"reorder path");
   if (mode=="loss") {
     auto info=p.a->tcp_info(p.client).value();
@@ -271,10 +339,12 @@ int main(int argc,char** argv) {
     win.run(close_,[&]{return p.b->udp_close(p.server);});
   }
   p.a->debug_check();p.b->debug_check();
-  require(std::fclose(wire_file)==0 && std::fclose(event_file)==0,"transcript close");
+  require(std::fclose(wire_file)==0 && std::fclose(event_file)==0 && std::fclose(tx_file)==0,"transcript close");
   win.print();
   std::fprintf(stderr,"coverage,gso=%llu,ordinary=%llu,tx_blocked=%llu,chunk_blocked=%llu,reordered=%llu,dropped=%llu,timer_wakes=%llu\n",
       (unsigned long long)p.gso,(unsigned long long)p.ordinary,(unsigned long long)p.blocked,
       (unsigned long long)p.would_block,(unsigned long long)p.reorders,(unsigned long long)p.losses,(unsigned long long)p.timer_wakes);
+  std::fprintf(stderr,"coverage,duplicates=%u,pmtu=%u,expiry=%u,waiters_last=%u,full_mss_after_gso=%u\n",
+      p.duplicate_count,p.pmtu_count,p.expired,p.wake_count,p.full_packets_after_gso);
   require(utcp_heap_write_sites(stderr),"call-site recorder capacity");
 }
