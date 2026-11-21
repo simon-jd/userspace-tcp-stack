@@ -1,0 +1,10 @@
+d10bbcc5a8461e35380045bc7f7b8e6493dd1aee2cdb61b4694c8526a80889fd  m0/.logs/build-image.log
+cc038fac22a4bb4ef7fbf618a13bcf756a33cfea9a29d7dca266d0f5e48d09d4  m0/.logs/ci-final.log
+020ccb2ed7ed932bb733e6a53e70e2eb2095bd26fcca6682fad3a30cbd976bb0  m0/.logs/verify-env-final.log
+a48b7d122b5203112d598e8867c177c95e7e16d2179cf3d9c9e49adfc15725af  m3-stock-transfer/launch.log
+aa75bd267460bc4c937ce64c5958270d02e13c1dc7d08ec6b4b8d0c7672418b0  m3-wire-reference/build/m3-wire-reference-proof.tar.gz
+54c8765227d15fc386691da2469440d54fd5729a04c6174bf808a485667311f6  m3-packetdrill-verify-1.zNTrFT/logs/documented-run.log
+14f910d167ebceb4f616b9c13b4bd549e01c2ae5d886479b56c3368b2d24330a  m3-packetdrill-verify-1.zNTrFT/logs/pristine-run.log
+21ce95eff5a2fccc80e3c50714490fa34bb2de28543905f1e31dd0b3e3f0b27d  m3-integrated-verify-1.sesTG9NP/m3-integrated.verify-1.json
+bf2ac1eb37c59654453408ed68d3e71fff887950e22c757186b92e5dbe681ef9  m3-integrated-verify-1.sesTG9NP/stock.log
+f67b1ba074ce55babbc8f47e043455109b240b6cc2e099784c00b42afee962f5  m3-integrated-verify-1.sesTG9NP/packetdrill.log
