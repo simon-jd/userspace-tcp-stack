@@ -89,3 +89,78 @@ recomputed from the raw files. These checks establish internal consistency.
 Authenticating the origin of a receipt requires separate evidence, such as a
 signature verified with a trusted key. Retain the testbed image ID and fresh
 build output alongside these receipts.
+
+## Independent run on 2026-11-21
+
+Both lanes passed the registered 7,200-second threshold under Clang 21.1.8
+Debug with ASan and UBSan. Each process completed one GoogleTest and exited
+with status 0. The lanes ran concurrently at nice 10 on CPUs 24 and 25 in
+an offline Ubuntu testbed. Active time sums the checked duration of each
+batch. Elapsed time spans process start through exit.
+
+| Measurement | Valid IPv4 datagrams | Receive-buffer streams |
+| --- | ---: | ---: |
+| Active seconds | 7,200.033542460 | 7,200.823695115 |
+| Process elapsed seconds | 7,201.011741621 | 7,201.191206877 |
+| Completed batches | 19,854 | 5,181 |
+| First batch seed | `9310392888930074624` | `9310392891077558272` |
+| Last batch seed | `9310392888930094477` | `9310392891077563452` |
+
+At scale 16, the wire lane checked **121,982,976 valid IPv4
+datagrams**. TCP, UDP and ICMP each accounted for 40,660,992.
+The stream lane checked **1,326,336 complete streams**, each with an
+ordered window and a reordered window. All 2,652,672 windows
+drained and all 1,326,336 receive-buffer FIN offsets were reached.
+Across 31,801,598 checked reads, **13,582,105,777 bytes** matched both
+the byte-level reference and the original payload. The independent verifier
+reconstructed every batch's seed and counts, including the stream operation
+counts. These counts include the deliberate repeats described above.
+[Machine-readable totals, timings and log hashes](results/m3-fuzz/valid-soak-20261121.json)
+
+The original M3 campaign still has 0 of 1,000,000 fresh Gen6 simulator seeds,
+0 of 2,000 sampled replays and their associated capture checks, and 0 of 4
+completed sustained arbitrary-input targets. The fixed-seed suite has its
+own [historical results](results/m3-fuzz/VALID_WIRE_STREAM.md).
+
+### Evidence and reproduction
+
+| Artifact | Identifier |
+| --- | --- |
+| Measured source commit | `ac8e2827e04184b00f9c4aea4488c627ede0b49c` |
+| Measured source tree | `3d5282a7a5e0db0f42e39e37e03459eea504a2c6` |
+| Measured Git archive, SHA-256 | `90674540d0ce7194ba244f53cae71d72ceb3c44add2fb6a3be9fbf9416296767` |
+| Measured test executable, SHA-256 | `f10e34bacf6aa96f588be3f7e0b66ef48d2ca7ace7bb966be8607aeac46b1992` |
+| Revised offline checker commit | `dd56f1a0b91b16d04ac7f9f8c8641a90d65a6434` |
+| Revised checker source file, SHA-256 | `9d0c5bc9d3cb5786733caf265c7e67a7abd32c9258aba1ef53bbbf768a3983ba` |
+| Independent report (`report.json`), SHA-256 | `35c5bb21668e109912f8a5b9218960f958c1b6e1a97a3785c2b212af07b1284b` |
+| Independent report (`REPORT.md`), SHA-256 | `b558d6ac291fe5b964fd27dd368a220e2810788f90e0e1d15f322de0f78ca2f3` |
+| Published summary (`valid-soak-20261121.json`), SHA-256 | `fbe6ca153ef254af4b0c54360f65c2e3ca8cb116e1ad82b2a1f4c08430b54941` |
+| Original receipt file index (`volume-source.sha256`), SHA-256 | `f65a420a4a17d1abba9f9431f0a653c6b941ca9fa11491a6c96715b2e797920d` |
+
+The formal receipts reside at `utcp-data:/valid-soak-independent-n21` in
+the `wire` and `stream` directories. The Ubuntu audit directory is
+`~/Desktop/utcp-wt/valid-soak-independent-n21/reviewer-takeover-20261121`.
+It retains the independent report, per-file digest index, original receipt
+copies and the revised checker's output. To check archived files from that
+directory, run
+
+~~~sh
+sha256sum --strict -c report.sha256
+(cd evidence && sha256sum --strict --quiet -c ../volume-source.sha256)
+~~~
+
+To read back both lanes, set `archive` to the absolute path of that audit
+directory. From a checkout of the revised checker commit, run
+
+~~~sh
+python3 tools/valid_soak.py check "$archive/evidence/wire" --expected-batches 19854
+python3 tools/valid_soak.py check "$archive/evidence/stream" --expected-batches 5181
+~~~
+
+For a new timed run, use the measured source commit, the image ID in the
+machine-readable summary and the [build and run commands](#run-and-independently-read-back)
+above with fresh output directories. CPUs 24 and 25 reproduce the recorded
+affinity. A repeat with the same run and scale regenerates the same inputs
+for each matching batch index. Machine speed determines the final batch
+when the active-time threshold is reached. The original commands are saved in
+`evidence/audit/inside.sh` and `evidence/audit/launch.sh`.

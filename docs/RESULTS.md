@@ -1331,6 +1331,8 @@ and a fresh rebuild and rerun reproduced the counts.
 [Method and commands](results/m3-fuzz/VALID_WIRE_STREAM.md)
 [Per-seed counts](results/m3-fuzz/valid-wire-stream-counts.csv)
 
+[Two-hour valid-input soak](VALID-INPUT-SOAK.md#independent-run-on-2026-11-21)
+
 ### Packetdrill
 
 A fresh build of unmodified Google Packetdrill at

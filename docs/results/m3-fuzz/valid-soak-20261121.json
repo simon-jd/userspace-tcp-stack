@@ -1,0 +1,92 @@
+{
+  "baseline_commit": "e603e4af24d0028bbd307e2d955b1c9c3ac05003",
+  "container_id": "fa8298b990f1acb8bf06ad40ad41ce307cf992712d9d7f12e8de7bcc5dada8eb",
+  "first_batch": 0,
+  "formal_data": "utcp-data:/valid-soak-independent-n21",
+  "full_report_sha256": "35c5bb21668e109912f8a5b9218960f958c1b6e1a97a3785c2b212af07b1284b",
+  "historical_numeric_regression": {
+    "all_properties_equal": true,
+    "cases_per_build": 8,
+    "seeds": [
+      101,
+      202,
+      303,
+      404
+    ]
+  },
+  "image_id": "sha256:42acf2a264d9cf8a0986791550279b33dbcde1604ab5bdbd39c32097bac44d66",
+  "lanes": {
+    "stream": {
+      "active_ns": 7200823695115,
+      "batches": 5181,
+      "cpu": 25,
+      "end_utc": "2026-11-21T21:51:05.159802+00:00",
+      "exit_code": 0,
+      "first_seed": 9310392891077558272,
+      "last_seed": 9310392891077563452,
+      "per_batch_prediction_sha256": "bdad8be38c924a1c929b0c11dbdde2090a895ed6051dc9e44edfc38a8128708a",
+      "process_wall_ns": 7201191206877,
+      "rates_per_active_second": {
+        "bytes_read": 1886187.796295308,
+        "inserts": 4610.099122760127,
+        "reads": 4416.383367582522,
+        "streams": 184.19226135195882
+      },
+      "start_utc": "2026-11-21T19:51:03.968561+00:00",
+      "test_log_sha256": "6103fecaa689564c253e0f8289717b8005d9043037a80626a8c34766abac71fe",
+      "test_xml_sha256": "4fa9063d3faa911e8191ba3ffea8a032624356edfc812b9b926674b0ec7e468c",
+      "totals": {
+        "bytes_read": 13582105777,
+        "delivery_windows": 2652672,
+        "drained_windows": 2652672,
+        "fin_reached": 1326336,
+        "hole_fills": 2777095,
+        "inserts": 33196511,
+        "ordered_windows": 1326336,
+        "reads": 31801598,
+        "reordered_inserts": 11954239,
+        "reordered_windows": 1326336,
+        "repeat_inserts": 1326336,
+        "streams": 1326336
+      }
+    },
+    "wire": {
+      "active_ns": 7200033542460,
+      "batches": 19854,
+      "cpu": 24,
+      "end_utc": "2026-11-21T21:51:04.980337+00:00",
+      "exit_code": 0,
+      "first_seed": 9310392888930074624,
+      "last_seed": 9310392888930094477,
+      "per_batch_prediction_sha256": null,
+      "process_wall_ns": 7201011741621,
+      "rates_per_active_second": {
+        "ipv4_datagrams": 16942.001072723153
+      },
+      "start_utc": "2026-11-21T19:51:03.968555+00:00",
+      "test_log_sha256": "43ee0141f353db6aa538419f8da6b4d962907b963e18ce8552098783e24d9cad",
+      "test_xml_sha256": "e098f186f5f41b1ddb9b9d6bf92a0af9d19618d1693c5a95cb10361a3409e169",
+      "totals": {
+        "icmp_echo_reply": 20330496,
+        "icmp_echo_request": 10165248,
+        "icmp_messages": 40660992,
+        "icmp_port_unreachable": 10165248,
+        "ipv4_datagrams": 121982976,
+        "tcp_segments": 40660992,
+        "tcp_syn": 10165248,
+        "tcp_syn_ack": 10165248,
+        "udp_datagrams": 40660992,
+        "udp_without_checksum": 10165248
+      }
+    }
+  },
+  "measured_binary_sha256": "f10e34bacf6aa96f588be3f7e0b66ef48d2ca7ace7bb966be8607aeac46b1992",
+  "measured_commit": "ac8e2827e04184b00f9c4aea4488c627ede0b49c",
+  "run": 20261121,
+  "scale": 16,
+  "scope": "In-memory positive protocol and receive-buffer cases; packet counts and bytes returned from application reads; deliberate repeats included.",
+  "target_active_seconds_per_lane": 7200,
+  "verdict": "PASS",
+  "verification": "Independent per-batch integer seeds, intervals and operation counts; final XML and frozen summaries; read-only revised checker.",
+  "verified_offline_checker_commit": "dd56f1a0b91b16d04ac7f9f8c8641a90d65a6434"
+}
