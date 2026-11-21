@@ -1478,5 +1478,9 @@ recomputed tables and report at `utcp-data:/m4-ring-size-independent-n21a-review
 TUN transfers confirmed `in_flight_bytes` for all 653 clean-run and 713 one-loss
 TX, RX, accepted-ACK and state snapshots. The field counts unique transmitted
 payload still lacking cumulative or accepted selective acknowledgment. The
-existing `in_flight` field remains in packets. Dedicated cwnd-change, RTT-update
-and recovery-transition events remain open. [Trace captures, report and raw manifest](results/trace-flight/README.md#integrated-runtime-on-november-21-2026)
+existing `in_flight` field remains in packets. [Trace captures, report and raw manifest](results/trace-flight/README.md#integrated-runtime-on-november-21-2026)
+
+**Dedicated sender events.** Six subsequent transfers tested window changes, accepted RTT samples
+and recovery transitions for NewReno, CUBIC and BBR. Each single-loss transfer showed open →
+disorder → recovery → open, one retransmission, and matching endpoint hashes. Ten independent
+runs included a real RTO and SYN loss. [Event counts, scope and reproduction](results/sender-events/README.md)

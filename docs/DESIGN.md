@@ -1586,6 +1586,8 @@ struct TraceEvent {                                 // POD; no strings
   std::uint64_t snd_una_off, snd_nxt_off;
   // Optional diagnostics and pacing fields omitted here.
   std::uint32_t in_flight_bytes;
+  TraceTrigger trigger; std::uint32_t prior_cwnd, prior_ssthresh;
+  CaState prior_ca; std::int64_t sample_rtt_ns;
 };
 class TraceSink { public: virtual ~TraceSink() = default; virtual void on_event(const TraceEvent&) = 0; };
 ```
@@ -1607,10 +1609,35 @@ SACK coverage independently of the trace sink. Enabling tracing mid-connection
 therefore includes previously accepted SACKs. Historical JSONL records omit the
 new key, and readers should treat a missing byte value as unavailable.
 
-Two 451,019 B userspace-to-Linux transfers on the integrated default build checked every
-TX, RX, accepted-ACK and state byte count against the wire. Dedicated event publishers for
-cwnd changes, RTT updates and recovery transitions remain open.
-[Capture scope and per-run counts](results/trace-flight/README.md#integrated-runtime-on-november-21-2026)
+The sender publishes three independently selectable event kinds.
+
+* `cwnd` reports a change in either cwnd or ssthresh, in packets. Compare
+  `prior_cwnd`, `prior_ssthresh` with the ordinary window fields. The
+  observation boundaries are handshake initialization, each committed recovery
+  transition, and the end of an ACK, data RTO, REO expiry, PMTU reduction, idle
+  restart or CC transmit-start hook. Local arithmetic inside a controller is
+  coalesced at those boundaries. Equal window pairs produce no row.
+* `recovery` reports each committed congestion state change, from `prior_ca`
+  to `ca`. A packet can produce several transitions, including a CWR round
+  trip. A repeated assignment of the same state emits no transition.
+* `rtt` reports each nonnegative raw SRTT-estimator input, even when an
+  estimate stays unchanged. Handshake timing and the data pipeline apply their
+  existing Karn, SACK and echoed-timestamp rules. The raw value is
+  `sample_rtt_ns` in memory, `sample_rtt_us` truncated toward zero in JSONL.
+  SRTT, variance and RTO are post-update; an ACK RTT row includes the reset
+  backoff. A retransmission, timeout, partial ACK or duplicate ACK alone
+  supplies no sample. A qualifying SACK or unambiguous timestamp can supply one.
+
+All three kinds carry `trigger` naming the operation. When a TCP input packet
+drives the operation, they carry its raw sequence and ACK numbers. All events
+use the stack clock; use stream order to resolve equal times. Handshake
+window initialization precedes the optional handshake RTT and ESTABLISHED
+rows. An input's recovery/window updates precede its optional data RTT and
+accepted-ACK rows. At a recovery boundary a changed window is emitted before
+the edge. The wire fields of timer- or locally-triggered operations are zero.
+A late sink sees subsequent changes with their actual prior values. Subscribing
+does not synthesize initial or catch-up rows. Historical records remain readable
+with their original keys. [Measurements and reproduction](results/sender-events/README.md)
 
 `StackConfig::trace_mask` selects events. With no sink, event construction is skipped. The JSONL writer (sim, apps) emits
 one line per event with fixed keys (`{"t":1234567,"node":"a","conn":3,"ev":"ack","cwnd":42,"srtt_us":20113,...}`);

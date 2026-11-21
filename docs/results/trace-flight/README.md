@@ -21,7 +21,7 @@ snapshot kinds agreed with it, including the retransmission of 1,448 B that
 left 9,144 B outstanding. The older packet-count formula also passed. The plotting
 consumer read 1,691 historical events without the new field and all 820 clean and
 908 loss events with it. The wire reconstruction excludes timer-internal snapshots.
-Dedicated cwnd-change, RTT-update and recovery-transition events remain open.
+The subsequent [sender-event study](../sender-events/README.md) covers dedicated cwnd, RTT and recovery events.
 
 The Ubuntu report is `~/Desktop/utcp-wt/trace-field-independent-n21.QZeD7uFG/_accept/REPORT.md`
 (SHA-256 `ec62bd04edeb19d78b79ca3a609bc1e7c30044b83ddd1202289faedbe7de50fa`).
@@ -113,4 +113,4 @@ done
 
 GCC release and Clang ASan/UBSan each passed 58 offline cases in 11 suites. The directed queue and peer tests cover split segments, partial cumulative ACKs, repeated and overlapping SACKs, FIN, wire sequence wrap, retransmission, reneging, JSON keys and the ordering of snapshots. A peer reports both complete and partial coverage before a trace sink is attached. The first RX and next accepted-ACK snapshots preserve both byte ranges.
 
-Dedicated cwnd-change, RTT-update and recovery-transition publishers remain separate observability work. The CPU 8–15 throughput campaign and the integrated 10,000-connection memory measurement are outside this field-level verification.
+Dedicated publishers were evaluated in the later [sender-event study](../sender-events/README.md). The CPU 8–15 throughput campaign and the integrated 10,000-connection memory measurement are outside this field-level verification.
