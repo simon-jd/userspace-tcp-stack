@@ -41,6 +41,22 @@ def fixture_bytes(name, path, offset, length):
     return bytes((i + seed) & 255 for i in range(offset, offset + length))
 
 
+def expected_copies(total, calls, *ranges):
+    """Expected half-open ranges, each covered once unless repeated or overlapping."""
+    return total, calls, ranges or ((0, total),)
+
+
+def coverage_changes(intervals):
+    # The running sum of these changes is the number of copies at each offset.
+    # Adjacent fragments cancel at their junction, independent of call order.
+    edges = collections.Counter()
+    for lo, hi in intervals:
+        require(0 <= lo < hi, ("invalid copy interval", lo, hi))
+        edges[lo] += 1
+        edges[hi] -= 1
+    return {pos: change for pos, change in edges.items() if change}
+
+
 def check_units(path, xml, baseline):
     records = json.loads(path.read_text())
     tests = ET.parse(xml).getroot()
@@ -48,42 +64,56 @@ def check_units(path, xml, baseline):
                  if t.get("result") == "completed" and t.find("failure") is None}
     cases = {
         "PartialSendAndShortReadsKeepTheAcceptedBytes":
-            {"app_to_send_ring": (4096, 1), "tx_packet": (4096, 3),
-             "rx_packet": (4096, 3), "recv_ring_to_app": (4096, 2)},
+            {"app_to_send_ring": expected_copies(4096, 1), "tx_packet": expected_copies(4096, 3),
+             "rx_packet": expected_copies(4096, 3), "recv_ring_to_app": expected_copies(4096, 2)},
         "VnetGroFrameUsesTheOriginalPayloadAcrossChunks":
-            {"rx_gro": (4397, 2), "recv_ring_to_app": (4397, 2)},
+            {"rx_gro": expected_copies(4397, 2), "recv_ring_to_app": expected_copies(4397, 2)},
         "OutOfOrderGroUsesLogicalReceivePath":
-            {"rx_gro_fallback": (2920, 3), "rx_packet": (1460, 1), "recv_ring_to_app": (4380, 2)},
+            {"rx_gro_fallback": expected_copies(2920, 3, (1460, 4380)),
+             "rx_packet": expected_copies(1460, 1), "recv_ring_to_app": expected_copies(4380, 2)},
         "FreshGsoIsBoundedByTheLogicalCwndAndRetainsPerSegmentRecovery":
-            {"app_to_send_ring": (8765, 3), "tx_gso": (5840, 2), "tx_retransmit": (1460, 1)},
+            {"app_to_send_ring": expected_copies(8765, 3), "tx_gso": expected_copies(5840, 2),
+             "tx_retransmit": expected_copies(1460, 1)},
         "HeldLargePacketFallsBackToOrdinaryFramesWithoutDroppingData":
-            {"app_to_send_ring": (11680, 3), "tx_gso": (5840, 2), "tx_packet": (5840, 5)},
+            {"app_to_send_ring": expected_copies(11680, 3), "tx_gso": expected_copies(5840, 2),
+             "tx_packet": expected_copies(5840, 5, (5840, 11680))},
         "InOrderGroFallsBackUnderChunkPressure":
-            {"rx_gro_fallback": (2920, 2), "recv_ring_to_app": (2920, 1)},
+            {"rx_gro_fallback": expected_copies(2920, 2), "recv_ring_to_app": expected_copies(2920, 1)},
         "ReadShutdownWithUnreadPrefixAndPendingFinPreservesAdmission":
-            {"rx_packet": (4541, 6), "recv_ring_to_app": (73, 1)},
+            {"rx_packet": expected_copies(4541, 6, (0, 4500), (8192, 8233)),
+             "recv_ring_to_app": expected_copies(73, 1)},
         "ReadShutdownStillChargesOutOfOrderChunksAndPrunesOnHoleFill": {},
-        "ShutdownBothDiscardsUnreadDataAndSendsFin": {"rx_packet": (183, 1)},
+        "ShutdownBothDiscardsUnreadDataAndSendsFin": {"rx_packet": expected_copies(183, 1)},
     }
     if baseline:
         cases["ReadShutdownWithUnreadPrefixAndPendingFinPreservesAdmission"].update(
-            discard_at_shutdown=(4427, 3), discard_after_shutdown=(3733, 4),
-            rx_after_shutdown=(3692, 3))
-        cases["ShutdownBothDiscardsUnreadDataAndSendsFin"].update(discard_at_shutdown=(183, 1))
+            discard_at_shutdown=expected_copies(4427, 3, (73, 4500)),
+            discard_after_shutdown=expected_copies(3733, 4, (4500, 8233)),
+            rx_after_shutdown=expected_copies(3692, 3, (4500, 8192)))
+        cases["ShutdownBothDiscardsUnreadDataAndSendsFin"].update(
+            discard_at_shutdown=expected_copies(183, 1))
+        # The stored 17-byte tail is pruned, then received and stored again.
         cases["ReadShutdownStillChargesOutOfOrderChunksAndPrunesOnHoleFill"].update(
-            rx_after_shutdown=(4130, 5), discard_after_shutdown=(4113, 4))
+            rx_after_shutdown=expected_copies(4130, 5, (0, 4113), (4096, 4113)),
+            discard_after_shutdown=expected_copies(4113, 4))
     expected = {"TcpOffload_" + name for name in cases}
     require(completed == expected, ("fixture cases", completed ^ expected))
     require(all(r["case"] in expected for r in records), "unexpected fixture attribution")
     result = {}
-    for name, counts in cases.items():
+    for name, boundaries in cases.items():
         rows = [r for r in records if r["case"] == "TcpOffload_" + name]
         for r in rows:
             content = fixture_bytes(name, r["path"], r["offset"], r["bytes"])
             require(hashlib.sha256(content).hexdigest() == r["sha256"], (name, r))
         totals = summarize(rows)
         observed = {k: (v["bytes"], v["calls"]) for k, v in totals.items()}
+        counts = {kind: (total, calls) for kind, (total, calls, _) in boundaries.items()}
         require(observed == counts, (name, observed, counts))
+        for kind, (_, _, required_ranges) in boundaries.items():
+            intervals = ((r["offset"], r["offset"] + r["bytes"]) for r in rows if r["path"] == kind)
+            actual = coverage_changes(intervals)
+            wanted = coverage_changes(required_ranges)
+            require(actual == wanted, ("copy coverage", name, kind, actual, wanted))
         result[name] = totals
     return result
 

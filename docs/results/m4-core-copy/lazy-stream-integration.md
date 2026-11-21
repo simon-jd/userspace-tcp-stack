@@ -32,6 +32,12 @@ GDB measured the same sizes in both Debug builds. Tcb was 1,016 bytes, StreamSta
 
 The eleven ordinary integration tests also passed under Clang AddressSanitizer and UndefinedBehaviorSanitizer with leak detection and immediate failure enabled. The studies used development CPUs 24–27 at nice 10. No timing comparison was made from debugger or population observations.
 
+## Fixed-fixture offset verification
+
+The repository checker compares the expected and observed number of copies at every logical stream offset, per fixture and boundary. It checks half-open intervals independently of the order or chunking of the calls. For example, the pending-FIN receiver stores [0, 4500) and [8192, 8233). In the control, pruning and redelivery store [4096, 4113) twice. The retransmission has its own [0, 1460) requirement in addition to the original send. Byte totals, physical call counts and per-slice SHA-256 remain independently checked.
+
+The fixed payload patterns repeat after 256 bytes. The offset regression replays the two genuine fixtures, then changes one offset per control while keeping all other fields and digests equal. The ordinary TX control moves [0, 1460) to [256, 1716). Additional controls move the retransmit, move the pending-FIN tail into a hole, and move one of the two copies of the pruned tail. All four fail the corresponding boundary coverage check. Run the command below from this repository checkout. The archive includes the historical checker used at acquisition.
+
 ## Verification archive
 
 The new 137-file archive is `utcp-data:/m4/copy-memory-integrated-result-n21/`. Its manifest SHA-256 is `e17fb73f9d49d4fc5417e0edbc94bdce3e03011cb47cfa59f7931a137e8f4c27`. Both executables on each side of the comparison, raw observer records, stack statistics, Linux endpoint receipts and population snapshots are retained there. The Debug bulk executable digests were `0dc054849577001c2f829fd824fa167f04002adee7de0769d6f4d3b26b7ecc69` for the control and `2dc3268d5fb808cf184aaf4a99e68285a8d85073d0f032bbd057fd5cbb78ceea` for the integrated runtime.
@@ -39,13 +45,15 @@ The new 137-file archive is `utcp-data:/m4/copy-memory-integrated-result-n21/`. 
 ```sh
 docker run --rm --network none --cpuset-cpus 24-27 \
   --mount type=volume,src=utcp-data,dst=/out,volume-subpath=m4/copy-memory-integrated-result-n21,readonly \
+  --mount "type=bind,src=$PWD,dst=/src,readonly" \
   -w /out utcp-testbed:dev nice -n 10 bash -euo pipefail -c '
     echo "e17fb73f9d49d4fc5417e0edbc94bdce3e03011cb47cfa59f7931a137e8f4c27  SHA256SUMS" | sha256sum -c -
     sha256sum -c --quiet SHA256SUMS
-    python3 -I method/core_copy_check.py unit before/fixture/{copies.json,cases.xml} --baseline | cmp before/fixture/verified.json -
-    python3 -I method/core_copy_check.py unit after/fixture/{copies.json,cases.xml} | cmp after/fixture/verified.json -
+    python3 -I /src/testbed/m4/core_copy_check.py unit before/fixture/{copies.json,cases.xml} --baseline | cmp before/fixture/verified.json -
+    python3 -I /src/testbed/m4/core_copy_check.py unit after/fixture/{copies.json,cases.xml} | cmp after/fixture/verified.json -
+    python3 -I /src/testbed/m4/core_copy_offsets_test.py /out
     for arm in before after; do
-      python3 -I method/core_copy_check.py wire "$arm/wire" | cmp "$arm/wire-summary.json" -
+      python3 -I /src/testbed/m4/core_copy_check.py wire "$arm/wire" | cmp "$arm/wire-summary.json" -
     done
   '
 ```
