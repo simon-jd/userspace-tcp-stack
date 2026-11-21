@@ -13,7 +13,17 @@ from pathlib import Path
 import gdb
 
 
-def context():
+def span_bounds(value):
+    begin = int(value["_M_ptr"])
+    return begin, begin + int(value["_M_extent"]["_M_extent_value"])
+
+
+def inside(address, length, lo, hi):
+    if not lo <= address < address + length <= hi:
+        raise RuntimeError("physical copy does not address the expected payload storage")
+
+
+def context(src, dst, length, offset):
     frames = {}
     counts = {}
     case = "application"
@@ -29,9 +39,20 @@ def context():
     engine = "utcp::TcpEngine::"
     if engine + "send_segment" in frames:
         f = frames[engine + "send_segment"]
+        # The real memcpy destination is the payload interval of the live
+        # output PacketBuf, which is moved to the transmit queue after framing.
+        packet = f.read_var("buf")["_M_payload"]["_M_payload"]["_M_value"]
+        pool = packet["pool_"]
+        storage = gdb.default_visualizer(pool["storage_"])
+        base = int(next(iter(storage.children()))[1]) + int(packet["index_"]) * int(pool["buf_size_"])
+        begin = base + int(packet["head_"])
+        inside(dst, length, begin, base + int(packet["tail_"]))
+        if dst - begin != offset - int(f.read_var("o")["data_off"]):
+            raise RuntimeError("wrong offset in final packet")
         kind = "tx_retransmit" if bool(f.read_var("o")["retrans"]) else (
             "tx_gso" if int(f.read_var("segments")) > 1 else "tx_packet")
     elif "utcp::SendQueue::write" in frames:
+        inside(src, length, *span_bounds(frames["utcp::Stack::tcp_send"].read_var("data")))
         kind = "app_to_send_ring"
     elif "utcp::RecvBuffer::read" in frames:
         if engine + "tcp_shutdown" in frames:
@@ -39,8 +60,17 @@ def context():
         elif engine + "data_input" in frames:
             kind = "discard_after_shutdown"
         else:
+            inside(dst, length, *span_bounds(frames["utcp::Stack::tcp_recv"].read_var("out")))
             kind = "recv_ring_to_app"
     elif engine + "data_input" in frames:
+        # Check against the original datagram received from the backend,
+        # including recursive GRO fallback, rather than merely testing an
+        # intermediate span that might itself point into a staging copy.
+        ip, end = span_bounds(frames["utcp::Stack::receive"].read_var("ipv4"))
+        inf = gdb.selected_inferior()
+        tcp = ip + (bytes(inf.read_memory(ip, 1))[0] & 15) * 4
+        payload = tcp + (bytes(inf.read_memory(tcp + 12, 1))[0] >> 4) * 4
+        inside(src, length, payload, end)
         f = frames[engine + "data_input"]
         if bool(f.read_var("t")["app_read_shut"]):
             kind = "rx_after_shutdown"
@@ -73,8 +103,9 @@ class Probe(gdb.Breakpoint):
                     raise RuntimeError(f"unexpected copy length {length}")
                 src = int(f.read_register("rsi"))
                 dst = int(f.read_register("rdi"))
-                case, kind = context()
-                pending = (case, kind, int(f.read_var("pos")), dst, bytes(inf.read_memory(src, length)))
+                offset = int(f.read_var("pos"))
+                case, kind = context(src, dst, length, offset)
+                pending = (case, kind, offset, dst, bytes(inf.read_memory(src, length)))
             else:
                 case, kind, offset, dst, source = pending
                 if bytes(inf.read_memory(dst, len(source))) != source:
