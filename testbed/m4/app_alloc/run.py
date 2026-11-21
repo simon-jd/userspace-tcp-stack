@@ -61,6 +61,9 @@ class AppTrial(BulkTrial):
         return summary
     def setup(self):
         super().setup()
+        if getattr(self.args,"pressure",False):
+            self.allocation_counter += ":/utcp/build/app-pressure.so"
+            self.docker("server","tc","qdisc","replace","dev","eth0","root","netem","delay","3ms","limit","50000")
         if self.args.queues > 1:
             self.docker("server","ip","tuntap","del","dev","utcp0","mode","tun")
             self.docker("server","ip","tuntap","add","dev","utcp0","mode","tun","vnet_hdr","multi_queue")
@@ -109,6 +112,7 @@ def main():
     p.add_argument("arm",choices=["send","receive","staged","direct"])
     p.add_argument("--source",required=True)
     p.add_argument("--offload",choices=["legacy","tcpv4"],default="legacy")
+    p.add_argument("--pressure",action="store_true")
     p.add_argument("--queues",choices=(1,2),type=int,default=1)
     p.add_argument("--trace",action="store_true")
     a=p.parse_args()
