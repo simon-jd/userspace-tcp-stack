@@ -704,6 +704,14 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     return 1;
   }
   Transport& t = **transport;
+  JsonLine line;
+  if (load_report) {
+    // The larger Linux load report has 26 fields, a 19-byte longest key
+    // and values bounded by 20 decimal characters (or shorter quoted names).
+    // Four syntax bytes per field cover its quotes, colon and separator.
+    constexpr std::size_t max_load_line = 2 + 26 * (19 + 4 + 20);
+    line.reserve(max_load_line);
+  }
 
   if (listen) {
     ServerOptions so;
@@ -726,7 +734,6 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     std::fprintf(stderr, "utcp-echo: %s echo on %s\n", so.udp ? "UDP" : "TCP",
                  to_string(so.local).c_str());
     bool report_ok = true;
-    JsonLine line;
     const auto emit = [&] {
       const ServerStats& stats = server.stats();
       line.clear();
@@ -809,7 +816,6 @@ int main_(int argc, const char* const* argv, const TransportFactory& make) {
     std::fprintf(stderr, "utcp-echo: %s\n", s.error().c_str());
     return 1;
   }
-  JsonLine line;
   const auto emit = [&] {
     client.load_report(line);
     if (!report_load(t, line)) {

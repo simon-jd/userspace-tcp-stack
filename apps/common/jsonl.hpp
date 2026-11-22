@@ -54,6 +54,7 @@ public:
   [[nodiscard]] std::string str() const { return buf_.empty() ? "{}" : buf_ + '}'; }
   [[nodiscard]] bool empty() const { return buf_.empty(); }
   void clear() { buf_.clear(); }
+  void reserve(std::size_t bytes) { buf_.reserve(bytes); }
   // Append "_us" to a visited field name without creating a temporary key.
   void add_microseconds(std::string_view key, std::int64_t value);
   // Writes the closed object and newline without copying the reusable buffer.
