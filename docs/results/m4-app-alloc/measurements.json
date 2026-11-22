@@ -1,0 +1,5573 @@
+[
+  {
+    "label": "base-offload-direct",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234333Z-f75e45a9",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "cebf782216760a4e654bc09a9e7016868a960b8c17415c8704efbf29abcd7d4b",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 144,
+      "bytes": 40891,
+      "tun_datagrams_lower": [
+        1377,
+        1377
+      ],
+      "tun_datagrams_upper": [
+        1377,
+        1377
+      ],
+      "echo_byte_bounds": [
+        982016,
+        1473536
+      ],
+      "sites": {
+        "10 std::deque<utcp::SentFifo::Entry, std::allocator<utcp::SentFifo::Entry> >::insert(std::_Deque_iterator<utcp::SentFifo::Entry, utcp::SentFifo::Entry const&, utcp::SentFifo::Entry const*>, utcp::SentFifo::Entry const&) [clone .isra.0]": [
+          64,
+          32256
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          45,
+          1395
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          20,
+          4520
+        ],
+        "10 utcp::app::echo::(anonymous namespace)::report_load(utcp::app::Transport&, utcp::app::JsonLine)": [
+          5,
+          2410
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          5,
+          155
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          5,
+          155
+        ]
+      }
+    },
+    "phase": {
+      "active-1": {
+        "calls": 658,
+        "bytes": 9936902,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 738,
+        "bytes": 9958211,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 802,
+        "bytes": 9977793,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 176,
+        "bytes": 9742104,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 982,
+        "bytes": 10022258,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 1158,
+        "bytes": 10052102,
+        "peak_kib": 14212,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 292,
+        "bytes": 9778344,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 276,
+        "bytes": 9776626,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 160,
+        "bytes": 9740389,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 4,
+      "dev_tun_multi_queue": true,
+      "dev_tun_queues": 2,
+      "dev_rx_queue_0_datagrams": 2928,
+      "dev_tx_queue_0_datagrams": 3300,
+      "dev_rx_queue_1_datagrams": 1776,
+      "dev_tx_queue_1_datagrams": 1980,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 9351,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 4688,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 5280,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4647,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 30,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 0,
+      "stage_appends": 0
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "base-offload-receive",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234323Z-c89dcc75",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "fa465ddba58a153c1c8a78e883cdc9031af85df3b2aa7d66cbc2fb7ad3344ea5",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 31965,
+      "bytes": 1971487,
+      "tun_datagrams_lower": [
+        22314,
+        72040
+      ],
+      "tun_datagrams_upper": [
+        22320,
+        72045
+      ],
+      "sites": {
+        "10 utcp::app::UtcpTransport::add_oneshot(std::chrono::duration<long, std::ratio<1l, 1000000000l> >, std::function<void ()>)": [
+          15784,
+          757632
+        ],
+        "10 std::_Rb_tree_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > std::_Rb_tree<unsigned int, std::pair<unsigned int const, utcp::app::UtcpTransport::Timer>, std::_Select1st<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, std::less<unsigned int>, std::allocator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > >::_M_emplace_hint_unique<unsigned int const&, utcp::app::UtcpTransport::Timer>(std::_Rb_tree_const_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, unsigned int const&, utcp::app::UtcpTransport::Timer&&) [clone .isra.0]": [
+          15784,
+          1136448
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          132,
+          4092
+        ],
+        "10 void utcp::app::(anonymous namespace)::add_value<std::chrono::duration<long, std::ratio<1l, 1000000000l> > >(utcp::app::JsonLine&, std::basic_string_view<char, std::char_traits<char> >, std::chrono::duration<long, std::ratio<1l, 1000000000l> > const&) [clone .isra.0]": [
+          88,
+          2728
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          44,
+          7964
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          44,
+          1364
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned int>(std::basic_string_view<char, std::char_traits<char> >, unsigned int) [clone .isra.0]": [
+          22,
+          10582
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned long>(std::basic_string_view<char, std::char_traits<char> >, unsigned long) [clone .isra.0]": [
+          22,
+          21142
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          22,
+          1342
+        ],
+        "10 utcp::app::JsonlWriter::write(utcp::app::JsonLine const&)": [
+          22,
+          20001
+        ],
+        "10 utcp::ChunkPool::free(unsigned int)": [
+          1,
+          8192
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_in": [
+          2748482,
+          2995838
+        ],
+        "bytes_received": [
+          3969384704,
+          4326162912
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 111846,
+        "bytes": 25161349,
+        "peak_kib": 22336,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 180,
+        "bytes": 9941011,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 49878,
+        "bytes": 21323055,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 17913,
+        "bytes": 19351568,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 270911,
+      "dev_tx_queue_0_datagrams": 213443,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 318606,
+      "dev_tx_write_calls": 213443,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 270911,
+      "dev_rx_gro_datagrams": 261742,
+      "dev_rx_gro_segments": 9968526,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 213443,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 270911,
+      "dev_rx_bytes": 14397142228,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 213443,
+      "dev_tx_bytes": 11099044,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 47695,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 36,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 14383054848,
+      "sha256": "bcde6c0df7e1d3280dd2ae0777bffca34473b37f1484abd3c9b871f68a2e5c7f",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 14383054848,
+      "sha256": "bcde6c0df7e1d3280dd2ae0777bffca34473b37f1484abd3c9b871f68a2e5c7f",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 1
+    }
+  },
+  {
+    "label": "base-offload-send",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234310Z-82ce606f",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "fa465ddba58a153c1c8a78e883cdc9031af85df3b2aa7d66cbc2fb7ad3344ea5",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 129700,
+      "bytes": 55004521,
+      "tun_datagrams_lower": [
+        72742,
+        35954
+      ],
+      "tun_datagrams_upper": [
+        72745,
+        35954
+      ],
+      "sites": {
+        "10 std::deque<utcp::SentFifo::Entry, std::allocator<utcp::SentFifo::Entry> >::insert(std::_Deque_iterator<utcp::SentFifo::Entry, utcp::SentFifo::Entry const&, utcp::SentFifo::Entry const*>, utcp::SentFifo::Entry const&) [clone .isra.0]": [
+          104944,
+          52891776
+        ],
+        "10 std::_Rb_tree_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > std::_Rb_tree<unsigned int, std::pair<unsigned int const, utcp::app::UtcpTransport::Timer>, std::_Select1st<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, std::less<unsigned int>, std::allocator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > >::_M_emplace_hint_unique<unsigned int const&, utcp::app::UtcpTransport::Timer>(std::_Rb_tree_const_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, unsigned int const&, utcp::app::UtcpTransport::Timer&&) [clone .isra.0]": [
+          12108,
+          871776
+        ],
+        "10 utcp::app::UtcpTransport::add_oneshot(std::chrono::duration<long, std::ratio<1l, 1000000000l> >, std::function<void ()>)": [
+          12108,
+          581184
+        ],
+        "11 utcp::ChunkPool::alloc()": [
+          144,
+          589824
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          132,
+          4092
+        ],
+        "10 void utcp::app::(anonymous namespace)::add_value<std::chrono::duration<long, std::ratio<1l, 1000000000l> > >(utcp::app::JsonLine&, std::basic_string_view<char, std::char_traits<char> >, std::chrono::duration<long, std::ratio<1l, 1000000000l> > const&) [clone .isra.0]": [
+          88,
+          2728
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          66,
+          18546
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          44,
+          1364
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned long>(std::basic_string_view<char, std::char_traits<char> >, unsigned long) [clone .isra.0]": [
+          22,
+          21142
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          22,
+          1342
+        ],
+        "10 utcp::app::JsonlWriter::write(utcp::app::JsonLine const&)": [
+          22,
+          20747
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_out": [
+          2116958,
+          2297572
+        ],
+        "bytes_sent": [
+          3049260512,
+          3309570896
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 464874,
+        "bytes": 209176398,
+        "peak_kib": 18664,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 183,
+        "bytes": 9941227,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 198569,
+        "bytes": 97037833,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 68869,
+        "bytes": 42033312,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 127157,
+      "dev_tx_queue_0_datagrams": 259901,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 169944,
+      "dev_tx_write_calls": 259901,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 127157,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 259901,
+      "dev_tx_gso_datagrams": 173241,
+      "dev_tx_gso_segments": 7790446,
+      "dev_rx_datagrams": 127157,
+      "dev_rx_bytes": 6612244,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 259901,
+      "dev_tx_bytes": 11360950876,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 42787,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 331,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 11347427328,
+      "sha256": "c346d81178fba3f27e4c24b16fe22e4dbe24a4f364836de3e7fd2c1279a86db5",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 87288
+    },
+    "client": {
+      "ok": true,
+      "bytes": 11347427328,
+      "sha256": "c346d81178fba3f27e4c24b16fe22e4dbe24a4f364836de3e7fd2c1279a86db5",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 363
+    }
+  },
+  {
+    "label": "baseline-client",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234833Z-6fd558b5",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "771b0abc9783912fc41ca35b7dcf1fb2e55c00790b9dba29f438df53babd8ff5",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 183,
+      "bytes": 54250,
+      "tun_datagrams_lower": [
+        1438,
+        1438
+      ],
+      "tun_datagrams_upper": [
+        1438,
+        1438
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1718272
+      ],
+      "sites": {
+        "10 std::deque<utcp::SentFifo::Entry, std::allocator<utcp::SentFifo::Entry> >::insert(std::_Deque_iterator<utcp::SentFifo::Entry, utcp::SentFifo::Entry const&, utcp::SentFifo::Entry const*>, utcp::SentFifo::Entry const&) [clone .isra.0]": [
+          64,
+          32256
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          54,
+          1674
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          18,
+          9378
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          12,
+          552
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          12,
+          372
+        ],
+        "10 void std::deque<unsigned int, std::allocator<unsigned int> >::_M_push_back_aux<unsigned int const&>(unsigned int const&)": [
+          11,
+          5632
+        ],
+        "10 utcp::app::echo::(anonymous namespace)::report_load(utcp::app::Transport&, utcp::app::JsonLine)": [
+          6,
+          2940
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned long>(std::basic_string_view<char, std::char_traits<char> >, unsigned long)": [
+          6,
+          1446
+        ]
+      }
+    },
+    "phase": {
+      "active-1": {
+        "calls": 821,
+        "bytes": 8924337,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 1004,
+        "bytes": 8978587,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 1234,
+        "bytes": 9044046,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 1442,
+        "bytes": 9079030,
+        "peak_kib": 13532,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 214,
+        "bytes": 8756756,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4656,
+      "dev_tx_queue_0_datagrams": 5312,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9274,
+      "dev_tx_write_calls": 5312,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4656,
+      "dev_rx_bytes": 4960832,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5312,
+      "dev_tx_bytes": 4994944,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4618,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 16,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 4718592,
+      "stage_appends": 4608
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "baseline-direct",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234135Z-e853ffe1",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "cebf782216760a4e654bc09a9e7016868a960b8c17415c8704efbf29abcd7d4b",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 160,
+      "bytes": 42618,
+      "tun_datagrams_lower": [
+        1383,
+        1383
+      ],
+      "tun_datagrams_upper": [
+        1383,
+        1383
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1718272
+      ],
+      "sites": {
+        "10 std::deque<utcp::SentFifo::Entry, std::allocator<utcp::SentFifo::Entry> >::insert(std::_Deque_iterator<utcp::SentFifo::Entry, utcp::SentFifo::Entry const&, utcp::SentFifo::Entry const*>, utcp::SentFifo::Entry const&) [clone .isra.0]": [
+          64,
+          32256
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          54,
+          1674
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          24,
+          5424
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          6,
+          186
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          6,
+          186
+        ],
+        "10 utcp::app::echo::(anonymous namespace)::report_load(utcp::app::Transport&, utcp::app::JsonLine)": [
+          6,
+          2892
+        ]
+      }
+    },
+    "phase": {
+      "active-1": {
+        "calls": 655,
+        "bytes": 8888092,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 735,
+        "bytes": 8909401,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 815,
+        "bytes": 8930710,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 187,
+        "bytes": 8694752,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 993,
+        "bytes": 8975151,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 1165,
+        "bytes": 9004667,
+        "peak_kib": 13212,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 303,
+        "bytes": 8730992,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 287,
+        "bytes": 8729274,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 155,
+        "bytes": 8691322,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4704,
+      "dev_tx_queue_0_datagrams": 5280,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9331,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4627,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 32,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 0,
+      "stage_appends": 0
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "baseline-receive",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234109Z-0f375b02",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "fa465ddba58a153c1c8a78e883cdc9031af85df3b2aa7d66cbc2fb7ad3344ea5",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 398,
+      "bytes": 69391,
+      "tun_datagrams_lower": [
+        495603,
+        991188
+      ],
+      "tun_datagrams_upper": [
+        495665,
+        991316
+      ],
+      "sites": {
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          132,
+          4092
+        ],
+        "10 void utcp::app::(anonymous namespace)::add_value<std::chrono::duration<long, std::ratio<1l, 1000000000l> > >(utcp::app::JsonLine&, std::basic_string_view<char, std::char_traits<char> >, std::chrono::duration<long, std::ratio<1l, 1000000000l> > const&) [clone .isra.0]": [
+          88,
+          2728
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          44,
+          1364
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          44,
+          7964
+        ],
+        "10 utcp::app::JsonlWriter::write(utcp::app::JsonLine const&)": [
+          22,
+          20057
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned int>(std::basic_string_view<char, std::char_traits<char> >, unsigned int) [clone .isra.0]": [
+          22,
+          10582
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned long>(std::basic_string_view<char, std::char_traits<char> >, unsigned long) [clone .isra.0]": [
+          22,
+          21142
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          22,
+          1342
+        ],
+        "10 std::_Rb_tree_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > std::_Rb_tree<unsigned int, std::pair<unsigned int const, utcp::app::UtcpTransport::Timer>, std::_Select1st<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, std::less<unsigned int>, std::allocator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > >::_M_emplace_hint_unique<unsigned int const&, utcp::app::UtcpTransport::Timer>(std::_Rb_tree_const_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, unsigned int const&, utcp::app::UtcpTransport::Timer&&) [clone .isra.0]": [
+          1,
+          72
+        ],
+        "10 utcp::app::UtcpTransport::add_oneshot(std::chrono::duration<long, std::ratio<1l, 1000000000l> >, std::function<void ()>)": [
+          1,
+          48
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_in": [
+          951700,
+          1038420
+        ],
+        "bytes_received": [
+          1377768216,
+          1503313416
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 1868,
+        "bytes": 9281109,
+        "peak_kib": 13164,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 179,
+        "bytes": 8892360,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 844,
+        "bytes": 9099859,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 446,
+        "bytes": 9030468,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 3527343,
+      "dev_tx_queue_0_datagrams": 1764113,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 3527355,
+      "dev_tx_write_calls": 1764113,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 3527343,
+      "dev_rx_bytes": 5289988412,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 1764113,
+      "dev_tx_bytes": 91734088,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 55122,
+      "dev_rx_batch_limit": 55110,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 64,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 5106565120,
+      "sha256": "ec02cccc68369550448b0c25daa0d682821ac86079d011dcbd6b82c807ebf32a",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 5106565120,
+      "sha256": "ec02cccc68369550448b0c25daa0d682821ac86079d011dcbd6b82c807ebf32a",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 1
+    }
+  },
+  {
+    "label": "baseline-send",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234056Z-d6ae4c77",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "fa465ddba58a153c1c8a78e883cdc9031af85df3b2aa7d66cbc2fb7ad3344ea5",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 43927,
+      "bytes": 18095359,
+      "tun_datagrams_lower": [
+        729768,
+        282048
+      ],
+      "tun_datagrams_upper": [
+        729815,
+        282048
+      ],
+      "sites": {
+        "10 std::deque<utcp::SentFifo::Entry, std::allocator<utcp::SentFifo::Entry> >::insert(std::_Deque_iterator<utcp::SentFifo::Entry, utcp::SentFifo::Entry const&, utcp::SentFifo::Entry const*>, utcp::SentFifo::Entry const&) [clone .isra.0]": [
+          34715,
+          17496360
+        ],
+        "10 utcp::app::UtcpTransport::add_oneshot(std::chrono::duration<long, std::ratio<1l, 1000000000l> >, std::function<void ()>)": [
+          4408,
+          211584
+        ],
+        "10 std::_Rb_tree_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > std::_Rb_tree<unsigned int, std::pair<unsigned int const, utcp::app::UtcpTransport::Timer>, std::_Select1st<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, std::less<unsigned int>, std::allocator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > >::_M_emplace_hint_unique<unsigned int const&, utcp::app::UtcpTransport::Timer>(std::_Rb_tree_const_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, unsigned int const&, utcp::app::UtcpTransport::Timer&&) [clone .isra.0]": [
+          4408,
+          317376
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          132,
+          4092
+        ],
+        "10 void utcp::app::(anonymous namespace)::add_value<std::chrono::duration<long, std::ratio<1l, 1000000000l> > >(utcp::app::JsonLine&, std::basic_string_view<char, std::char_traits<char> >, std::chrono::duration<long, std::ratio<1l, 1000000000l> > const&) [clone .isra.0]": [
+          88,
+          2728
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          45,
+          8925
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          44,
+          1364
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          22,
+          1342
+        ],
+        "10 utcp::app::JsonlWriter::write(utcp::app::JsonLine const&)": [
+          22,
+          20825
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned int>(std::basic_string_view<char, std::char_traits<char> >, unsigned int) [clone .isra.0]": [
+          22,
+          10582
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned long>(std::basic_string_view<char, std::char_traits<char> >, unsigned long) [clone .isra.0]": [
+          21,
+          20181
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_out": [
+          700426,
+          765607
+        ],
+        "bytes_sent": [
+          1013972880,
+          1108205488
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 156934,
+        "bytes": 78883849,
+        "peak_kib": 18008,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 182,
+        "bytes": 8892576,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 67291,
+        "bytes": 41776034,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 23364,
+        "bytes": 23680675,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 965781,
+      "dev_tx_queue_0_datagrams": 2599013,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 966076,
+      "dev_tx_write_calls": 2599013,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 965781,
+      "dev_rx_bytes": 50220620,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 2599013,
+      "dev_tx_bytes": 3896390796,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 15253,
+      "dev_rx_batch_limit": 14958,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 632,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 3761242112,
+      "sha256": "c148bb15e53c67530c7b1e7b97228cf0e67acfb895de8d84114592330fe2db20",
+      "samples": 81,
+      "sndbuf_limited_us": 4810169,
+      "rwnd_limited_us": 5423
+    },
+    "client": {
+      "ok": true,
+      "bytes": 3761242112,
+      "sha256": "c148bb15e53c67530c7b1e7b97228cf0e67acfb895de8d84114592330fe2db20",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 2897
+    }
+  },
+  {
+    "label": "baseline-staged",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234119Z-5c60fdd1",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "cebf782216760a4e654bc09a9e7016868a960b8c17415c8704efbf29abcd7d4b",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 149,
+      "bytes": 45741,
+      "tun_datagrams_lower": [
+        1376,
+        1376
+      ],
+      "tun_datagrams_upper": [
+        1376,
+        1377
+      ],
+      "echo_byte_bounds": [
+        982016,
+        1472512
+      ],
+      "sites": {
+        "10 std::deque<utcp::SentFifo::Entry, std::allocator<utcp::SentFifo::Entry> >::insert(std::_Deque_iterator<utcp::SentFifo::Entry, utcp::SentFifo::Entry const&, utcp::SentFifo::Entry const*>, utcp::SentFifo::Entry const&) [clone .isra.0]": [
+          64,
+          32256
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          45,
+          1395
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          20,
+          8120
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          5,
+          155
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          5,
+          155
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<unsigned long>(std::basic_string_view<char, std::char_traits<char> >, unsigned long)": [
+          5,
+          1205
+        ],
+        "10 utcp::app::echo::(anonymous namespace)::report_load(utcp::app::Transport&, utcp::app::JsonLine)": [
+          5,
+          2455
+        ]
+      }
+    },
+    "phase": {
+      "active-1": {
+        "calls": 708,
+        "bytes": 8915545,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 791,
+        "bytes": 8939764,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 857,
+        "bytes": 8961286,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 186,
+        "bytes": 8694656,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 1044,
+        "bytes": 9012541,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 1217,
+        "bytes": 9043036,
+        "peak_kib": 13184,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 319,
+        "bytes": 8732675,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 303,
+        "bytes": 8730957,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 154,
+        "bytes": 8691226,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4704,
+      "dev_tx_queue_0_datagrams": 5280,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9329,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4625,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 32,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 4718592,
+      "stage_appends": 4608
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "baseline-trace",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234205Z-cda25f04",
+    "source": "069e56f915a4f94b7c7b824446c05df1c85889fb",
+    "binary": "fa465ddba58a153c1c8a78e883cdc9031af85df3b2aa7d66cbc2fb7ad3344ea5",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 8541,
+      "bytes": 3582863,
+      "tun_datagrams_lower": [
+        151426,
+        59307
+      ],
+      "tun_datagrams_upper": [
+        151426,
+        59307
+      ],
+      "sites": {
+        "10 std::deque<utcp::SentFifo::Entry, std::allocator<utcp::SentFifo::Entry> >::insert(std::_Deque_iterator<utcp::SentFifo::Entry, utcp::SentFifo::Entry const&, utcp::SentFifo::Entry const*>, utcp::SentFifo::Entry const&) [clone .isra.0]": [
+          6730,
+          3391920
+        ],
+        "10 std::_Rb_tree_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > std::_Rb_tree<unsigned int, std::pair<unsigned int const, utcp::app::UtcpTransport::Timer>, std::_Select1st<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, std::less<unsigned int>, std::allocator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> > >::_M_emplace_hint_unique<unsigned int const&, utcp::app::UtcpTransport::Timer>(std::_Rb_tree_const_iterator<std::pair<unsigned int const, utcp::app::UtcpTransport::Timer> >, unsigned int const&, utcp::app::UtcpTransport::Timer&&) [clone .isra.0]": [
+          703,
+          50616
+        ],
+        "10 utcp::app::UtcpTransport::add_oneshot(std::chrono::duration<long, std::ratio<1l, 1000000000l> >, std::function<void ()>)": [
+          703,
+          33744
+        ],
+        "10 utcp::app::json_quote[abi:cxx11](std::basic_string_view<char, std::char_traits<char> >)": [
+          132,
+          4092
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >)": [
+          88,
+          39688
+        ],
+        "10 void utcp::app::(anonymous namespace)::add_value<std::chrono::duration<long, std::ratio<1l, 1000000000l> > >(utcp::app::JsonLine&, std::basic_string_view<char, std::char_traits<char> >, std::chrono::duration<long, std::ratio<1l, 1000000000l> > const&) [clone .isra.0]": [
+          88,
+          2728
+        ],
+        "10 utcp::app::JsonLine& utcp::app::JsonLine::add<long>(std::basic_string_view<char, std::char_traits<char> >, long)": [
+          44,
+          1364
+        ],
+        "10 utcp::app::JsonlWriter::write(utcp::app::JsonLine const&)": [
+          22,
+          20505
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          22,
+          1342
+        ],
+        "11 utcp::ChunkPool::alloc()": [
+          9,
+          36864
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_out": [
+          144855,
+          158446
+        ],
+        "bytes_sent": [
+          209750040,
+          229429808
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 4365752,
+        "bytes": 1254619168,
+        "peak_kib": 128420,
+        "trace_open": [
+          31280,
+          156804973
+        ],
+        "trace_close": [
+          4365752,
+          1254619168
+        ]
+      },
+      "startup": {
+        "calls": 210,
+        "bytes": 76002835,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 13361,
+        "bytes": 82273790,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 4820,
+        "bytes": 78690927,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "trace_events": 541808,
+      "trace_blocks": 2,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 232609,
+      "dev_tx_queue_0_datagrams": 541808,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 244692,
+      "dev_tx_write_calls": 541808,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 232609,
+      "dev_rx_bytes": 12095676,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 541808,
+      "dev_tx_bytes": 812708120,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 12083,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 45,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 784534096,
+      "sha256": "f74c97173b835076e0dbfc08da20ce5f77f7ba0e33a83606089496abdd3cbede",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 784534096,
+      "sha256": "f74c97173b835076e0dbfc08da20ce5f77f7ba0e33a83606089496abdd3cbede",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 46
+    },
+    "trace_verify": {
+      "events": 541808,
+      "blocks": 2,
+      "file_bytes": 326022721
+    }
+  },
+  {
+    "label": "final-10k",
+    "volume": "utcp-data:/m4-echo-load/20261121T235011Z-cd6408b7",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "b314db9e66c34bfa1265938550ec458af0002bf3a850d290df652d5d734aff25",
+    "client": {
+      "ev": "summary",
+      "role": "client",
+      "ok": true,
+      "connections": 10000,
+      "connections_ok": 10000,
+      "errors": 0,
+      "requests": 50000,
+      "requests_ok": 50000,
+      "mismatches": 0,
+      "size": 64,
+      "bytes": 3200000,
+      "duration_us": 10001698,
+      "requests_per_s": 4999,
+      "latency_min_ns": 12495,
+      "latency_mean_ns": 141683,
+      "latency_p50_ns": 117759,
+      "latency_p99_ns": 1056767,
+      "latency_p999_ns": 3063807,
+      "latency_max_ns": 3473363,
+      "offered_requests_per_s": 5000,
+      "requests_started": 50000,
+      "latency_samples": 50000,
+      "workload_start_ns": 1182492937143791,
+      "workload_end_ns": 1182502938842058
+    },
+    "server": {
+      "ev": "summary",
+      "role": "server",
+      "udp": false,
+      "accepted": 10000,
+      "closed": 10000,
+      "errors": 0,
+      "bytes": 3200000,
+      "datagrams": 0,
+      "udp_dropped": 0,
+      "staged_bytes": 3200000,
+      "stage_appends": 50000,
+      "compacted_bytes": 0,
+      "relocated_bytes": 0
+    },
+    "idle": {
+      "role": "server",
+      "open": 10000,
+      "accepted": 10000,
+      "closed": 0,
+      "errors": 0,
+      "bytes": 0,
+      "staged_bytes": 0,
+      "stage_appends": 0,
+      "compacted_bytes": 0,
+      "relocated_bytes": 0,
+      "requested_backlog": 4096,
+      "ev": "load",
+      "monotonic_ns": 1182492629012468,
+      "tcb_bytes": 1016,
+      "stream_state_bytes": 1016,
+      "tcp_stream_states": 0,
+      "tcp_slots": 10001,
+      "time_wait_entries": 0,
+      "packet_buffer_bytes": 2048,
+      "pool_buffers": 4096,
+      "pool_buffers_free": 4096,
+      "chunk_bytes": 4096,
+      "chunks": 0,
+      "chunks_free": 0,
+      "tx_queued": 0,
+      "conn_timers_armed": 0
+    },
+    "targets": {
+      "tcb_bytes": 1016,
+      "tcb_bytes_at_most_1_kib": true,
+      "idle_rss_delta_per_connection_at_most_2_kib": true,
+      "active_rss_delta_per_connection_at_most_12_kib": true,
+      "sampled_active_rss_at_most_128_mib": true,
+      "peak_rss_through_workload_bytes": 41984000,
+      "peak_rss_through_workload_at_most_128_mib": true,
+      "measured_at_target_concurrency": true,
+      "verified_tun_rx_tx_queue_pair": [
+        "rx-0",
+        "tx-0"
+      ]
+    },
+    "memory": {
+      "idle": {
+        "rss_bytes": 28774400,
+        "rss_bytes_delta_per_connection": 1542.144
+      },
+      "active-1": {
+        "rss_bytes": 41984000,
+        "rss_bytes_delta_per_connection": 2863.104
+      },
+      "active-2": {
+        "rss_bytes": 41984000,
+        "rss_bytes_delta_per_connection": 2863.104
+      },
+      "active-3": {
+        "rss_bytes": 41984000,
+        "rss_bytes_delta_per_connection": 2863.104
+      }
+    },
+    "active": [
+      {
+        "role": "server",
+        "open": 10000,
+        "accepted": 10000,
+        "closed": 0,
+        "errors": 0,
+        "bytes": 1341056,
+        "staged_bytes": 1341056,
+        "stage_appends": 20954,
+        "compacted_bytes": 0,
+        "relocated_bytes": 0,
+        "requested_backlog": 4096,
+        "ev": "load",
+        "monotonic_ns": 1182497128990565,
+        "tcb_bytes": 1016,
+        "stream_state_bytes": 1016,
+        "tcp_stream_states": 10000,
+        "tcp_slots": 10001,
+        "time_wait_entries": 0,
+        "packet_buffer_bytes": 2048,
+        "pool_buffers": 4096,
+        "pool_buffers_free": 4093,
+        "chunk_bytes": 4096,
+        "chunks": 20,
+        "chunks_free": 17,
+        "tx_queued": 3,
+        "conn_timers_armed": 0
+      },
+      {
+        "role": "server",
+        "open": 10000,
+        "accepted": 10000,
+        "closed": 0,
+        "errors": 0,
+        "bytes": 1820928,
+        "staged_bytes": 1820928,
+        "stage_appends": 28452,
+        "compacted_bytes": 0,
+        "relocated_bytes": 0,
+        "requested_backlog": 4096,
+        "ev": "load",
+        "monotonic_ns": 1182498628985070,
+        "tcb_bytes": 1016,
+        "stream_state_bytes": 1016,
+        "tcp_stream_states": 10000,
+        "tcp_slots": 10001,
+        "time_wait_entries": 0,
+        "packet_buffer_bytes": 2048,
+        "pool_buffers": 4096,
+        "pool_buffers_free": 4096,
+        "chunk_bytes": 4096,
+        "chunks": 20,
+        "chunks_free": 20,
+        "tx_queued": 0,
+        "conn_timers_armed": 0
+      },
+      {
+        "role": "server",
+        "open": 10000,
+        "accepted": 10000,
+        "closed": 0,
+        "errors": 0,
+        "bytes": 2301120,
+        "staged_bytes": 2301120,
+        "stage_appends": 35955,
+        "compacted_bytes": 0,
+        "relocated_bytes": 0,
+        "requested_backlog": 4096,
+        "ev": "load",
+        "monotonic_ns": 1182500128985227,
+        "tcb_bytes": 1016,
+        "stream_state_bytes": 1016,
+        "tcp_stream_states": 10000,
+        "tcp_slots": 10001,
+        "time_wait_entries": 0,
+        "packet_buffer_bytes": 2048,
+        "pool_buffers": 4096,
+        "pool_buffers_free": 4096,
+        "chunk_bytes": 4096,
+        "chunks": 20,
+        "chunks_free": 20,
+        "tx_queued": 0,
+        "conn_timers_armed": 0
+      }
+    ]
+  },
+  {
+    "label": "final-client",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235032Z-b90f6bc2",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "b314db9e66c34bfa1265938550ec458af0002bf3a850d290df652d5d734aff25",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        1446,
+        1446
+      ],
+      "tun_datagrams_upper": [
+        1446,
+        1446
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1717248
+      ],
+      "sites": {}
+    },
+    "phase": {
+      "active-1": {
+        "calls": 413,
+        "bytes": 8820621,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 413,
+        "bytes": 8820621,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 422,
+        "bytes": 8825997,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 481,
+        "bytes": 8855157,
+        "peak_kib": 13516,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 223,
+        "bytes": 8758700,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4656,
+      "dev_tx_queue_0_datagrams": 5312,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9279,
+      "dev_tx_write_calls": 5312,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4656,
+      "dev_rx_bytes": 4960832,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5312,
+      "dev_tx_bytes": 4994944,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4623,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 16,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 4718592,
+      "stage_appends": 4608
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "final-direct",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235126Z-0688f597",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "b314db9e66c34bfa1265938550ec458af0002bf3a850d290df652d5d734aff25",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        1385,
+        1385
+      ],
+      "tun_datagrams_upper": [
+        1385,
+        1385
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1718272
+      ],
+      "sites": {}
+    },
+    "phase": {
+      "active-1": {
+        "calls": 338,
+        "bytes": 8808686,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 338,
+        "bytes": 8808686,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 338,
+        "bytes": 8808686,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 143,
+        "bytes": 8690462,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 341,
+        "bytes": 8808798,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 379,
+        "bytes": 8832850,
+        "peak_kib": 13244,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 227,
+        "bytes": 8723266,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 227,
+        "bytes": 8723266,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 143,
+        "bytes": 8690462,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4704,
+      "dev_tx_queue_0_datagrams": 5280,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9322,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4618,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 20,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 0,
+      "stage_appends": 0
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "final-direct_--offload_tcpv4_--queues_2",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235219Z-a848ba33",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "b314db9e66c34bfa1265938550ec458af0002bf3a850d290df652d5d734aff25",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        1395,
+        1395
+      ],
+      "tun_datagrams_upper": [
+        1395,
+        1395
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1718272
+      ],
+      "sites": {}
+    },
+    "phase": {
+      "active-1": {
+        "calls": 342,
+        "bytes": 9857409,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 342,
+        "bytes": 9857409,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 342,
+        "bytes": 9857409,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 149,
+        "bytes": 9739593,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 346,
+        "bytes": 9857529,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 383,
+        "bytes": 9881505,
+        "peak_kib": 14456,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 234,
+        "bytes": 9772461,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 234,
+        "bytes": 9772461,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 149,
+        "bytes": 9739593,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 4,
+      "dev_tun_multi_queue": true,
+      "dev_tun_queues": 2,
+      "dev_rx_queue_0_datagrams": 2352,
+      "dev_tx_queue_0_datagrams": 2640,
+      "dev_rx_queue_1_datagrams": 2352,
+      "dev_tx_queue_1_datagrams": 2640,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 9350,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 4688,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 5280,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4646,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 28,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 0,
+      "stage_appends": 0
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "final-paused",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235437Z-70d4bcf3",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        13054,
+        3896
+      ],
+      "tun_datagrams_upper": [
+        13054,
+        3896
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_out": [
+          13054,
+          13054
+        ],
+        "bytes_sent": [
+          18902192,
+          18902192
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 422,
+        "bytes": 9642083,
+        "peak_kib": 13976,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 145,
+        "bytes": 8889744,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 378,
+        "bytes": 9615156,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 378,
+        "bytes": 9615156,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 14070,
+      "dev_tx_queue_0_datagrams": 46870,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 14601,
+      "dev_tx_write_calls": 46870,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 14070,
+      "dev_rx_bytes": 732428,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 46870,
+      "dev_tx_bytes": 70297880,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 531,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 113,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 67763616,
+      "sha256": "24e3bc26159de91f3901ef90269be67dc8f64e6f2251bdcf0b15ed4a3ebd683e",
+      "samples": 82,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 8070174
+    },
+    "client": {
+      "ok": true,
+      "bytes": 67763616,
+      "sha256": "24e3bc26159de91f3901ef90269be67dc8f64e6f2251bdcf0b15ed4a3ebd683e",
+      "samples": 82
+    },
+    "periodic": {
+      "periodic_samples": 82,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 112
+    }
+  },
+  {
+    "label": "final-receive",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235100Z-d7eae5c9",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        403236,
+        813371
+      ],
+      "tun_datagrams_upper": [
+        403298,
+        813469
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_in": [
+          811684,
+          887083
+        ],
+        "bytes_received": [
+          1174997296,
+          1284131344
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 249,
+        "bytes": 9035728,
+        "peak_kib": 13504,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 142,
+        "bytes": 8889528,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 214,
+        "bytes": 9010532,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 214,
+        "bytes": 9010532,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 2970575,
+      "dev_tx_queue_0_datagrams": 1475135,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 2970600,
+      "dev_tx_write_calls": 1475135,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 2970575,
+      "dev_rx_bytes": 4454808508,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 1475135,
+      "dev_tx_bytes": 76715212,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 46428,
+      "dev_rx_batch_limit": 46403,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 64,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 4300335704,
+      "sha256": "12010f54c0e660af8e242060eefae6270c34f8ac7a06f2b3a1471a3c8be2137f",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 4300335704,
+      "sha256": "12010f54c0e660af8e242060eefae6270c34f8ac7a06f2b3a1471a3c8be2137f",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 1
+    }
+  },
+  {
+    "label": "final-receive_--offload_tcpv4",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235209Z-0d094c4a",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 1,
+      "bytes": 8192,
+      "tun_datagrams_lower": [
+        70821,
+        77138
+      ],
+      "tun_datagrams_upper": [
+        70823,
+        77148
+      ],
+      "sites": {
+        "10 utcp::ChunkPool::free(unsigned int)": [
+          1,
+          8192
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_in": [
+          2614743,
+          2868117
+        ],
+        "bytes_received": [
+          3766746800,
+          4132699824
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 2296,
+        "bytes": 18423811,
+        "peak_kib": 22284,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 143,
+        "bytes": 9938179,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 2256,
+        "bytes": 18398079,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 2255,
+        "bytes": 18389887,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 266665,
+      "dev_tx_queue_0_datagrams": 226270,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 316206,
+      "dev_tx_write_calls": 226270,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 266665,
+      "dev_rx_gro_datagrams": 252572,
+      "dev_rx_gro_segments": 9612769,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 226270,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 266665,
+      "dev_rx_bytes": 13887575644,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 226270,
+      "dev_tx_bytes": 11766048,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 49544,
+      "dev_rx_batch_limit": 3,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 53,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 13873709056,
+      "sha256": "fe8276d6b0cba5a2f87ec93735d7ac1ac4b2f38e2a6fc33a8923effda9ea4d7c",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 13873709056,
+      "sha256": "fe8276d6b0cba5a2f87ec93735d7ac1ac4b2f38e2a6fc33a8923effda9ea4d7c",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 1
+    }
+  },
+  {
+    "label": "final-send",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235048Z-beb5dde4",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        728732,
+        271748
+      ],
+      "tun_datagrams_upper": [
+        728845,
+        271748
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_out": [
+          698520,
+          761236
+        ],
+        "bytes_sent": [
+          1011089352,
+          1101791680
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 1303,
+        "bytes": 14888994,
+        "peak_kib": 18028,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 145,
+        "bytes": 8889744,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 1263,
+        "bytes": 14855364,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 1263,
+        "bytes": 14855364,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 973864,
+      "dev_tx_queue_0_datagrams": 2616724,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 974054,
+      "dev_tx_write_calls": 2616724,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 973864,
+      "dev_rx_bytes": 50640936,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 2616724,
+      "dev_tx_bytes": 3923264024,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 15346,
+      "dev_rx_batch_limit": 15156,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 902,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 3787194368,
+      "sha256": "c50417fa1c8b4af68fa670abdddd3f764cb1d6206fa080ac58224632adad2b85",
+      "samples": 81,
+      "sndbuf_limited_us": 5169083,
+      "rwnd_limited_us": 4325
+    },
+    "client": {
+      "ok": true,
+      "bytes": 3787194368,
+      "sha256": "c50417fa1c8b4af68fa670abdddd3f764cb1d6206fa080ac58224632adad2b85",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 2897
+    }
+  },
+  {
+    "label": "final-send_--offload_tcpv4",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235156Z-817febd3",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        76071,
+        37333
+      ],
+      "tun_datagrams_upper": [
+        76083,
+        37339
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_out": [
+          2191523,
+          2386599
+        ],
+        "bytes_sent": [
+          3156713264,
+          3437785544
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 1306,
+        "bytes": 15086103,
+        "peak_kib": 18776,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 146,
+        "bytes": 9938395,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 1123,
+        "bytes": 14048319,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 1123,
+        "bytes": 14048319,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 131878,
+      "dev_tx_queue_0_datagrams": 275633,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 176149,
+      "dev_tx_write_calls": 275633,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 131878,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 275633,
+      "dev_tx_gso_datagrams": 180426,
+      "dev_tx_gso_segments": 8114094,
+      "dev_rx_datagrams": 131878,
+      "dev_rx_bytes": 6857712,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 275633,
+      "dev_tx_bytes": 11840965276,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 44275,
+      "dev_rx_batch_limit": 4,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 770,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 11826626560,
+      "sha256": "5e336698d7c42d0aef2e64bf2ad7024ced6017daa3ac9a4e023f2eb05f6859e2",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 72587
+    },
+    "client": {
+      "ok": true,
+      "bytes": 11826626560,
+      "sha256": "5e336698d7c42d0aef2e64bf2ad7024ced6017daa3ac9a4e023f2eb05f6859e2",
+      "samples": 80
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 544
+    }
+  },
+  {
+    "label": "final-send_--trace",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235141Z-c3038ad1",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 28,
+      "bytes": 105504,
+      "tun_datagrams_lower": [
+        150222,
+        58463
+      ],
+      "tun_datagrams_upper": [
+        150267,
+        58481
+      ],
+      "sites": {
+        "11 utcp::ChunkPool::alloc()": [
+          25,
+          102400
+        ],
+        "10 utcp::ByteRing::ensure_slots(unsigned long)": [
+          1,
+          1024
+        ],
+        "10 std::vector<bool, std::allocator<bool> >::_M_insert_aux(std::_Bit_iterator, bool)": [
+          1,
+          32
+        ],
+        "10 utcp::ChunkPool::alloc()": [
+          1,
+          2048
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_out": [
+          144057,
+          157151
+        ],
+        "bytes_sent": [
+          208594536,
+          227554648
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 481,
+        "bytes": 143998916,
+        "peak_kib": 126280,
+        "trace_open": [
+          473,
+          143992452
+        ],
+        "trace_close": [
+          481,
+          143998916
+        ]
+      },
+      "startup": {
+        "calls": 172,
+        "bytes": 75999935,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 392,
+        "bytes": 76668027,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 364,
+        "bytes": 76562523,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "trace_events": 532555,
+      "trace_blocks": 2,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 198839,
+      "dev_tx_queue_0_datagrams": 532555,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 210705,
+      "dev_tx_write_calls": 532555,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 198839,
+      "dev_rx_bytes": 10339636,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 532555,
+      "dev_tx_bytes": 798828620,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 11866,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 45,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 771135752,
+      "sha256": "e9921c3beee53843b306f3862444004eedac680669bed1dd12738e9dcc49178b",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 771135752,
+      "sha256": "e9921c3beee53843b306f3862444004eedac680669bed1dd12738e9dcc49178b",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 147
+    },
+    "trace_verify": {
+      "events": 532555,
+      "blocks": 2,
+      "file_bytes": 319201664
+    }
+  },
+  {
+    "label": "final-series",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235335Z-8763f018",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        73219,
+        59521
+      ],
+      "tun_datagrams_upper": [
+        73231,
+        59531
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_out": [
+          2134833,
+          2326801
+        ],
+        "bytes_sent": [
+          3075212712,
+          3351749128
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 1308,
+        "bytes": 15086345,
+        "peak_kib": 18604,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 146,
+        "bytes": 9938395,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 1263,
+        "bytes": 15052095,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 1263,
+        "bytes": 15052095,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 148340,
+      "dev_tx_queue_0_datagrams": 249816,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 188470,
+      "dev_tx_write_calls": 249816,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 148340,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 249816,
+      "dev_tx_gso_datagrams": 165958,
+      "dev_tx_gso_segments": 7461482,
+      "dev_rx_datagrams": 148340,
+      "dev_rx_bytes": 7713748,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 249816,
+      "dev_tx_bytes": 10884109360,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 40130,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 915,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 10871111680,
+      "sha256": "f74c979aed73878da8597fe575773f11d99416032366052b9e4794a3f013b2b0",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 86306
+    },
+    "client": {
+      "ok": true,
+      "bytes": 10871111680,
+      "sha256": "f74c979aed73878da8597fe575773f11d99416032366052b9e4794a3f013b2b0",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 2101
+    },
+    "consecutive_windows": [
+      {
+        "calls": 2,
+        "bytes": 425984,
+        "sites": {
+          "10 utcp::SentFifo::on_transmit(utcp::SendQueue const&, utcp::TxSeg const&)": [
+            1,
+            98304
+          ],
+          "10 utcp::SendQueue::on_transmit(unsigned long, unsigned int, bool, utcp::Time, utcp::RateState const&, bool)": [
+            1,
+            327680
+          ]
+        },
+        "tun_datagrams_lower": [
+          31865,
+          23499
+        ],
+        "tun_datagrams_upper": [
+          31875,
+          23507
+        ],
+        "start": 1182690011445170,
+        "end": 1182691011120981,
+        "gso_datagrams": 20055,
+        "gso_segments": 901418,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182690": 3192896,
+          "1182691": 3520144
+        }
+      },
+      {
+        "calls": 0,
+        "bytes": 0,
+        "sites": {},
+        "tun_datagrams_lower": [
+          33993,
+          27881
+        ],
+        "tun_datagrams_upper": [
+          34001,
+          27886
+        ],
+        "start": 1182691011074056,
+        "end": 1182692011142345,
+        "gso_datagrams": 22728,
+        "gso_segments": 1022418,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182691": 3520144,
+          "1182692": 4193464
+        }
+      },
+      {
+        "calls": 0,
+        "bytes": 0,
+        "sites": {},
+        "tun_datagrams_lower": [
+          32286,
+          22958
+        ],
+        "tun_datagrams_upper": [
+          32288,
+          22958
+        ],
+        "start": 1182692011096686,
+        "end": 1182693011328720,
+        "gso_datagrams": 21615,
+        "gso_segments": 971166,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182692": 4193464,
+          "1182693": 4193464
+        }
+      },
+      {
+        "calls": 0,
+        "bytes": 0,
+        "sites": {},
+        "tun_datagrams_lower": [
+          26248,
+          12575
+        ],
+        "tun_datagrams_upper": [
+          26254,
+          12578
+        ],
+        "start": 1182693011280832,
+        "end": 1182694011413399,
+        "gso_datagrams": 17619,
+        "gso_segments": 792855,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182693": 4193464,
+          "1182694": 4193520
+        }
+      },
+      {
+        "calls": 0,
+        "bytes": 0,
+        "sites": {},
+        "tun_datagrams_lower": [
+          25679,
+          12354
+        ],
+        "tun_datagrams_upper": [
+          25691,
+          12361
+        ],
+        "start": 1182694011366993,
+        "end": 1182695011184582,
+        "gso_datagrams": 17233,
+        "gso_segments": 775485,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182694": 4193520,
+          "1182695": 4193520
+        }
+      },
+      {
+        "calls": 0,
+        "bytes": 0,
+        "sites": {},
+        "tun_datagrams_lower": [
+          33236,
+          16583
+        ],
+        "tun_datagrams_upper": [
+          33242,
+          16587
+        ],
+        "start": 1182695011137149,
+        "end": 1182696011198750,
+        "gso_datagrams": 22384,
+        "gso_segments": 1007280,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182695": 4193520,
+          "1182696": 4193520
+        }
+      },
+      {
+        "calls": 0,
+        "bytes": 0,
+        "sites": {},
+        "tun_datagrams_lower": [
+          33484,
+          16064
+        ],
+        "tun_datagrams_upper": [
+          33489,
+          16064
+        ],
+        "start": 1182696011151779,
+        "end": 1182697011639027,
+        "gso_datagrams": 22476,
+        "gso_segments": 1011420,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182696": 4193520,
+          "1182697": 4193520
+        }
+      },
+      {
+        "calls": 7,
+        "bytes": 8370,
+        "sites": {
+          "10 utcp::TimeWaitTable::insert(utcp::TimeWaitEntry const&)": [
+            2,
+            65
+          ],
+          "10 utcp::app::to_hex[abi:cxx11](std::span<unsigned char const, 18446744073709551615ul>)": [
+            1,
+            65
+          ],
+          "10 utcp::ChunkPool::free(unsigned int)": [
+            1,
+            8192
+          ],
+          "10 utcp::TimerHeap::destroy(unsigned int)": [
+            1,
+            32
+          ],
+          "10 utcp::TimerHeap::arm(unsigned int, utcp::Time)": [
+            1,
+            8
+          ],
+          "10 utcp::TcpEngine::free_tcb(utcp::Tcb&)": [
+            1,
+            8
+          ]
+        },
+        "tun_datagrams_lower": [
+          3584,
+          1484
+        ],
+        "tun_datagrams_upper": [
+          3589,
+          1484
+        ],
+        "start": 1182697011578835,
+        "end": 1182698018305861,
+        "gso_datagrams": 2452,
+        "gso_segments": 110340,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {
+          "1182697": 4193520
+        }
+      },
+      {
+        "calls": 0,
+        "bytes": 0,
+        "sites": {},
+        "tun_datagrams_lower": [
+          0,
+          0
+        ],
+        "tun_datagrams_upper": [
+          0,
+          0
+        ],
+        "start": 1182698018261464,
+        "end": 1182699027487003,
+        "gso_datagrams": 0,
+        "gso_segments": 0,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {}
+      },
+      {
+        "calls": 38,
+        "bytes": 25880,
+        "sites": {
+          "10 utcp::app::UtcpTransport::stats_json[abi:cxx11]() const": [
+            16,
+            496
+          ],
+          "10 utcp::app::(anonymous namespace)::append_escaped(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&, std::basic_string_view<char, std::char_traits<char> >)": [
+            10,
+            9100
+          ],
+          "10 std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_mutate(unsigned long, unsigned long, char const*, unsigned long)": [
+            6,
+            7892
+          ],
+          "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+            2,
+            152
+          ],
+          "1 libc.so.6+0x8ba0b": [
+            1,
+            4096
+          ],
+          "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+            1,
+            61
+          ],
+          "1 libc.so.6+0x8c7be": [
+            1,
+            472
+          ],
+          "10 std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::reserve(unsigned long)": [
+            1,
+            3611
+          ]
+        },
+        "tun_datagrams_lower": [
+          0,
+          0
+        ],
+        "tun_datagrams_upper": [
+          0,
+          0
+        ],
+        "start": 1182699027441415,
+        "end": 1182700026635381,
+        "gso_datagrams": 0,
+        "gso_segments": 0,
+        "pool_chunks_start": 1025,
+        "pool_chunks_end": 1025,
+        "containing_clock_seconds_peak_bytes": {}
+      }
+    ]
+  },
+  {
+    "label": "final-staged",
+    "volume": "utcp-data:/m4-app-alloc/20261121T235110Z-d163194a",
+    "source": "79ae0a64f0f4d1aa8c181b21523d4a032a944127",
+    "binary": "b314db9e66c34bfa1265938550ec458af0002bf3a850d290df652d5d734aff25",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        1382,
+        1382
+      ],
+      "tun_datagrams_upper": [
+        1382,
+        1382
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1718272
+      ],
+      "sites": {}
+    },
+    "phase": {
+      "active-1": {
+        "calls": 353,
+        "bytes": 8825927,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 353,
+        "bytes": 8825927,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 353,
+        "bytes": 8825927,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 142,
+        "bytes": 8690366,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 357,
+        "bytes": 8826047,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 392,
+        "bytes": 8849763,
+        "peak_kib": 13248,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 226,
+        "bytes": 8723170,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 226,
+        "bytes": 8723170,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 142,
+        "bytes": 8690366,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4704,
+      "dev_tx_queue_0_datagrams": 5280,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9347,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4643,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 28,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 4718592,
+      "stage_appends": 4608
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "joint-client-prev",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234848Z-c8d313e5",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "02c8320fc391afde32117ef0eee2708485b157a990160f035a03d7df28563e45",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 47,
+      "bytes": 17008,
+      "tun_datagrams_lower": [
+        1439,
+        1438
+      ],
+      "tun_datagrams_upper": [
+        1439,
+        1438
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1719296
+      ],
+      "sites": {
+        "10 utcp::app::(anonymous namespace)::append_escaped(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&, std::basic_string_view<char, std::char_traits<char> >)": [
+          18,
+          9018
+        ],
+        "10 void std::deque<unsigned int, std::allocator<unsigned int> >::_M_push_back_aux<unsigned int const&>(unsigned int const&)": [
+          11,
+          5632
+        ],
+        "10 utcp::app::JsonLine::add(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          6,
+          186
+        ],
+        "10 utcp::app::JsonLine::key_(std::basic_string_view<char, std::char_traits<char> >, std::basic_string_view<char, std::char_traits<char> >)": [
+          6,
+          726
+        ],
+        "10 void utcp::app::JsonLine::integer_<unsigned long>(unsigned long)": [
+          6,
+          1446
+        ]
+      }
+    },
+    "phase": {
+      "active-1": {
+        "calls": 552,
+        "bytes": 8855964,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 599,
+        "bytes": 8872972,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 668,
+        "bytes": 8894660,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 735,
+        "bytes": 8925137,
+        "peak_kib": 13592,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 197,
+        "bytes": 8755212,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4656,
+      "dev_tx_queue_0_datagrams": 5312,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9276,
+      "dev_tx_write_calls": 5312,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4656,
+      "dev_rx_bytes": 4960832,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5312,
+      "dev_tx_bytes": 4994944,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4620,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 16,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 4718592,
+      "stage_appends": 4608
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "joint-direct",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234703Z-743d5047",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "02c8320fc391afde32117ef0eee2708485b157a990160f035a03d7df28563e45",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        1378,
+        1378
+      ],
+      "tun_datagrams_upper": [
+        1378,
+        1378
+      ],
+      "echo_byte_bounds": [
+        1227776,
+        1718272
+      ],
+      "sites": {}
+    },
+    "phase": {
+      "active-1": {
+        "calls": 337,
+        "bytes": 8808678,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 337,
+        "bytes": 8808678,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 337,
+        "bytes": 8808678,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 143,
+        "bytes": 8690462,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 341,
+        "bytes": 8808798,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 377,
+        "bytes": 8832620,
+        "peak_kib": 13420,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 227,
+        "bytes": 8723266,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 227,
+        "bytes": 8723266,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 143,
+        "bytes": 8690462,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4704,
+      "dev_tx_queue_0_datagrams": 5280,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9337,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4633,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 22,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 0,
+      "stage_appends": 0
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "joint-direct_--offload_tcpv4_--queues_2",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234756Z-cdd61416",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "02c8320fc391afde32117ef0eee2708485b157a990160f035a03d7df28563e45",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        1380,
+        1380
+      ],
+      "tun_datagrams_upper": [
+        1380,
+        1380
+      ],
+      "echo_byte_bounds": [
+        982016,
+        1473536
+      ],
+      "sites": {}
+    },
+    "phase": {
+      "active-1": {
+        "calls": 342,
+        "bytes": 9857393,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 342,
+        "bytes": 9857393,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 342,
+        "bytes": 9857393,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 149,
+        "bytes": 9739593,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 346,
+        "bytes": 9857513,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 382,
+        "bytes": 9881377,
+        "peak_kib": 14456,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 233,
+        "bytes": 9772397,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 233,
+        "bytes": 9772397,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 149,
+        "bytes": 9739593,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 4,
+      "dev_tun_multi_queue": true,
+      "dev_tun_queues": 2,
+      "dev_rx_queue_0_datagrams": 2652,
+      "dev_tx_queue_0_datagrams": 2970,
+      "dev_rx_queue_1_datagrams": 2052,
+      "dev_tx_queue_1_datagrams": 2310,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 9350,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 4688,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 5280,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4646,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 26,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 0,
+      "stage_appends": 0
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  },
+  {
+    "label": "joint-pressure-prev",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234903Z-c36a3820",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        651282,
+        26230
+      ],
+      "tun_datagrams_upper": [
+        651288,
+        26230
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_out": [
+          625737,
+          682263
+        ],
+        "bytes_sent": [
+          905445264,
+          987234584
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 1305,
+        "bytes": 14037588,
+        "peak_kib": 17788,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 145,
+        "bytes": 8889744,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 1263,
+        "bytes": 14003654,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 1263,
+        "bytes": 14003654,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 92448,
+      "dev_tx_queue_0_datagrams": 2366705,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 105030,
+      "dev_tx_write_calls": 2366705,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 92448,
+      "dev_rx_bytes": 4807304,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 2366705,
+      "dev_tx_bytes": 3547717884,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 12598,
+      "dev_rx_batch_limit": 16,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 1024,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 3424649216,
+      "sha256": "8242bf9462ac323eadaeb7eda03356fd0af8f111c0018f70104db50c85e730ca",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 3244
+    },
+    "client": {
+      "ok": true,
+      "bytes": 3424649216,
+      "sha256": "8242bf9462ac323eadaeb7eda03356fd0af8f111c0018f70104db50c85e730ca",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 1268
+    }
+  },
+  {
+    "label": "joint-receive",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234638Z-be5d5d1b",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        492981,
+        985961
+      ],
+      "tun_datagrams_upper": [
+        493019,
+        986040
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_in": [
+          940382,
+          1025488
+        ],
+        "bytes_received": [
+          1361382072,
+          1484576328
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 241,
+        "bytes": 9018935,
+        "peak_kib": 13164,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 142,
+        "bytes": 8889528,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 208,
+        "bytes": 8994116,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 208,
+        "bytes": 8994116,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 3386694,
+      "dev_tx_queue_0_datagrams": 1694485,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 3386709,
+      "dev_tx_write_calls": 1694485,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 3386694,
+      "dev_rx_bytes": 5078987328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 1694485,
+      "dev_tx_bytes": 88113228,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 52928,
+      "dev_rx_batch_limit": 52913,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 64,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 4902879232,
+      "sha256": "842a9251871e32ae374c231f6ab8c97664da8ad928accf37663d0d472b64f525",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 4902879232,
+      "sha256": "842a9251871e32ae374c231f6ab8c97664da8ad928accf37663d0d472b64f525",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 1
+    }
+  },
+  {
+    "label": "joint-receive_--offload_tcpv4",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234745Z-307b4d04",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        22286,
+        70452
+      ],
+      "tun_datagrams_upper": [
+        22288,
+        70452
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_in": [
+          2815789,
+          3068436
+        ],
+        "bytes_received": [
+          4066902144,
+          4431806656
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 2298,
+        "bytes": 18424062,
+        "peak_kib": 22412,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 143,
+        "bytes": 9938179,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 2255,
+        "bytes": 18389887,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 2255,
+        "bytes": 18389887,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 261669,
+      "dev_tx_queue_0_datagrams": 155058,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 300041,
+      "dev_tx_write_calls": 155058,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 261669,
+      "dev_rx_gro_datagrams": 253146,
+      "dev_rx_gro_segments": 9957029,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 155058,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 261669,
+      "dev_rx_bytes": 14391944500,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 155058,
+      "dev_tx_bytes": 8063036,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 38372,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 43,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 14378336256,
+      "sha256": "d707e0b8d7793ae41dd50dd4d11424c336f7c85e8b68d774db62707702ea784c",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 14378336256,
+      "sha256": "d707e0b8d7793ae41dd50dd4d11424c336f7c85e8b68d774db62707702ea784c",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 1
+    }
+  },
+  {
+    "label": "joint-send",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234626Z-512bcd89",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        727506,
+        272620
+      ],
+      "tun_datagrams_upper": [
+        727559,
+        272663
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_out": [
+          695744,
+          760153
+        ],
+        "bytes_sent": [
+          1006785616,
+          1099956728
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 1302,
+        "bytes": 14888986,
+        "peak_kib": 18296,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 145,
+        "bytes": 8889744,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 1263,
+        "bytes": 14855364,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 1263,
+        "bytes": 14855364,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 978310,
+      "dev_tx_queue_0_datagrams": 2632112,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 978727,
+      "dev_tx_write_calls": 2632112,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 978310,
+      "dev_rx_bytes": 50872128,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 2632112,
+      "dev_tx_bytes": 3945822152,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 15524,
+      "dev_rx_batch_limit": 15107,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 470,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 3808952320,
+      "sha256": "9b13e1313d7c609ce7ba8587ba012f89067b596a8515025b38ed2ab116c7dce9",
+      "samples": 81,
+      "sndbuf_limited_us": 5046494,
+      "rwnd_limited_us": 14735
+    },
+    "client": {
+      "ok": true,
+      "bytes": 3808952320,
+      "sha256": "9b13e1313d7c609ce7ba8587ba012f89067b596a8515025b38ed2ab116c7dce9",
+      "samples": 80
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 2897
+    }
+  },
+  {
+    "label": "joint-send_--offload_tcpv4",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234733Z-429fdb6a",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 57,
+      "bytes": 663808,
+      "tun_datagrams_lower": [
+        73642,
+        36473
+      ],
+      "tun_datagrams_upper": [
+        73646,
+        36473
+      ],
+      "sites": {
+        "11 utcp::ChunkPool::alloc()": [
+          52,
+          212992
+        ],
+        "10 utcp::ChunkPool::alloc()": [
+          1,
+          16384
+        ],
+        "10 utcp::ByteRing::ensure_slots(unsigned long)": [
+          1,
+          8192
+        ],
+        "10 utcp::SentFifo::on_transmit(utcp::SendQueue const&, utcp::TxSeg const&)": [
+          1,
+          98304
+        ],
+        "10 utcp::SendQueue::on_transmit(unsigned long, unsigned int, bool, utcp::Time, utcp::RateState const&, bool)": [
+          1,
+          327680
+        ],
+        "10 std::vector<bool, std::allocator<bool> >::_M_insert_aux(std::_Bit_iterator, bool)": [
+          1,
+          256
+        ]
+      },
+      "transport_bounds": {
+        "data_segs_out": [
+          2112495,
+          2314685
+        ],
+        "bytes_sent": [
+          3042970392,
+          3334212488
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 1304,
+        "bytes": 15085980,
+        "peak_kib": 18904,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 146,
+        "bytes": 9938395,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 1263,
+        "bytes": 15052095,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 1206,
+        "bytes": 14388287,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 134215,
+      "dev_tx_queue_0_datagrams": 265903,
+      "dev_tun_offload": "tcpv4",
+      "dev_vnet_hdr_size": 10,
+      "dev_rx_read_calls": 178115,
+      "dev_tx_write_calls": 265903,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 134215,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 265903,
+      "dev_tx_gso_datagrams": 176981,
+      "dev_tx_gso_segments": 7960034,
+      "dev_rx_datagrams": 134215,
+      "dev_rx_bytes": 6979236,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 265903,
+      "dev_tx_bytes": 11608199732,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 43902,
+      "dev_rx_batch_limit": 2,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 615,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 11594366976,
+      "sha256": "c3e1bcb1810ff10529484377e51c6ae7bb20718bdc27a551047cf6cdef5b4dd3",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 54151
+    },
+    "client": {
+      "ok": true,
+      "bytes": 11594366976,
+      "sha256": "c3e1bcb1810ff10529484377e51c6ae7bb20718bdc27a551047cf6cdef5b4dd3",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 363
+    }
+  },
+  {
+    "label": "joint-send_--trace",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234718Z-1d9eab31",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "2e1a0673c6c14e7cceb31f25a64003a125032409cf5342d0ccc54ce30378f88e",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        149625,
+        59253
+      ],
+      "tun_datagrams_upper": [
+        149625,
+        59253
+      ],
+      "sites": {},
+      "transport_bounds": {
+        "data_segs_out": [
+          144090,
+          157635
+        ],
+        "bytes_sent": [
+          208642320,
+          228255480
+        ]
+      }
+    },
+    "phase": {
+      "final": {
+        "calls": 528,
+        "bytes": 144187444,
+        "peak_kib": 128336,
+        "trace_open": [
+          520,
+          144180980
+        ],
+        "trace_close": [
+          528,
+          144187444
+        ]
+      },
+      "startup": {
+        "calls": 172,
+        "bytes": 75999935,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-end": {
+        "calls": 463,
+        "bytes": 77000827,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "steady-start": {
+        "calls": 463,
+        "bytes": 77000827,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "trace_events": 541352,
+      "trace_blocks": 2,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 199924,
+      "dev_tx_queue_0_datagrams": 541352,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 212030,
+      "dev_tx_write_calls": 541352,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 199924,
+      "dev_rx_bytes": 10396056,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 541352,
+      "dev_tx_bytes": 812024120,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 12106,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 90,
+      "dev_device_failed": false
+    },
+    "server": {
+      "ok": true,
+      "bytes": 783873808,
+      "sha256": "aa3798a7cc0b4ee57582813bc1ccd0ecaaf4f1a77441f9514bc0895ae38e259f",
+      "samples": 81,
+      "sndbuf_limited_us": 0,
+      "rwnd_limited_us": 0
+    },
+    "client": {
+      "ok": true,
+      "bytes": 783873808,
+      "sha256": "aa3798a7cc0b4ee57582813bc1ccd0ecaaf4f1a77441f9514bc0895ae38e259f",
+      "samples": 81
+    },
+    "periodic": {
+      "periodic_samples": 81,
+      "zero_send_window_samples": 0,
+      "sampled_peak_unacked": 225
+    },
+    "trace_verify": {
+      "events": 541352,
+      "blocks": 2,
+      "file_bytes": 325676400
+    }
+  },
+  {
+    "label": "joint-staged",
+    "volume": "utcp-data:/m4-app-alloc/20261121T234648Z-5f63ab6d",
+    "source": "85afc26e9fbbf30a9317f6be7f64bc3f1fa6e330",
+    "binary": "02c8320fc391afde32117ef0eee2708485b157a990160f035a03d7df28563e45",
+    "counter": "263870575a23ef75be5ddc8e8319c8fb594c88c0ddcbb8600bbc8fcd23003bb0",
+    "window": {
+      "calls": 0,
+      "bytes": 0,
+      "tun_datagrams_lower": [
+        1383,
+        1383
+      ],
+      "tun_datagrams_upper": [
+        1383,
+        1383
+      ],
+      "echo_byte_bounds": [
+        1226752,
+        1718272
+      ],
+      "sites": {}
+    },
+    "phase": {
+      "active-1": {
+        "calls": 353,
+        "bytes": 8825927,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-2": {
+        "calls": 353,
+        "bytes": 8825927,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "active-3": {
+        "calls": 353,
+        "bytes": 8825927,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "baseline": {
+        "calls": 142,
+        "bytes": 8690366,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "drained": {
+        "calls": 357,
+        "bytes": 8826047,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "final": {
+        "calls": 391,
+        "bytes": 8849648,
+        "peak_kib": 13156,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-end": {
+        "calls": 226,
+        "bytes": 8723170,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "idle-start": {
+        "calls": 226,
+        "bytes": 8723170,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      },
+      "startup": {
+        "calls": 142,
+        "bytes": 8690366,
+        "peak_kib": 0,
+        "trace_open": [
+          0,
+          0
+        ],
+        "trace_close": [
+          0,
+          0
+        ]
+      }
+    },
+    "device": {
+      "TcpExtTCPWinProbe": 0,
+      "dev_tun_ifindex": 3,
+      "dev_tun_multi_queue": false,
+      "dev_tun_queues": 1,
+      "dev_rx_queue_0_datagrams": 4704,
+      "dev_tx_queue_0_datagrams": 5280,
+      "dev_tun_offload": "legacy",
+      "dev_vnet_hdr_size": 0,
+      "dev_rx_read_calls": 9339,
+      "dev_tx_write_calls": 5280,
+      "dev_rx_csum_valid": 0,
+      "dev_rx_csum_partial": 0,
+      "dev_rx_gro_datagrams": 0,
+      "dev_rx_gro_segments": 0,
+      "dev_rx_vnet_drops": 0,
+      "dev_tx_csum_partial": 0,
+      "dev_tx_gso_datagrams": 0,
+      "dev_tx_gso_segments": 0,
+      "dev_rx_datagrams": 4704,
+      "dev_rx_bytes": 4963328,
+      "dev_rx_errors": 0,
+      "dev_tx_datagrams": 5280,
+      "dev_tx_bytes": 4993280,
+      "dev_tx_eagain": 0,
+      "dev_tx_errors": 0,
+      "dev_last_tx_errno": 0,
+      "dev_rx_batches": 4635,
+      "dev_rx_batch_limit": 0,
+      "dev_pcap_records": 0,
+      "dev_pcap_failed": false,
+      "dev_tx_batch_max": 22,
+      "dev_device_failed": false
+    },
+    "server": {
+      "accepted": 16,
+      "closed": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "staged_bytes": 4718592,
+      "stage_appends": 4608
+    },
+    "client": {
+      "ok": true,
+      "connections": 16,
+      "connections_ok": 16,
+      "bytes": 4718592,
+      "errors": 0,
+      "mismatches": 0,
+      "requests_ok": 4608,
+      "latency_samples": 4608
+    },
+    "periodic": {}
+  }
+]
