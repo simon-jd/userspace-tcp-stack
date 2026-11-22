@@ -1,0 +1,4 @@
+volume=utcp-data:/m4-app-alloc/archive-20261122-9342b2be raw_files=901 raw_dirs=32
+RAW.sha256 4461efcbff4c97761b34f420921e18d71daad4ef4007c479f5a24238c3fc1dd4
+ARCHIVE.sha256 93864d38a15cebd72970c895adb07d9bf287a4c3685b146ae14a249540b13ce5
+Read-only RAW and ARCHIVE verification passed.
