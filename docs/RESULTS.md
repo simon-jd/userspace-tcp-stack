@@ -1410,8 +1410,9 @@ zero completed campaigns. The valid-input counts above come from separate tests.
   the staged path. Median active server process CPU rose from 0.25 s
   to 0.34 s and client p99 from 790.527 µs to 942.079 µs. Both ranges
   overlapped. The instrumented server counted replaceable C++ allocation
-  calls in bounded warm windows, without establishing zero allocations
-  per packet. The [final selectable-runtime confirmations](results/m4-copy-allocation/final-runtime.json)
+  calls in bounded warm windows. Staged and direct echo each recorded
+  42 calls, bulk receive 416 and bulk send 26,333. Those windows included
+  the event loop and telemetry and excluded direct C allocations. The [final selectable-runtime confirmations](results/m4-copy-allocation/final-runtime.json)
   used one binary for both modes and verified their copy counters and
   replies. Those confirmations are outside the historical timing rollup.
 
@@ -1419,6 +1420,61 @@ These are shared-host synthetic workloads. The bulk goodput belongs
 to each receiving endpoint. Echo timings come from the bounded
 uninstrumented comparison windows, and the separate allocation
 windows include application and event-loop work.
+
+### Userspace allocation by path
+
+The core study compared `069e56f915a4f94b7c7b824446c05df1c85889fb` with
+`b463268e4251f2869e3b8072b13f30783e15fbfb`. Across 16 public-API workloads and
+one internal recovery workload, every candidate path recorded zero outermost public
+C/C++ heap requests in two 128-round steady epochs. Ordinary bulk fell from 72
+requests in each epoch to zero by reusing the RACK transmission FIFO. Reusing the
+blocked-writer list, recycling partial SACK nodes through ACK drains and reneging,
+and splitting PMTU segments in place removed calls under pressure and recovery.
+The internal workload fell from 2,438 per epoch to zero. Ordinary bulk still used
+43 allocations during creation, 37 in its first burst, 17 during warm-up and 15
+during teardown. The Linux/glibc probe covers public allocator entry points on the
+bracketed thread. Hidden libc work, kernel allocations and external processes fall
+outside it. [Core report](results/m4-core-alloc/README.md) · [Per-path counts](results/m4-core-alloc/paths.csv) · [Window totals](results/m4-core-alloc/windows.csv)
+
+On real TUN at `79ae0a64f0f4d1aa8c181b21523d4a032a944127`, the primary warm
+process windows recorded zero public C/C++ allocation requests for bulk send, bulk
+receive, staged and direct echo servers, and the userspace echo client. Their
+respective `069e56f` baseline counts were 43,927, 398, 149, 160 and 183. The
+application reuses JSON reporting buffers, one-shot timers and the client’s rate
+FIFO. On a separate `79ae0a6` client run, a periodic report exceeded 480 B and grew
+the buffer once (961 B requested). `9342b2bed89c54861f9e3398a19eabc1eefe2a23` requests a minimum buffer capacity
+of 1,120 B before connection setup in each process with echo reporting enabled. The two maximum-width
+schema fixtures produced 844 B and 890 B reports with zero allocations.
+The developer’s bulk executable was byte-identical across the two revisions.
+A sustained TCPv4 GSO send on
+`79ae0a6` grew the RACK and send queues twice, then recorded
+six consecutive one-second traffic windows with zero requests. A TCPv4 receive
+grew the chunk free list once (8,192 B). [Linux application results](results/m4-app-alloc/README.md) · [Per-run measurements](results/m4-app-alloc/measurements.json)
+
+The recorder retains selected events in memory. With 216 B events, the first
+310,689 fit in its initial 64 MiB reservation. The next event made two allocation
+requests to grow storage. One real transfer retained 532,555 events in two blocks. Its
+measured traffic window included 28 requests for pool and ring growth. Formatting
+the retained events at exit took eight requests (6,464 B). These counts cover the
+instrumented endpoint. Raw `mmap`, private libc entry points, kernel memory, the
+peer and capture processes are outside the counter. [Recorder measurements](results/m4-app-alloc/README.md#production-trace-retention-and-final-output)
+
+Independent runs on `9342b2b` found zero requests in 16 of 18 prespecified echo
+middle windows. In the other two, one reverse-client interval of 128 frames per
+trace mode grew the pool from two chunks to three (4,096 B plus 32 B and 16 B
+for bookkeeping). All six clients crossed the previous report-width boundary
+without the 961 B request. A short bulk send grew the free list once (2,048 B).
+A 512 MiB transfer retained 495,105 events in two blocks. One separate CUBIC loss
+capture verified 451,019 delivered bytes, 21 cwnd events, 154 RTT events and three
+recovery transitions. The ten earlier sender-event runs belong to `069e56f`.
+
+Three uninstrumented 10,000-connection runs on `9342b2b` verified 50,000 replies
+each. Worst idle and active RSS increases were 1,542.144 and 2,871.296 B per
+connection, with a maximum process VmHWM of 42,225,664 B. The independent report is
+`utcp-data:/n22-allocation-independent-accept/REPORT.md` (SHA-256
+`e5ccc81aa10b43ea5325794cf3da74f201486f330fcea6c162eedbb84c9002c9`). Its
+1,838-entry `RAW-SHA256SUMS` has SHA-256
+`3afaceee801cbb0747825faa31ae1edb7f183467ad80ddeca069a6e822a77fb0`.
 
 ### Combined M4 runtime verification
 
@@ -1483,4 +1539,6 @@ existing `in_flight` field remains in packets. [Trace captures, report and raw m
 **Dedicated sender events.** Six subsequent transfers tested window changes, accepted RTT samples
 and recovery transitions for NewReno, CUBIC and BBR. Each single-loss transfer showed open →
 disorder → recovery → open, one retransmission, and matching endpoint hashes. Ten independent
-runs included a real RTO and SYN loss. [Event counts, scope and reproduction](results/sender-events/README.md)
+runs on `069e56f915a4f94b7c7b824446c05df1c85889fb` included a real RTO and SYN loss,
+checking 3,536 ordinary payload-byte observations and 1,243 dedicated observations.
+`03cdbff78189a64de25770e45f20a2f113a8a9e1` records the methods and results. [Event counts, scope and reproduction](results/sender-events/README.md)

@@ -75,14 +75,27 @@ allocation counts were nonzero. [November 20 methods and results](docs/RESULTS.m
 On November 21, allocating stream state on demand reduced the TCB to 1,016 B.
 Median idle server RSS growth was 1,542.144 B per connection across five
 independent pairs with 10,000 untouched, handshake-idle sockets. Later ACKs or
-data can activate the additional 1,064 B stream object. [Memory, copy and ring-size evidence](docs/RESULTS.md#independent-acceptance-on-november-21-2026)
+data can activate the stream object. It measured 1,064 B in the earlier trace build
+and 1,016 B after the RACK FIFO change. On GCC 15 x86-64 the default 4 KiB build
+uses a 1,016 B TCB and a 64 B TIME_WAIT entry. [Memory, copy and ring-size evidence](docs/RESULTS.md#independent-acceptance-on-november-21-2026) · [Current object sizes and RSS](docs/results/m4-app-alloc/README.md#standard-memory-and-content-regression)
 
 The integrated sender trace records unique outstanding payload in
 `in_flight_bytes` alongside the existing packet count. Independent TUN captures
 checked every TX, RX, accepted-ACK and state snapshot in a clean transfer and
 a transfer with one loss. Dedicated cwnd, RTT and recovery events record previous
 windows, estimator inputs and state transitions. Six real transfers exercised
-NewReno, CUBIC and BBR. [Sender events and independent acceptance](docs/results/sender-events/README.md)
+NewReno, CUBIC and BBR. Ten independent transfers checked 4,574 packet pairs on
+sender-event source `069e56f`. [Sender events and independent acceptance](docs/results/sender-events/README.md)
+
+Core allocation probes on `b463268` recorded zero public C/C++ heap requests in
+two warmed, 128-round epochs on each of 16 API workloads and an internal recovery
+workload. At `79ae0a6` the Linux endpoint also recorded zero requests in the primary
+warm windows for bulk send, bulk receive, staged and direct echo servers, and the
+echo client. A separate client run grew its report buffer once. `9342b2b` reserves
+capacity for the enabled report buffer before connecting. In 18 independent echo runs
+on that revision, 16 middle windows had zero requests and two grew the chunk pool.
+The recorder can also grow by a 64 MiB block.
+[Core and Linux application measurements](docs/RESULTS.md#userspace-allocation-by-path)
 
 ## Non-goals
 

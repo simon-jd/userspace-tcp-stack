@@ -191,11 +191,12 @@ Ownership rules:
   chunks in LIFO order. Untouched connections hold no payload chunks. `tcp_send` copies application bytes in,
   `tcp_recv` copies them out; segments are built by copying from the send ring into a `PacketBuf`.
 
-Zero heap allocations per packet in steady bulk and echo are a design target. The stack uses
-pools and reuses released chunks. Stream activation, queue growth and partial SACK tracking can
-allocate storage. Bounded warm-process `operator new` measurements include the application and
-event loop and recorded nonzero calls. The per-packet target remains unverified.
-[Allocation scope and counts](results/m4-copy-allocation/README.md#initialized-c-allocation-diagnostics)
+The core reuses chunks, RACK transmission records, blocked-writer slots and partial SACK
+nodes across repeated bursts. Stream activation and first use can allocate. A larger live
+queue or interval set can grow past its previous capacity. Two 128-round steady epochs per
+workload on `b463268` recorded zero outermost public C/C++ allocation requests in the
+bracketed core calls. The Linux application study also covers telemetry and real TUN I/O.
+[Per-method counts](results/m4-core-alloc/paths.csv) · [Linux process measurements](RESULTS.md#userspace-allocation-by-path)
 
 ### 3.4 Stack: inputs and outputs
 
@@ -1723,7 +1724,9 @@ ring-size comparison have separate measured revisions and workloads.
    respective scopes.
 5. **Hot path goals**: avoid allocating per packet (§3.3) and limit copying
    between rings and packet buffers. The design uses a flat open-addressing
-   connection table and optional checksum offload via `NEEDS_CSUM`.
+   connection table and optional checksum offload via `NEEDS_CSUM`. The allocation study measures
+   repeated loads after warm-up. Startup, new peaks, 64 MiB trace block growth and exit-time
+   JSON formatting have separate costs. [Measured paths and boundaries](RESULTS.md#userspace-allocation-by-path)
 6. The paired studies report before/after results with their individual
    CPU placement, workload, and accounting windows.
 
@@ -1904,8 +1907,9 @@ a copy 2 exists), copies 1 and 2, an offset inside a segment, a burst of 5, and 
   64 MiB, added when one is full; nothing is formatted or written while the program runs) and writes them
   as JSONL (`add_fields`) when the transport is destroyed. `--trace-kinds` selects the `TraceKind`s;
   `rexmit` keeps only tx events of retransmissions (fast_rexmit, rexmit, rto_rexmit, pmtu_rexmit, tlp).
-  Default `cwnd,recovery,rto,rexmit` (M2 design §5.6). The core does not emit `cwnd` or `recovery`
-  events yet, so a trace holds the retransmissions and RTOs only.
+  The default `cwnd,recovery,rto,rexmit` mask includes dedicated window and recovery transitions.
+  Add `rtt` to record accepted RTT samples. Earlier M2 captures predate the dedicated sender events.
+  [Sender event semantics and capture results](results/sender-events/README.md)
 - `--stats FILE` (one line, written at exit or on SIGINT/SIGTERM), in this order: every StackStats
   counter, the EventLoop's counters (`loop_*`; `loop_pending_calls` counts the iterations in which
   connections blocked on transmit-queue or pool space resumed, §3.4), the lateness histogram

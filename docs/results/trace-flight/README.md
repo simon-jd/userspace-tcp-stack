@@ -67,11 +67,13 @@ done
 The intermediate trace commit `c991743ddc244d87cc67d8a34b997f4c20eed713` uses
 base `fa35221f9f86f3c3b997d839f2bb43d8ec8b305f`. A stream can be absent during handshake or on an idle connection. Those trace snapshots report zero payload without allocating a stream. Once the stream exists, complete SACKed segments use the existing packet scoreboard. One counter holds their total remaining payload. A clipped SACK edge uses a separate ordered set of partial byte ranges. Promoting an edge to a complete segment subtracts any overlapping partial coverage. The send buffer already owns the highest written offset, which the queue now reads directly.
 
-The interval set exists only on connections that have received a partial SACK. In addition to live ranges it retains at most one spare node for a moving edge. Cumulative acknowledgment of all outstanding payload, clearing the scoreboard, and queue purge release the partial storage. An interval operation costs O(log R + K) for R partial ranges and K touched neighbors. Whole-segment-only flows continue to use the existing packet walk and allocate no additional SACK storage. Snapshot reads take O(1) regardless of tracing state.
+At `c991743`, the interval set retained at most one spare node for a moving edge. A full cumulative ACK, scoreboard clear or queue purge released its storage. An interval operation on that version cost O(log R + K) for R partial ranges and K touched neighbors. The allocation and layout tables below compare historical revisions.
 
-The allocation test builds 64 ordinary 100-byte segments before counting allocations. A per-byte array independently checks outstanding payload after every ACK. Each version finished with 1,550 bytes outstanding.
+Since `b463268`, the first clipped SACK creates the range owner. Retired nodes stay available up to the connection’s previous peak. A full cumulative ACK or a scoreboard clear during reneging clears coverage and recycles the nodes. A higher number of simultaneous ranges can allocate again. `SendQueue::purge()` releases the owner and all its nodes. Whole-segment-only flows use the packet scoreboard, and snapshot reads still take O(1). [Recovery allocation counts](../m4-core-alloc/README.md#allocation-sites-and-fixes)
 
-| ACK sequence | First implementation | Integrated implementation |
+The historical allocation test builds 64 ordinary 100-byte segments before counting allocations. A per-byte array independently checks outstanding payload after every ACK. Each version finished with 1,550 bytes outstanding.
+
+| ACK sequence | First implementation | Intermediate integration (`c991743`) |
 |---|---:|---:|
 | First complete SACK | 2 | 0 |
 | 30 contiguous complete-segment extensions | 30 | 0 |
@@ -82,7 +84,7 @@ The allocation test builds 64 ordinary 100-byte segments before counting allocat
 | 899 more extensions across segment boundaries | 899 | 0 |
 | 78 repeats | 0 | 0 |
 
-The two initial allocations on the integrated partial path create the optional range container and its first node. A second simultaneously live partial edge needs one more node. The complete path above includes repeated, disjoint, and expanding reports.
+The two initial allocations on the intermediate partial path create the optional range container and its first node. A second simultaneously live partial edge needs one more node. The complete path above includes repeated, disjoint, and expanding reports.
 
 | GCC 15 x86-64 layout | Integration base | Trace candidate |
 |---|---:|---:|
