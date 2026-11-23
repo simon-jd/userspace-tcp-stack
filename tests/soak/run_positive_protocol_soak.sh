@@ -11,15 +11,17 @@ output=$2
 seconds=$3
 minimum=$4
 seed=$5
+first_cpu=${UTCP_SOAK_FIRST_CPU:-22}
 [[ -x $binary && $seconds =~ ^[1-9][0-9]*$ && $minimum =~ ^[1-9][0-9]*$ &&
-   $seed =~ ^[1-9][0-9]*$ && $seconds -ge $minimum ]] || exit 2
+   $seed =~ ^[1-9][0-9]*$ && $seconds -ge $minimum &&
+   $first_cpu =~ ^(0|[1-9][0-9]*)$ ]] || exit 2
 mkdir "$output"
 
 lanes=(ipv4 options stream peers)
 pids=()
 for i in "${!lanes[@]}"; do
   lane=${lanes[i]}
-  taskset -c "$((22 + i))" nice -n 10 "$binary" --lane "$lane" --seed "$seed" \
+  taskset -c "$((first_cpu + i))" nice -n 10 "$binary" --lane "$lane" --seed "$seed" \
     --seconds "$seconds" > "$output/$lane.log" 2>&1 &
   pids+=("$!")
 done

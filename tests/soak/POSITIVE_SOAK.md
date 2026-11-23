@@ -23,8 +23,8 @@ From this checkout on `home-ubuntu`, with build output in a new
 `~/Desktop/utcp-data` subdirectory:
 
 ```bash
-root=$HOME/Desktop/utcp-wt/m3-positive-four-dev-n23
-data=$HOME/Desktop/utcp-data/m3-positive-four-n23
+root=$HOME/Desktop/utcp-wt/m3-positive-four-integration-n23
+data=$HOME/Desktop/utcp-data/m3-positive-four-integration-n23
 taskset -c 22-25 nice -n 10 cmake -S "$root" -B "$data/build-clang21-debug" -G Ninja -DCMAKE_CXX_COMPILER=clang++-21 -DCMAKE_BUILD_TYPE=Debug -DUTCP_SANITIZE=ON -DUTCP_FUZZ=OFF
 taskset -c 22-25 nice -n 10 cmake --build "$data/build-clang21-debug" --target utcp_positive_protocol_soak -j4
 taskset -c 22-25 nice -n 10 cmake -S "$root" -B "$data/build-clang21-relwithdebinfo-2048" -G Ninja -DCMAKE_CXX_COMPILER=clang++-21 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DUTCP_RING_CHUNK_BYTES=2048 -DUTCP_SANITIZE=ON -DUTCP_FUZZ=OFF
@@ -50,7 +50,7 @@ b=$data/build-clang21-relwithdebinfo-2048/tests/soak/utcp_positive_protocol_soak
 "$root/tests/soak/run_positive_protocol_soak.sh" "$b" "$data/accept-rel-01" 7210 7200 20261123
 ```
 
-For a one-minute progress smoke, replace the output directory and use `65 60`.
+For a one-minute progress smoke on CPUs 16–19, set `UTCP_SOAK_FIRST_CPU=16`, replace the output directory and use `65 60`. The default CPU base remains 22 for the independent long run.
 For a quick deterministic replay, run `--lane stream --seed 20261123 --cases
 100` on either build and compare the final digest. The verification script
 checks exit statuses, minute gaps, each lane's duration and the common
