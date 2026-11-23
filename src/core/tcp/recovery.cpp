@@ -869,12 +869,14 @@ TlpAction LossRecovery::on_pto(RecoveryCtx& c) {
   if (state_ != CaState::open && state_ != CaState::cwr) {
     return TlpAction::none;
   }
-  // New data if the receive window takes the next segment
-  // (tcp_snd_wnd_test); else the last segment of the retransmission queue.
+  // New data if the receive window takes the next segment and flight is no
+  // greater than cwnd. A CC update can lower cwnd below the current flight;
+  // in that case a new-data probe would exceed the one-packet TLP allowance.
+  // Resend the last segment instead, without increasing packets in flight.
   const std::uint64_t nxt = c.q.nxt(), end = c.q.end();
   if (nxt < end) {
     const std::uint64_t len = std::min<std::uint64_t>(end - nxt, std::max(c.cc.mss, 1u));
-    if (nxt + len <= c.q.una() + c.snd_wnd) {
+    if (nxt + len <= c.q.una() + c.snd_wnd && c.cc.in_flight <= c.cc.cwnd) {
       return TlpAction::new_data;
     }
   }

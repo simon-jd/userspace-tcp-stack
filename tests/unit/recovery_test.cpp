@@ -615,6 +615,23 @@ TEST(RecoveryTlpProbe, NewDataOrLastSegmentAndOneOutstanding) {
   }
 }
 
+// A CC update can reduce cwnd after the data burst while those packets remain
+// in flight. A new-data TLP must not raise the flight above cwnd + 1; resend
+// the last segment instead. Stock Gen6 seeds 572545 and 969096 hit this path.
+TEST(RecoveryTlpProbe, ReducedCwndResendsLastRatherThanNewData) {
+  rg::Rig r(rg::linux_cfg());
+  rtt20(r);
+  r.cc.cwnd = 9;
+  r.write(10);
+  ASSERT_EQ(r.transmit().size(), 9u);
+  ASSERT_EQ(r.in_flight(), 9u);
+  r.cc.cwnd = 8;
+  r.cc.in_flight = r.in_flight();  // production refresh_cc before on_pto
+  r.now += 42ms;
+  EXPECT_EQ(r.fire_pto(), Sent{"P9"});
+  EXPECT_EQ(r.in_flight(), 9u);
+}
+
 // A PTO left pending into Recovery or Loss sends nothing (on_pto's own
 // Open/CWR guard; RFC 8985 §7.2 and the simulator's TLP rule): no probe, no
 // TcpExtTCPLossProbes, no tlp_high_seq.
