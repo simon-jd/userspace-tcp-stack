@@ -24,7 +24,7 @@ struct FlightLog : TraceSink {
   }
 };
 
-TEST(DedicatedTrace, HandshakePublishesInstalledWindowForBothPeers) {
+TEST(TraceFlight, HandshakePublishesInstalledWindowForBothPeers) {
   using namespace std::chrono_literals;
   for (bool drop_first_syn : {false, true}) {
     auto active = t::tcpt::config(t::Side::a, ProfileId::rfc);
@@ -78,7 +78,7 @@ TEST(DedicatedTrace, HandshakePublishesInstalledWindowForBothPeers) {
   }
 }
 
-TEST(DedicatedTrace, HandshakeAndSegmentAckHaveIndependentRttEvents) {
+TEST(TraceFlight, HandshakeAndSegmentAckHaveIndependentRttEvents) {
   auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
   cfg.trace_mask = trace_bit(TraceKind::rtt);
   FlightLog log;
@@ -107,7 +107,7 @@ TEST(DedicatedTrace, HandshakeAndSegmentAckHaveIndependentRttEvents) {
   EXPECT_EQ(log.events.back().in_flight_bytes, 0u);
 }
 
-TEST(DedicatedTrace, TimeoutThenAmbiguousAckWithoutTimestamps) {
+TEST(TraceFlight, TimeoutThenAmbiguousAckWithoutTimestamps) {
   auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
   cfg.trace_mask = trace_mask_all;
   FlightLog log;
@@ -137,7 +137,7 @@ TEST(DedicatedTrace, TimeoutThenAmbiguousAckWithoutTimestamps) {
   EXPECT_EQ(transitions.back().ca, CaState::open);
 }
 
-TEST(DedicatedTrace, EchoTimestampSuppliesUnambiguousRttAfterRto) {
+TEST(TraceFlight, EchoTimestampSuppliesUnambiguousRttAfterRto) {
   auto cfg = t::tcpt::config(t::Side::b, ProfileId::rfc);
   cfg.trace_mask = trace_bit(TraceKind::rtt);
   FlightLog log;
@@ -158,7 +158,7 @@ TEST(DedicatedTrace, EchoTimestampSuppliesUnambiguousRttAfterRto) {
   EXPECT_EQ(log.events.back().rto_ns, s.stack().tcp_info(s.h)->rto.count());
 }
 
-TEST(DedicatedTrace, TailProbeRepairPublishesBothTransitionsOnOneAck) {
+TEST(TraceFlight, TailProbeRepairPublishesBothTransitionsOnOneAck) {
   auto cfg = t::tcpt::config(t::Side::b);
   cfg.tcp.cc = CcAlgo::cubic;
   cfg.tcp.pacing = Pacing::never;
