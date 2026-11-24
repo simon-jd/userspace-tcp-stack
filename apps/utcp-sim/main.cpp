@@ -29,6 +29,8 @@
 
 #include "common/cli.hpp"
 #include "common/jsonl.hpp"
+#include "common/sha256.hpp"
+#include "utcp/check.hpp"
 #include "utcp/sim/results.hpp"
 #include "utcp/sim/scenario.hpp"
 #include "utcp/sim/stack_node.hpp"
@@ -139,11 +141,14 @@ std::expected<std::set<std::uint64_t>, std::string> parse_list(const std::option
   return out;
 }
 
+inline constexpr std::string_view defensive_profile = "gen6-normal-v1";
+
 struct Options {
   NodeKind nodes = NodeKind::stack;
   std::set<std::uint64_t> plant_fail, plant_abort, plant_hang, plant_segv;
   std::optional<std::uint64_t> plant_after;
   GenOptions generator;
+  bool defensive_gen6 = false;
   bool strict_fast_rexmit = WorldOptions{}.strict_fast_rexmit;
   std::optional<TestFault> test_fault;
   std::string pcap_dir;
@@ -169,6 +174,24 @@ void apply(const Options& o, Scenario& s) {
     for (NodeSpec& n : s.node) {
       n.test_fault = *o.test_fault;
     }
+  }
+}
+
+// Keep the Gen6 congestion topology and ordinary Stack workload. The shared
+// node generator also sets two test-only endpoint controls, so clear those.
+void prepare_defensive_gen6(Scenario& s) {
+  UTCP_CHECK(s.gen_version == 6 && s.nodes == NodeKind::stack && s.plant == Plant::none);
+  UTCP_CHECK(s.node.size() == 2 && s.conn.size() == 1 && s.udp.empty() && s.ping.empty());
+  UTCP_CHECK(s.conn.front().mode == CloseMode::close);
+  for (NodeSpec& n : s.node) {
+    UTCP_CHECK(n.test_fault == TestFault::none);
+    n.test_isn.reset();
+    n.renege_ppm = 0;
+  }
+  for (const LinkSpec& l : s.link) {
+    const LinkParams& p = l.params;
+    UTCP_CHECK(p.mtu == 1500 && !p.send_frag_needed && p.bitflip_ppm == 0 &&
+               p.garbage_ppm == 0 && p.icmp_spoof_ppm == 0);
   }
 }
 
@@ -217,6 +240,10 @@ bool run_one(const Scenario& s, const Options& o, app::JsonlWriter& out) {
                                 std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count()));
   row.add("gen_version", s.gen_version).add("nodes", to_string(s.nodes))
       .add("strict_fast_rexmit", o.strict_fast_rexmit);
+  if (o.defensive_gen6) {
+    row.add("sweep_profile", defensive_profile)
+        .add("scenario_sha256", app::sha256_hex(to_kv(s)));
+  }
   if (s.nodes == NodeKind::stack) {
     for (std::uint32_t i = 0; i < w.node_count(); ++i) {
       const auto& node = static_cast<const StackNode&>(w.node(i));
@@ -250,6 +277,7 @@ int main(int argc, char** argv) {
       .option("scenario", "FILE", "run a key=value scenario file")
       .option("corpus", "DIR", "run every DIR/*.scenario")
       .option("gen-version", "N", "generator version for --seed and --seed-range (3, 4, 5, 6)")
+      .flag("defensive-gen6", "run the fixed Gen6 normal Stack session profile")
       .flag("strict-fast-rexmit", "check PRR first retransmissions against cwnd (default)")
       .flag("no-strict-fast-rexmit", "exempt PRR first retransmissions for comparison")
       .option("nodes", "KIND", "stack or synthetic (generated scenarios)", "stack")
@@ -282,6 +310,23 @@ int main(int argc, char** argv) {
   };
 
   Options o;
+  o.defensive_gen6 = args->flag("defensive-gen6");
+  if (o.defensive_gen6) {
+    for (const auto option : {"scenario", "corpus", "plant-fail", "plant-abort", "plant-hang",
+                              "plant-segv", "plant-after", "test-fault", "max-events"}) {
+      if (args->get(option)) {
+        return usage_error(std::string("--defensive-gen6 does not accept --") + option);
+      }
+    }
+    if (args->flag("no-strict-fast-rexmit") || *args->get("nodes") != "stack" ||
+        *args->get("snaplen") != "65535" ||
+        (args->get("gen-version") && *args->get("gen-version") != "6") ||
+        (args->get("pcap") && !args->get("seed"))) {
+      return usage_error("--defensive-gen6 requires Gen6 Stack nodes, strict checkers and "
+                         "full captures for single seeds");
+    }
+    o.generator.version = 6;
+  }
   if (args->flag("strict-fast-rexmit") && args->flag("no-strict-fast-rexmit")) {
     return usage_error("strict and no-strict fast retransmit options conflict");
   }
@@ -382,6 +427,9 @@ int main(int argc, char** argv) {
   if (modes != 1) {
     return usage_error("give exactly one of --seed, --seed-range, --scenario, --corpus");
   }
+  if (o.defensive_gen6 && (first >= last || last > 1'000'000)) {
+    return usage_error("--defensive-gen6 requires a nonempty range within seeds 0..999999");
+  }
   const std::uint64_t runs = fixed.empty() ? last - first : fixed.size();
   if (!o.trace_path.empty() && runs > 1) {
     return usage_error("--trace needs a single run");
@@ -389,7 +437,11 @@ int main(int argc, char** argv) {
 
   const auto scenario_at = [&](std::uint64_t i) {
     Scenario s = fixed.empty() ? generate_scenario(first + i, o.nodes, o.generator) : fixed[i];
-    apply(o, s);
+    if (o.defensive_gen6) {
+      prepare_defensive_gen6(s);
+    } else {
+      apply(o, s);
+    }
     return s;
   };
 

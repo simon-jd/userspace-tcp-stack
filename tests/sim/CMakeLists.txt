@@ -38,3 +38,6 @@ add_test(NAME sim.RecoveryFaultControls
 add_test(NAME sim.SweepReplay
   COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/sweep_replay.py" $<TARGET_FILE:utcp-sim>
     "${PROJECT_SOURCE_DIR}/tools/sim_sweep.py")
+
+add_test(NAME sim.defensive_gen6
+  COMMAND python3 -I "${CMAKE_CURRENT_SOURCE_DIR}/defensive_gen6.py" $<TARGET_FILE:utcp-sim>)
