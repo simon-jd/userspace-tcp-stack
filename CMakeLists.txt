@@ -27,6 +27,13 @@ if(NOT UTCP_RING_CHUNK_BYTES MATCHES "^(2048|4096|8192)$")
   message(FATAL_ERROR "UTCP_RING_CHUNK_BYTES must be 2048, 4096 or 8192")
 endif()
 
+# Multiplies the per-test time limits that tests set themselves. The limits
+# fit the eight build cores of the server; slower CI runners raise this.
+set(UTCP_TEST_TIMEOUT_SCALE "1" CACHE STRING "Multiplier for per-test CTest timeouts")
+if(NOT UTCP_TEST_TIMEOUT_SCALE MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "UTCP_TEST_TIMEOUT_SCALE must be a positive integer")
+endif()
+
 include(cmake/Warnings.cmake)
 include(cmake/Targets.cmake)
 

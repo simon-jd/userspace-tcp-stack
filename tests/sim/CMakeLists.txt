@@ -8,6 +8,7 @@ if(utcp_sim_test_sources)
   target_compile_definitions(utcp_sim_tests PRIVATE
     UTCP_SIM_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus")
   utcp_target_warnings(utcp_sim_tests)
+  math(EXPR utcp_sim_long_timeout "1500 * ${UTCP_TEST_TIMEOUT_SCALE}")
   gtest_discover_tests(utcp_sim_tests
     TEST_PREFIX "sim."
     TEST_FILTER "-Corpus/SimCorpusEntry.*:Profiles/TcpRecoveryBulkSim.*:TcpBbrSim.*Bulk*"
@@ -18,17 +19,18 @@ if(utcp_sim_test_sources)
   gtest_discover_tests(utcp_sim_tests
     TEST_PREFIX "sim."
     TEST_FILTER "Profiles/TcpRecoveryBulkSim.*:TcpBbrSim.*Bulk*"
-    PROPERTIES TIMEOUT 1500
+    PROPERTIES TIMEOUT ${utcp_sim_long_timeout}
     DISCOVERY_MODE PRE_TEST)
   # The corpus replays every SIM-BUGS scenario exactly as the sweep found it,
   # one test per entry so that ctest runs them in parallel. The entries with
   # megabytes sent in one-byte writes (sb-0002, sb-0006..sb-0009) take up to
-  # about 820 s each in gcc-asan, so these tests get a longer limit than the
-  # presets' 300 s.
+  # about 1,000 s each in gcc-asan on the server's eight build cores, so these
+  # tests get a longer limit than the presets' 300 s. UTCP_TEST_TIMEOUT_SCALE
+  # multiplies it on slower machines.
   gtest_discover_tests(utcp_sim_tests
     TEST_PREFIX "sim."
     TEST_FILTER "Corpus/SimCorpusEntry.*"
-    PROPERTIES TIMEOUT 1500
+    PROPERTIES TIMEOUT ${utcp_sim_long_timeout}
     DISCOVERY_MODE PRE_TEST)
 endif()
 

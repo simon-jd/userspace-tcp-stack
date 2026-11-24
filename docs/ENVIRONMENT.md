@@ -127,7 +127,10 @@ three are reported.
 - `ci/run.sh [preset...]`: inside the image, configure, build and ctest each
   preset (default: all eight), print a summary, exit non-zero if any step
   failed. With gcc-release and clang-release it also compares the simulator
-  digests of the two builds (`ci/check-digests.sh`).
+  digests of the two builds (`ci/check-digests.sh`). CTest runs at most one
+  test per CPU and at most eight. `UTCP_TEST_TIMEOUT_SCALE=N` multiplies every
+  test time limit: the presets' 300 s default and the 1,500 s that the long
+  simulator tests set (CMake cache variable of the same name).
 - `ci/docker-ci.sh [preset...]`: on the host, runs `ci/run.sh` in a throwaway
   `utcp-ci-*` container on CPUs 16-31 with `nice -n 10`. The checkout is
   mounted read-only and copied into the container.
@@ -135,14 +138,17 @@ three are reported.
   pushes it to GHCR under a tag derived from the Dockerfile hash, then runs
   `ci/run.sh <preset>` in that image as a container job, one matrix entry per
   preset. GitHub-hosted runners do not have g++ 15 or clang 21, hence the
-  container. Not run yet: the repository has not been pushed to GitHub.
+  container. The runners have 4 vCPUs. In the first run, on commit 102ef04,
+  six presets passed and both ASan presets failed only on time limits: with
+  eight tests at a time their tests took 2.5 to 5.3 times as long as on the
+  server, and the longest simulator tests ran out of time. The workflow
+  therefore sets `UTCP_TEST_TIMEOUT_SCALE=4`.
 
-Last result (2026-11-13, `ci/docker-ci.sh` on commit bc86f27 of the
-m1-backend branch, image `utcp-testbed:dev`): all eight presets ok, 236-239
-tests passed in each, no compiler warnings; the digest step was skipped (no
-`utcp-sim` yet). On commit e4361b0 the same also with
-`UTCP_IMAGE=utcp-m1-backend-testbed:dev`, the image built from the Dockerfile
-with nftables.
+Server result (2026-11-24, `ci/docker-ci.sh` on commit 102ef04 with
+`UTCP_CI_CPUS=16-23`, image `utcp-testbed:dev`): all eight presets ok,
+1,111 to 1,116 tests passed in each, and the gcc-release and clang-release
+simulator digests matched. The first result (2026-11-13, commit bc86f27 of the
+m1-backend branch) had 236-239 tests per preset.
 
 ## verify-env
 

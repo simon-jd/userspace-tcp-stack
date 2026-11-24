@@ -47,6 +47,12 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    # The runner has 4 vCPUs. In the first run (eight tests at a time) ASan
+    # tests took 2.5 to 5.3 times as long as on the server's eight build
+    # cores, and the longest simulator tests hit their limits; ci/run.sh now
+    # runs one test per CPU, and the limits are four times longer here.
+    env:
+      UTCP_TEST_TIMEOUT_SCALE: "4"
     strategy:
       fail-fast: false
       matrix:

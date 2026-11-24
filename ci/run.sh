@@ -21,17 +21,29 @@ echo "ninja $(ninja --version)"
 dpkg-query -W -f 'googletest ${Version}\n' googletest 2>/dev/null || true
 echo "nproc $(nproc)"
 
+# At most one test per CPU, and at most the presets' eight. With
+# UTCP_TEST_TIMEOUT_SCALE=N (e.g. on 4-vCPU GitHub runners) every test time
+# limit is N times longer: the 300 s default and the limits tests set.
+cpus=$(nproc)
+jobs=$((cpus < 8 ? cpus : 8))
+scale=${UTCP_TEST_TIMEOUT_SCALE:-1}
+if [[ ! $scale =~ ^[1-9][0-9]*$ ]]; then
+  echo "UTCP_TEST_TIMEOUT_SCALE must be a positive integer" >&2
+  exit 2
+fi
+echo "ctest jobs $jobs, timeout scale $scale"
+
 declare -A result
 failed=0
 for p in "${presets[@]}"; do
   echo
   echo "== preset $p"
   start=$SECONDS
-  if ! cmake --preset "$p"; then
+  if ! cmake --preset "$p" -DUTCP_TEST_TIMEOUT_SCALE="$scale"; then
     result[$p]="FAIL (configure)"
   elif ! cmake --build --preset "$p"; then
     result[$p]="FAIL (build)"
-  elif ! ctest --preset "$p"; then
+  elif ! ctest --preset "$p" -j "$jobs" --timeout $((300 * scale)); then
     result[$p]="FAIL (test)"
   else
     result[$p]="ok"
