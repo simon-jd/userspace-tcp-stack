@@ -1365,8 +1365,9 @@ The archived Ubuntu builds passed 20 of 20 simulator corpus cases in
 
 - The saved Gen5 persist-pacing case passed after the timer fix. The
   directed test checked that the send respected and advanced the
-  pacing deadline. A matching post-fix capture for the original
-  seed remains unverified. [Persist-pacing case](results/m3-sim/persist-pacing.md)
+  pacing deadline. A new same-input capture at the exact fix source
+  commit pairs with the original failure capture; the historical passing
+  sweep kept only the verdict row. [Persist-pacing case](results/m3-sim/persist-pacing.md)
 - The M1 capture replay accounted for a retransmitted SYN and reproduced
   the kernel's original D-SACK and discard counts. Two other retained
   runs still differ from the kernel by one dubious D-SACK each.
