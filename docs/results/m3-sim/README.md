@@ -49,8 +49,9 @@ serialized replay comparisons, and the independent capture checks.
 
 These two cases use retained Gen5 and M1 evidence from earlier work.
 
-- Positive-window persist pacing. A matching post-fix capture for the
-  passing Gen5 seed remains unverified. [Case notes](persist-pacing.md)
+- Positive-window persist pacing. A new same-input, exact-fix-source
+  capture now pairs with the original failure capture; the original passing
+  sweep itself retained no capture for this seed. [Case notes](persist-pacing.md)
 - D-SACK capture replay and SYN retransmissions. The replay corrected the
   original case, and `run8` and `run9` still differ by one dubious D-SACK
   each. [Case notes](dsack-capture-counts.md)
