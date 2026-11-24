@@ -1,5 +1,7 @@
 # userspace-tcp-stack
 
+[![CI](https://github.com/simon-jd/userspace-tcp-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/simon-jd/userspace-tcp-stack/actions/workflows/ci.yml)
+
 This C++23 project implements an IPv4 endpoint for TCP, UDP and ICMP. The TCP core takes packets,
 time and a seeded random source as inputs. The same code runs over Linux TUN and in a
 discrete-event simulator. The Linux backend runs the same applications on kernel sockets for
@@ -97,6 +99,19 @@ on that revision, 16 middle windows had zero requests and two grew the chunk poo
 The recorder can also grow by a 64 MiB block.
 [Core and Linux application measurements](docs/RESULTS.md#userspace-allocation-by-path)
 
+On November 23 and 24 the simulator ran one million stock Gen6 seeds, each a
+pair of real stacks over an impaired virtual link. Two seeds failed the
+in-flight check: after a BBR ACK cut cwnd below the packets in flight, the
+tail-loss probe sent new data. With the probe changed to retransmit the last
+segment in that case, all 1,000,000 seeds passed and the 2,000 registered
+replays matched with traces and four captures each. Four libFuzzer targets
+then ran for four hours each under ASan and UBSan, about 9 billion inputs in
+total, with no finding: the IPv4, TCP, UDP and ICMP parsers, the TCP option
+parser checked against a transcription of Linux `tcp_parse_options`, the
+reassembler checked against a naive reference, and the stack's input path.
+[Simulator campaign](docs/RESULTS.md#one-million-seed-simulator-campaign) ·
+[Fuzz campaign](docs/RESULTS.md#arbitrary-input-fuzzing)
+
 ## Non-goals
 
 - IPv6, TLS, QUIC, MPTCP (MP_CAPABLE is ignored, so peers fall back to plain
@@ -124,11 +139,12 @@ The recorder can also grow by a 64 MiB block.
 | `src/sim/` | `utcp_sim`: simulated network for running core instances against each other |
 | `src/backend/` | `utcp_backend`: TUN device and event loop |
 | `apps/` | Programs, one CMake target each |
-| `tests/unit/`, `tests/sim/`, `tests/interop/`, `tests/fuzz/` | Tests |
+| `tests/unit/`, `tests/sim/`, `tests/interop/`, `tests/fuzz/`, `tests/packetdrill/`, `tests/soak/` | Unit, simulator, Linux interop, libFuzzer, Packetdrill and valid-input soak tests |
+| `tests/support/` | Shared test helpers, including the naive reassembler used as a reference |
 | `testbed/` | Image Dockerfile and testbed scripts |
 | `ci/` | CI scripts |
 | `docs/` | Documentation |
-| `tools/` | Analysis and plotting scripts |
+| `tools/` | Simulator campaign runners, analysis and plotting scripts |
 
 ## Build and test
 
@@ -152,7 +168,13 @@ cmake --workflow --preset clang-asan   # configure, build and test in one step
 Presets: `gcc-debug`, `gcc-release`, `gcc-asan`, `clang-debug`,
 `clang-release`, `clang-asan` (asan = ASan + UBSan, no recovery), `gcc-sweep`
 (Release with `UTCP_DCHECKS`, for simulator sweeps) and `clang-fuzz` (libFuzzer
-targets, ASan + UBSan, `UTCP_DCHECKS`).
+targets, ASan + UBSan, `UTCP_DCHECKS`). GitHub Actions builds the same image
+and runs each preset on every push, with test time limits scaled for its
+4-vCPU runners ([workflow](.github/workflows/ci.yml), [CI notes](docs/ENVIRONMENT.md#ci)).
+A fuzz target runs on its own with, for example,
+`mkdir -p corpus && build/clang-fuzz/tests/fuzz/fuzz_stack_input corpus/ -max_len=2048 -max_total_time=600`;
+the [fuzz campaign note](docs/results/m3-fuzz/arbitrary-input-campaign.md) has
+the options used for the four-hour runs.
 
 ## Quick start
 
