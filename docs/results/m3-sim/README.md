@@ -1,9 +1,10 @@
 # M3 simulator validation
 
-The production simulator source is private main
-`22b7cf30961cffb4b456c01aafb8c662f404212d`. The initial builds and their
-corpus checks passed. The Gen6 long-run acceptance remains open with
-**0 of 1,000,000 newly counted seeds**.
+The initial simulator builds and their corpus checks ran on `main` at
+`22b7cf30961cffb4b456c01aafb8c662f404212d` and passed. The stock Gen6
+campaign on November 23 covered all 1,000,000 seeds: it found one sender
+bug, and after the fix every seed passed and all 2,000 registered replays
+matched. [Campaign summary](#stock-gen6-million-seed-campaign)
 
 ## Initial build and corpus receipt
 
@@ -27,7 +28,7 @@ The build log, exit, provenance, CMake caches and compilation databases are
 under `utcp-data:/m3-sim-validation/22b7cf3-attempt-1/`. The `build.log`
 SHA-256 is `63871d9c73fece05a880feb4d891f4e80cf2f717c4524e5b5031a5f6e1e1d2e0`.
 
-## Gen6 long-run outcome
+## Earlier Gen6 launch attempts
 
 The first launcher returned Docker exit `125` with
 `invalid reference format`. At `2026-11-20T19:24:51Z`, the temporary
@@ -41,9 +42,40 @@ The corresponding `launch.log` ends with `mkdir: Permission denied`.
 Its SHA-256 is
 `a48b7d122b5203112d598e8867c177c95e7e16d2179cf3d9c9e49adfc15725af`.
 
-The long-run evidence still lacks unique coverage of the target seed
-range, per-seed verdicts and application-delivery outcomes, the 2,000
-serialized replay comparisons, and the independent capture checks.
+Neither attempt counted a seed. The campaign below replaced them.
+
+## Stock Gen6 million-seed campaign
+
+On November 23 the stock Gen6 generator (`--gen-version 6 --nodes stack
+--strict-fast-rexmit`, unchanged `test_isn` and `renege_ppm` values) ran
+seeds `[0, 1000000)` in 1,000 receipted shards, with a serialized replay of
+every seed divisible by 500 that records a trace and both nodes' egress and
+ingress captures.
+
+| Source | Seeds | Verdicts | Replays |
+| --- | ---: | --- | --- |
+| `51275cc` (before the fix) | 1,000,000 | 999,998 `ok`, 2 `inflight` (seeds 572545 and 969096) | 2,000 registered and 2 failure replays matched |
+| `fc46829` (after the fix) | 1,000,000 | 1,000,000 `ok` | 2,000 registered replays matched |
+
+Both failures were real: a BBR ACK cut cwnd from 10 to 8 packets while 9
+were in flight, and the next probe timeout sent a new-data tail-loss probe
+that raised flight to 10. `LossRecovery::on_pto` now retransmits the last
+segment when flight already exceeds cwnd. A unit regression fails on the
+old sender and passes on the new one; no checker rule changed. TShark found
+zero Error-severity expert items in all 8,008 and 8,000 replay captures.
+The passing rows comprise 996,398 complete transfers, 3,328 partial
+transfers and 274 runs with no payload delivered; these are legal outcomes
+under the campaign's checkers and are counted apart from the verdicts.
+
+An independent review rebuilt the corrected source, rescanned every shard
+and replay receipt, reran five seeds including both former failures, and
+found 3A PASS (every seed, zero failures) and 3B PASS (all registered
+replays). [Development receipt](stock-gen6-2026-11-23.md) ·
+[Independent acceptance](stock-gen6-acceptance.md)
+
+A separate defensive normal-session profile, which clears the generator's
+`test_isn` and `renege_ppm` node controls, ran the full range before the fix and failed on the same two seeds;
+both pass on the fixed source. [Defensive profile and status](defensive-gen6.md#status)
 
 ## Historical diagnostics
 

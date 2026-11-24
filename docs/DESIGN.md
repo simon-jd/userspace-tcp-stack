@@ -50,7 +50,7 @@ Stated in the README as well:
 | IPv4 | validate, demux, DF on send, PMTU cache | M4 TCP checksum offload and TCPv4 GSO/GRO via `IFF_VNET_HDR` |
 | ICMP, UDP | echo reply and API, unreachable in/out, frag-needed lowers MSS; unconnected UDP sockets | |
 | TCP | full state machine, options, SACK/DSACK generation, RTO, delayed ACK, Nagle, SWS, ZWP, half-close, TIME_WAIT, RFC 5961, PAWS, RFC 6528/6056, NewReno | M2a RFC 6675, RACK-TLP, PRR; M2b CC interface users (CUBIC, HyStart/HyStart++), rate sampling, pacing; M2c BBRv1 |
-| Simulator, apps | full simulator (§7), 100,000-seed sweeps, bulk, echo, httpd, http-get | M3 verified corpus and Packetdrill cases with the million-seed run and sustained parser/reassembly validation still open. M4 adds opt-in direct TCP echo. |
+| Simulator, apps | full simulator (§7), 100,000-seed sweeps, bulk, echo, httpd, http-get | M3 verified corpus and Packetdrill cases, the 1,000,000-seed campaign and four-hour fuzz campaigns. M4 adds opt-in direct TCP echo. |
 | Backend | TUN (`IFF_TUN` + `IFF_NO_PI`), `epoll_pwait2` | M4 adds opt-in `IFF_VNET_HDR` and multi-queue on one event loop. |
 
 ## 2. Structure
@@ -1657,8 +1657,8 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
   zero window and probes, half-close both ways, TIME_WAIT, every RST/SYN/ACK case of RFC 5961, PAWS, PMTU with
   valid and forged ICMP, Nagle, delayed-ACK timing per profile, SYN and data retry exhaustion, sequence wrap),
   plus random sweeps (§7). The design budgets were 1e4 seeds for CI-sized runs, 1e5 for M1
-  acceptance and 1e6 for M3. The fresh M3 Gen6 campaign has 0 of 1,000,000 counted seeds.
-  [Campaign status](RESULTS.md#pending-validation)
+  acceptance and 1e6 for M3. The M3 stock Gen6 campaign covered all 1,000,000 seeds; after one sender fix
+  every seed passed. [Campaign results](RESULTS.md#one-million-seed-simulator-campaign)
 - **Interop** (`tests/interop/`, `testbed/`): containers named `utcp-*`, run with `--cap-add NET_ADMIN --device
   /dev/net/tun` and `--cpuset-cpus 16-31` (functional) or `8-15` (timing). `utcp-m1-dut` runs the stack on `utcp0`
   (kernel side 198.18.0.1, stack 198.18.0.2) with IP forwarding; `utcp-m1-peer` is plain Linux on `utcp-m1-net`
@@ -1680,9 +1680,9 @@ pcap: per-node files from the simulator (§7.4); `UtcpTransport --pcap FILE` wri
   output, FIN state and SACK-able ranges must agree after every step), `fuzz_stack_input` (arbitrary datagrams
   into a stack with a listener and an established connection; checks `debug_check()`).
   The M1 design called for 60 seconds per target. CTest configures 20,000 iterations per
-  smoke case. The planned multi-hour M3 campaigns have 0 of 4 targets completed.
+  smoke case. In M3 each target ran for four hours with no finding.
   Separately, two sustained valid-input tests each ran for at least two active hours.
-  [Valid-input results](RESULTS.md#valid-ipv4-datagrams-and-receive-streams) · [Open campaigns](RESULTS.md#pending-validation)
+  [Fuzz campaign](RESULTS.md#arbitrary-input-fuzzing) · [Valid-input results](RESULTS.md#valid-ipv4-datagrams-and-receive-streams)
 - **packetdrill** (M3, one day): `--so_filename` loads a shared object implementing its socket, packet and time
   interface (check `so_testing.h` at M3 start); virtual time, `receive`/`pop_transmit` and loops over `advance`
   map onto it, plus `to_errno` and blocking `accept`/`connect` emulation. Only scripts for RFC behaviour are kept.

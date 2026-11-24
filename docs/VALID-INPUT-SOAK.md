@@ -117,9 +117,10 @@ reconstructed every batch's seed and counts, including the stream operation
 counts. These counts include the deliberate repeats described above.
 [Machine-readable totals, timings and log hashes](results/m3-fuzz/valid-soak-20261121.json)
 
-The original M3 campaign still has 0 of 1,000,000 fresh Gen6 simulator seeds,
-0 of 2,000 sampled replays and their associated capture checks, and 0 of 4
-completed sustained arbitrary-input targets. The fixed-seed suite has its
+These are valid-input tests. The one-million-seed simulator campaign and the
+four-hour arbitrary-input fuzz campaigns ran later and are reported
+separately: [simulator campaign](RESULTS.md#one-million-seed-simulator-campaign) ·
+[fuzz campaign](RESULTS.md#arbitrary-input-fuzzing). The fixed-seed suite has its
 own [historical results](results/m3-fuzz/VALID_WIRE_STREAM.md).
 
 ### Evidence and reproduction

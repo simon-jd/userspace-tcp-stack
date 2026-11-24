@@ -16,9 +16,9 @@ comparison.
 | M0 and M1 | Toolchain, deterministic core, simulator, TUN backend and TCP interoperability complete |
 | M2a and M2b | Loss recovery, delivery-rate sampling, pacing, NewReno and CUBIC complete |
 | M2c and M2d | [BBRv1 paired smoke](docs/RESULTS.md#bbrv1-paired-smoke), [24-cell NewReno/CUBIC/BBRv1 matrix](docs/RESULTS.md#core-matrix), and [multi-flow study](docs/RESULTS.md#multi-flow) complete |
-| M3 | [Two-hour valid-input tests, two IPv4 Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) verified. The fresh one-million-seed simulator run and the sustained arbitrary-input parser and reassembly campaign [remain open](docs/RESULTS.md#pending-validation). |
+| M3 | [Two-hour valid-input tests, two IPv4 Packetdrill cases, and simulator corpus checks](docs/RESULTS.md#m3-validation) verified. [All 1,000,000 simulator seeds](docs/RESULTS.md#one-million-seed-simulator-campaign) pass after one sender fix, and [four-hour fuzz campaigns](docs/RESULTS.md#arbitrary-input-fuzzing) of the parsers, the reassembler and the stack's input path ended with no finding. |
 | M4 | The 10,000-connection memory workload met all five limits. Core copy checks passed for legacy and TCPv4 TUN, and six matched blocks retained the 4 KiB default. [Independent results](docs/RESULTS.md#independent-acceptance-on-november-21-2026) · [Earlier bulk, TUN and echo studies](docs/RESULTS.md#m4-bulk-tun-and-echo) |
-| M5 | Private build and evidence guides. [Reproduction commands and archive inventory](docs/results/reproduction/README.md) |
+| M5 | Build and evidence guides. [Reproduction commands and archive inventory](docs/results/reproduction/README.md) |
 
 The implementation covers the TCP state machine (RFC 9293), timestamps and window scaling
 (RFC 7323), SACK and D-SACK (RFCs 2018 and 2883), RST handling (RFC 5961), retransmission

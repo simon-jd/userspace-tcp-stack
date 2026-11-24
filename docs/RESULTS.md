@@ -1373,13 +1373,41 @@ The archived Ubuntu builds passed 20 of 20 simulator corpus cases in
   runs still differ from the kernel by one dubious D-SACK each.
   [D-SACK capture case](results/m3-sim/dsack-capture-counts.md)
 
-### Pending validation
+### One-million-seed simulator campaign
 
-The planned fresh Gen6 simulator campaign recorded 0 of 1,000,000 seeds.
-Both launches ended before a counted shard was written. The 2,000 sampled
-serialized replays and independent capture checks remain unexecuted. The
-four planned sustained arbitrary-input parser and reassembly targets have
-zero completed campaigns. The valid-input counts above come from separate tests.
+The stock Gen6 generator ran seeds 0 through 999,999 with two real Stack
+peers and the strict fast-retransmit checker, without rewriting any
+scenario. On source `51275cc`, 999,998 seeds passed and seeds 572545 and
+969096 failed the in-flight check: a BBR ACK cut cwnd from 10 to 8 packets
+while 9 were in flight, and the next tail-loss probe sent new data and
+raised flight to 10. `LossRecovery::on_pto` now retransmits the last segment
+when flight already exceeds cwnd; a unit regression fails before the fix and
+passes after it. On the fixed source `fc46829`, all 1,000,000 seeds passed,
+and the 2,000 registered seeds (every multiple of 500) replayed from their
+serialized scenarios with matching results, a trace and four captures each.
+TShark found zero Error-severity expert items in the 8,000 captures. Of the
+passing seeds, 3,328 delivered part of the requested data and 274 delivered
+none; the checkers allow both outcomes, and they are counted apart from the
+verdicts. An independent review rebuilt the fixed commit, rescanned every
+shard and replay receipt, reran both former failure scenarios and accepted
+the campaign. [Campaign summary](results/m3-sim/README.md#stock-gen6-million-seed-campaign) ·
+[Development receipt](results/m3-sim/stock-gen6-2026-11-23.md) ·
+[Independent acceptance](results/m3-sim/stock-gen6-acceptance.md)
+
+### Arbitrary-input fuzzing
+
+The four libFuzzer targets ran for four hours each under ASan and UBSan,
+with pass criteria fixed before the run. The IPv4/TCP/UDP/ICMP parser
+round trip ran 4,756,405,601 inputs, the TCP option parser compared with a
+transcription of Linux `tcp_parse_options` ran 4,222,765,769, the
+reassembler differential against the naive reference ran 2,181,667
+operation sequences, and the whole-stack input target ran 24,245,725. No
+target produced a crash, sanitizer report, `UTCP_CHECK` abort, timeout,
+out-of-memory or leak, and all 5,697 inputs of the minimized corpora
+replayed with exit 0. Inputs are arbitrary only within each harness's
+model, and only the clang build was fuzzed.
+[Campaign, input models and limits](results/m3-fuzz/arbitrary-input-campaign.md) ·
+[Preregistration](results/m3-fuzz/campaign-preregistration.md)
 
 
 ## M4 bulk, TUN and echo
