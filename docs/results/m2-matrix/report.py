@@ -175,7 +175,7 @@ def render(campaign, native, evidence, plot_log, out):
             [
                 f"### {title}",
                 "",
-                f"[All measured metrics for {title}, paired by condition](results/m2-matrix/comparison-{algo}.csv)",
+                f"[All measured metrics for {title}, paired by condition](comparison-{algo}.csv)",
                 "",
                 "| Mbit/s · RTT ms · loss % · queue BDP | Goodput, Mbit/s | Retransmissions, % | Queue delay p50, ms | Queue delay p99, ms | Registered gaps |",
                 "|---|---:|---:|---:|---:|---|",
@@ -252,7 +252,7 @@ def render(campaign, native, evidence, plot_log, out):
             paired.append(comparison)
             transient = native_cells[algo, cell, "utcp"]["transient"] == "1"
             label = " · ".join(cell.split("-"))
-            name = f"[{label}](results/m2-matrix/plots/{cell}-{algo}.png)" + (
+            name = f"[{label}](plots/{cell}-{algo}.png)" + (
                 " †" if transient else ""
             )
             measures = [
@@ -283,6 +283,9 @@ def render(campaign, native, evidence, plot_log, out):
     gap_windows.write(
         campaign, evidence / "evidence.csv", gaps, out / "gap-windows.csv"
     )
+    # Links are relative to tables.md, which sits next to the CSVs and plots.
+    # docs/RESULTS.md embeds these tables with "results/m2-matrix/" in front
+    # of each link.
     (out / "tables.md").write_text("\n".join(tables) + "\n")
     print(
         "Rebuilt 144 aggregate rows,",
