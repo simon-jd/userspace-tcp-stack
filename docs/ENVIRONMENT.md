@@ -150,6 +150,15 @@ Server result (2026-11-24, `ci/docker-ci.sh` on commit 102ef04 with
 simulator digests matched. The first result (2026-11-13, commit bc86f27 of the
 m1-backend branch) had 236-239 tests per preset.
 
+GitHub result (`UTCP_TEST_TIMEOUT_SCALE=4`, four tests at a time): all eight
+presets passed on commit 2fe36cc (2026-11-24) and again on commit 7a7a838
+(2026-11-25), with 1,111 tests in each debug, release and sweep preset, 1,112
+in each ASan preset and 1,116 in clang-fuzz. The slowest test was the sb-0007
+corpus replay in gcc-asan, at 1,923 s and 2,248 s against its 6,000 s limit,
+and gcc-asan was the longest job, at about 62 and 72 minutes. Each matrix
+entry runs one preset, so the gcc-release and clang-release digest
+comparison runs only on the server.
+
 ## verify-env
 
 `testbed/verify-env.sh` runs three checks, each in throwaway `utcp-m0-*`
